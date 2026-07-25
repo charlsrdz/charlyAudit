@@ -1,0 +1,75 @@
+{
+  "manifest_version": 3,
+  "name": "CharlyAudit",
+  "version": "2.3.0",
+  "description": "Plantilla MV3 con CharlyAPI (acceso amplio al navegador, pestanas, sistema y pestana activa), suite de QA (session replay, sniffer de red, captura de consola/errores/estado, export Cypress/Playwright) y un asistente de IA en el panel lateral via Open WebUI.",
+  "author": "CharlyPlugin",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "CharlyPlugin",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "notifications",
+    "idle",
+    "contextMenus",
+    "alarms",
+    "tabGroups",
+    "sessions",
+    "power",
+    "sidePanel",
+    "cookies",
+    "webRequest",
+    "system.cpu",
+    "system.memory",
+    "system.storage",
+    "system.display"
+  ],
+  "optional_permissions": [
+    "bookmarks",
+    "history",
+    "cookies",
+    "downloads",
+    "clipboardRead",
+    "clipboardWrite",
+    "geolocation",
+    "topSites",
+    "webNavigation",
+    "management",
+    "browsingData",
+    "desktopCapture",
+    "tabCapture",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://assistant.service24gps.com/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

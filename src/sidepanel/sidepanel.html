@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CharlyAudit</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <img src="../../icons/icon48.png" alt="" class="bar__logo" />
+      <div class="bar__id">
+        <h1 class="bar__name">CharlyAudit</h1>
+        <div id="status" class="bar__status"><span class="dot"></span><span id="status-text">Conectando…</span></div>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button id="tab-btn-assistant" class="tab is-on" type="button" data-tab="assistant" role="tab">Asistente</button>
+        <button id="tab-btn-qa" class="tab" type="button" data-tab="qa" role="tab">Auditoria</button>
+      </nav>
+      <button id="open-palette" class="iconbtn" type="button" title="Personalizar paleta" aria-label="Personalizar paleta">✎</button>
+      <button id="open-settings" class="iconbtn" type="button" title="Ajustes de conexion" aria-label="Ajustes">⚙</button>
+    </header>
+
+    <!-- ===================== PESTANA: ASISTENTE ===================== -->
+    <div id="tab-assistant" class="tabpane is-on">
+      <section class="context" aria-label="Contexto de la sesion">
+        <div class="context__head">
+          <span class="context__title">Contexto de la sesion</span>
+          <span class="context__meta">
+            <span id="ctx-size" class="ctx-size"></span>
+            <span id="rec-state" class="context__rec">—</span>
+          </span>
+        </div>
+        <div id="scopes" class="scopes"><!-- chips de ambito (render JS) --></div>
+      </section>
+
+      <main id="thread" class="thread" aria-live="polite">
+        <div id="empty" class="empty">
+          <h2>Analiza tu sesion de QA</h2>
+          <p>
+            Activa los ambitos de contexto que quieras compartir y pregunta. Charly
+            interpreta errores, red, consola, rutas, variables y rendimiento.
+          </p>
+          <p class="hint">Cambia a la pestana <strong>QA · Timeline</strong> para grabar, reproducir y explorar el flujo evento a evento.</p>
+        </div>
+      </main>
+
+      <div class="dock">
+        <div class="composer">
+          <textarea id="input" placeholder="Pregunta sobre la sesion grabada…" rows="1" maxlength="2000" aria-label="Mensaje para el asistente"></textarea>
+          <button id="send" class="send" type="button" title="Enviar" aria-label="Enviar">➤</button>
+        </div>
+        <div class="dock__meta">
+          <button id="cache-keep" class="cache-btn" type="button" aria-pressed="true" title="Conservar la cache entre sesiones">Mantener cache</button>
+          <button id="cache-save" class="cache-btn" type="button" title="Guardar esta conversacion">Guardar</button>
+          <button id="cache-clear" class="cache-btn" type="button" title="Vaciar la conversacion actual">Vaciar</button>
+          <span class="spacer"></span>
+          <span id="cache-size" title="Espacio usado por la cache">0 KB</span>
+          <span id="counter" class="counter">0/2000</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== PESTANA: QA · TIMELINE ===================== -->
+    <div id="tab-qa" class="tabpane">
+      <section class="actions" aria-label="Acciones de captura">
+        <button id="act-record" class="act act--rec" type="button" title="Grabar / Detener grabacion">● Grabar</button>
+        <span class="act__sep"></span>
+        <button id="act-play" class="act" type="button" title="Reproducir replay en la pestana" disabled>Reproducir</button>
+        <button id="act-stop" class="act" type="button" title="Detener reproduccion">Detener</button>
+        <button id="act-cfg" class="act act--ghost" type="button" title="Configuracion de captura" aria-expanded="false">Captura ▾</button>
+      </section>
+
+      <section id="capture-cfg" class="capture-cfg" hidden aria-label="Configuracion de captura">
+        <div class="fld"><label for="cfg-mask">Selectores a enmascarar (uno por linea)</label>
+          <textarea id="cfg-mask" rows="2" spellcheck="false" placeholder=".private&#10;[data-private]"></textarea></div>
+        <div class="fld"><label for="cfg-globals">Variables globales a vigilar (una por linea)</label>
+          <textarea id="cfg-globals" rows="2" spellcheck="false" placeholder="store&#10;user.profile"></textarea></div>
+        <div class="fld"><label for="cfg-fns">Funciones a interceptar (una por linea)</label>
+          <textarea id="cfg-fns" rows="2" spellcheck="false" placeholder="app.api.fetchData"></textarea></div>
+        <div class="capture-cfg__row">
+          <button id="cfg-capture-apply" class="btn btn--brand" type="button">Aplicar</button>
+          <span id="act-replay-info" class="cfg-msg">Sin replay cargado</span>
+        </div>
+        <hr style="border:none;border-top:1px solid var(--line);margin:2px 0" />
+        <div class="fld"><label for="cfg-domains">Dominios permitidos (uno por linea; vacio = todos)</label>
+          <textarea id="cfg-domains" rows="2" spellcheck="false" placeholder="library.redgps.com&#10;app.redgps.com"></textarea></div>
+        <div class="fld"><label for="cfg-prof-name">Perfil — nombre</label><input id="cfg-prof-name" type="text" placeholder="Tu nombre" /></div>
+        <div class="fld"><label for="cfg-prof-email">Perfil — correo (opcional)</label><input id="cfg-prof-email" type="email" placeholder="tu@correo.com" /></div>
+        <div class="fld"><label for="cfg-wh-url">Webhook de telemetria (URL)</label><input id="cfg-wh-url" type="url" placeholder="https://tu-endpoint/telemetria" /></div>
+        <div class="fld"><label for="cfg-wh-token">Webhook — Bearer token (opcional)</label><input id="cfg-wh-token" type="password" autocomplete="off" placeholder="token…" /></div>
+        <div class="fld"><label for="cfg-wh-mode">Envio de telemetria</label>
+          <select id="cfg-wh-mode" class="act" style="width:100%">
+            <option value="manual">Manual</option><option value="chunks">Automatico por lotes</option><option value="onclose">Al cerrar la pestana</option>
+          </select></div>
+        <label class="chk"><input id="cfg-wh-enabled" type="checkbox" /> Habilitar envio de telemetria (solo durante grabacion)</label>
+        <label class="chk"><input id="cfg-autostart" type="checkbox" /> Auto-iniciar grabacion en dominios permitidos</label>
+        <div class="capture-cfg__row">
+          <button id="cfg-settings-save" class="btn btn--brand" type="button">Guardar ajustes</button>
+          <button id="cfg-tele-flush" class="act" type="button">Enviar ahora</button>
+          <span id="cfg-settings-msg" class="cfg-msg"></span>
+        </div>
+      </section>
+
+      <section class="tl-head">
+        <div class="tl-srcbar">
+          <div class="tl-source" role="tablist" aria-label="Fuente del reporte">
+            <button id="src-live" class="is-on" type="button">Temporal</button>
+            <button id="src-imported" type="button" disabled>Importado</button>
+            <button id="src-replay" type="button">Repeticion</button>
+          </div>
+          <span id="tl-srcbadge" class="tl-srcbadge">grabacion en curso</span>
+          <span class="spacer" style="flex:1"></span>
+          <button id="tl-import" class="act" type="button" title="Importar un artefacto de auditoria (.json)">Importar</button>
+          <button id="tl-clear" class="act" type="button" title="Vaciar el reporte temporal">Vaciar</button>
+          <input id="tl-import-file" type="file" accept="application/json,.json" hidden />
+        </div>
+        <div id="tl-ribbon" class="tl-ribbon" title="Linea de tiempo de la sesion"></div>
+        <div id="tl-chips" class="tl-chips"><!-- conteos por tipo, clicables (render JS) --></div>
+        <div class="tl-toolbar">
+          <input id="tl-filter" class="tl-filter" type="text" placeholder="Filtrar por tipo o selector…" />
+          <button id="tl-refresh" class="act" type="button" title="Actualizar">↻</button>
+          <span class="act__sep"></span>
+          <button id="exp-bundle" class="act act--brand" type="button" title="Exportar artefacto completo de auditoria">Exportar</button>
+          <span class="act__sep"></span>
+          <span class="tl-genlabel">prueba:</span>
+          <button id="exp-cy" class="act" type="button" title="Generar prueba Cypress">Cy</button>
+          <button id="exp-pw" class="act" type="button" title="Generar prueba Playwright">PW</button>
+        </div>
+      </section>
+
+      <div id="tl-list" class="tl-list" aria-label="Eventos de la grabacion">
+        <div class="tl-empty">Sin eventos. Pulsa <strong>Grabar</strong> e interactua con la pagina.</div>
+      </div>
+    </div>
+
+    <dialog id="settings" class="settings">
+      <div class="settings__head">
+        <h2>Conexion Open WebUI</h2>
+        <button id="close-settings" class="iconbtn" type="button" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="settings__body">
+        <div class="fld"><label for="cfg-base">Base URL</label><input id="cfg-base" type="url" placeholder="https://assistant.service24gps.com" /></div>
+        <div class="fld"><label for="cfg-model">Modelo</label><input id="cfg-model" type="text" placeholder="charly-pt" /></div>
+        <div class="fld"><label for="cfg-key">API key</label><input id="cfg-key" type="password" placeholder="sk-…" autocomplete="off" /></div>
+        <div class="fld"><label for="cfg-proxy">Proxy URL (opcional, recomendado en produccion)</label><input id="cfg-proxy" type="url" placeholder="https://tu-proxy/seguro" /></div>
+        <div class="settings__row">
+          <button id="cfg-save" class="btn btn--brand" type="button">Guardar</button>
+          <button id="cfg-test" class="btn" type="button">Probar conexion</button>
+        </div>
+        <p id="probe" class="probe"></p>
+      </div>
+    </dialog>
+
+    <dialog id="palette" class="settings">
+      <div class="settings__head">
+        <h2>Personalizar paleta</h2>
+        <button id="close-palette" class="iconbtn" type="button" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="settings__body">
+        <div class="pal-row"><label for="pal-brand">Color de marca</label><input id="pal-brand" type="color" data-var="--brand" /></div>
+        <div class="pal-row"><label for="pal-ink">Fondo</label><input id="pal-ink" type="color" data-var="--ink" /></div>
+        <div class="pal-row"><label for="pal-panel">Paneles</label><input id="pal-panel" type="color" data-var="--panel" /></div>
+        <div class="pal-row"><label for="pal-line">Bordes</label><input id="pal-line" type="color" data-var="--line" /></div>
+        <div class="pal-row"><label for="pal-text">Texto</label><input id="pal-text" type="color" data-var="--text" /></div>
+        <div class="settings__row">
+          <button id="pal-save" class="btn btn--brand" type="button">Guardar</button>
+          <button id="pal-reset" class="btn" type="button">Restaurar</button>
+        </div>
+        <p class="probe">Se guarda en este navegador y se aplica a todo el panel.</p>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>
