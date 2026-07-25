@@ -366,8 +366,23 @@ function toast(msg) {
 
 // --- Arranque ---------------------------------------------------------------
 $("version").textContent = `CharlyAudit v${chrome.runtime.getManifest().version}`;
+async function renderWebhookPending() {
+  const el = $("wh-pending");
+  if (!el) return;
+  const res = await control("getWebhookStatus");
+  const p = res && res.pending;
+  if (!p) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = p.agotado
+    ? `Webhook: envio agotado tras ${p.intentos} intentos`
+    : `Webhook: reintentando (${p.intentos}, prox. ${p.proximoMin}min)`;
+}
 refresh();
 refreshReplay();
+renderWebhookPending();
 pollTimer = setInterval(refresh, 1200);
 // Sincronia popup<->panel<->SW: reacciona al estado compartido para que grabar/
 // detener desde el panel lateral (o el SW) se refleje aqui, y viceversa.
@@ -376,6 +391,7 @@ try {
     if (area !== "local") return;
     if (changes["qa:isRecording"] || changes["qa:timeline"] || changes["qa:meta"]) refresh();
     if (changes["qa:replay"] || changes["qa:replayJob"]) refreshReplay();
+    if (changes["qa:webhookPending"]) renderWebhookPending();
   });
 } catch {
   /* sin storage */

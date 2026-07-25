@@ -27,6 +27,7 @@ const K = {
   replay: "qa:replay", // reporte importado (persiste al cerrar el popup)
   replayJob: "qa:replayJob", // { active, index, options, tabId } para reanudar
   settings: "qa:settings", // dominios permitidos, perfil, webhook, auto-inicio
+  webhookPending: "qa:webhookPending", // estado de reintentos pendientes del webhook
 };
 
 const MAX_EVENTS = 5000;
@@ -150,14 +151,14 @@ async function sendTelemetry(reason) {
     if (okSend) {
       webhookAttempts = 0;
       chrome.alarms.clear("qa-webhook-retry");
-      await chrome.storage.local.set({ "qa:webhookPending": null });
+      await chrome.storage.local.set({ [K.webhookPending]: null });
     } else if (webhookAttempts < WEBHOOK_MAX_RETRY) {
       webhookAttempts++;
       const mins = Math.min(30, Math.pow(2, webhookAttempts)); // 2,4,8,16,30 min
       chrome.alarms.create("qa-webhook-retry", { delayInMinutes: mins });
-      await chrome.storage.local.set({ "qa:webhookPending": { intentos: webhookAttempts, proximoMin: mins, at: Date.now() } });
+      await chrome.storage.local.set({ [K.webhookPending]: { intentos: webhookAttempts, proximoMin: mins, at: Date.now() } });
     } else {
-      await chrome.storage.local.set({ "qa:webhookPending": { intentos: webhookAttempts, agotado: true, at: Date.now() } });
+      await chrome.storage.local.set({ [K.webhookPending]: { intentos: webhookAttempts, agotado: true, at: Date.now() } });
     }
   } catch {
     /* alarms/storage no criticos */
@@ -507,7 +508,13 @@ async function startRecordingBound(tab) {
     entorno: env, // sistema, navegador, ventana, cookies (1.4/1.5)
   };
   await chrome.storage.local.set({ [K.meta]: meta });
-  await setRecording(true);
+  let hostLabel = "esta pestana";
+  try {
+    hostLabel = new URL(env.startUrl || (t && t.url)).hostname;
+  } catch {
+    /* url invalida */
+  }
+  await setRecording(true, t && t.id, hostLabel);
   reportCache.dirty = true;
   recState = { recording: true, tabId: t && t.id };
   recCtx = null; // se reconstruye con el nuevo recordingId/epoch
@@ -521,7 +528,8 @@ async function startRecordingBound(tab) {
 /** Detiene la grabacion; si es por cierre de pestana, vuelca telemetria si aplica. */
 async function stopRecordingBound(reason) {
   const wasRec = await isRecording();
-  await setRecording(false);
+  const prevTabId = recState.tabId;
+  await setRecording(false, prevTabId);
   recState = { recording: false, tabId: null };
   recCtx = null;
   chrome.alarms.clear("qa-resample");
@@ -538,10 +546,16 @@ async function ensureSeenIds() {
   return seenIds;
 }
 
-async function updateBadge(on) {
+async function updateBadge(on, tabId, label) {
   try {
-    await chrome.action.setBadgeText({ text: on ? "REC" : "" });
-    if (on) await chrome.action.setBadgeBackgroundColor({ color: "#FF6B5E" });
+    const opts = tabId != null ? { tabId } : {};
+    await chrome.action.setBadgeText({ text: on ? "REC" : "", ...opts });
+    if (on) {
+      await chrome.action.setBadgeBackgroundColor({ color: "#FF6B5E", ...opts });
+      await chrome.action.setTitle({ title: `CharlyAudit · grabando ${label || "esta pestana"}`, ...opts });
+    } else if (tabId != null) {
+      await chrome.action.setTitle({ title: "CharlyAudit", tabId });
+    }
   } catch {
     /* no critico */
   }
@@ -557,9 +571,9 @@ async function broadcast() {
   }
 }
 
-async function setRecording(value) {
+async function setRecording(value, tabId, label) {
   await chrome.storage.local.set({ [K.recording]: value });
-  await updateBadge(value);
+  await updateBadge(value, tabId, label);
   await broadcast();
 }
 
@@ -736,6 +750,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await sendTelemetry("manual");
           sendResponse({ ok: true });
           break;
+        case "getWebhookStatus": {
+          const pending = (await chrome.storage.local.get(K.webhookPending))[K.webhookPending] || null;
+          sendResponse({ ok: true, pending });
+          break;
+        }
+        case "getKpis": {
+          // KPIs de la sesion activa (fuente "Temporal"): reporte + telemetria de replay.
+          const rep = await buildReport();
+          const job = (await chrome.storage.local.get(K.replayJob))[K.replayJob] || {};
+          sendResponse({ ok: true, kpis: computeKpis(rep, { trace: job.trace || [] }) });
+          break;
+        }
         case "getState": {
           const [rec, config, timeline, meta] = await Promise.all([
             isRecording(),
@@ -910,7 +936,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Restaura el badge tras un reinicio del navegador.
 chrome.runtime.onStartup.addListener(async () => {
   await hydrateRecState();
-  updateBadge(await isRecording());
+  updateBadge(await isRecording(), recState.tabId);
 });
 
 console.info("[CharlyQA] Suite de QA cargada (background).");

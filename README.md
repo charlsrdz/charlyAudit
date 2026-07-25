@@ -717,3 +717,136 @@ replay, y el listener de sincronizacion escucha tambien `qa:replay`/`qa:replayJo
 (asi importar desde el popup tambien habilita el boton del panel, y viceversa).
 Validado con un harness que simula la seleccion de archivo real: el boton pasa de
 deshabilitado a habilitado sin depender del sondeo de 4s.
+
+## Estado de mejoras (actualizado 9)
+
+Resuelto en esta iteracion:
+- **Indicador visible de "grabando en pestana X":** el badge del icono de la
+  extension ahora queda ANCLADO a la pestana grabada (`chrome.action.setBadgeText`
+  con `tabId`), con el dominio en el tooltip (`CharlyAudit · grabando app.ejemplo.com`);
+  otras pestanas no muestran el badge. Ademas, se inyecta un banner discreto
+  directamente en la pagina grabada (Shadow DOM cerrado, no contamina el DOM del
+  host) mientras dura la grabacion, y se retira al detener. Da transparencia real
+  a quien usa el sitio de que esa pestana especifica esta siendo grabada.
+  Validado en navegador: el banner aparece, no contamina el DOM y se retira; el
+  service worker carga sin errores con la nueva firma de `updateBadge`.
+
+Pendientes (por prioridad de ROI):
+1. **Performance:** INP real por interaccion, TBT por navegacion y waterfall de red
+   completo por `requestId`.
+2. **Replay:** screenshot diff (pixel) via `captureVisibleTab`; assertions de negocio
+   inferidas del baseline en los exports.
+3. **Seguridad:** re-lectura de cookies tras `Set-Cookie` por request.
+4. **Ingesta (resto):** gzip del cuerpo (CompressionStream) y modo webhook que envie
+   chunks con idempotencia. (Listo: HMAC + content-hash + chunking + KPIs.)
+5. **UX (resto):** ajustes mas completos (perfil/webhook/dominios); known-issues del
+   baseline en la vista; indicador de `qa:webhookPending`; panel de KPIs.
+
+Backlog (ideas sumadas): muestreo de eventos ruidosos; retencion/auto-purga local;
+consentimiento explicito al grabar (mas alla del indicador visible); shadow DOM/
+iframes en captura+replay; plugin-health (self-diagnostico); a11y como auditoria;
+installId anonimo cross-sesion; suite de pruebas de modulos puros en CI.
+
+## UX (resto) + analisis de accesibilidad de los elementos de accion
+
+### Implementado
+
+- **Panel de KPIs** (pestana Auditoria, boton "KPIs ▾"): resumen de la sesion
+  (eventos, errores, LCP/CLS/INP/TBT, red total/fallida, seguridad por severidad,
+  interacciones, fidelidad de replay) sin recorrer el timeline. Nueva accion de SW
+  `getKpis` (reusa `computeKpis`).
+- **Indicador de `qa:webhookPending`**: pill visible en el panel (junto a la fuente
+  del reporte) y en el popup (pie), mostrando intentos/proximo reintento o "envio
+  agotado". Nueva accion de SW `getWebhookStatus`; sincronizado en tiempo real via
+  `storage.onChanged` en ambas UIs.
+- **Known-issues del baseline en la vista**: cualquier click/input/tecla capturado
+  sobre un elemento SIN nombre accesible (sin `name`/`aria-label`/texto/placeholder)
+  se marca visualmente (⚠, fila resaltada) y explica el problema en el detalle —
+  reutiliza el ancla semantica ya capturada, cero costo adicional de captura.
+- **Ajustes mas completos**: validacion clara del webhook (exige HTTPS/localhost)
+  ANTES de guardar en vez de fallar en silencio despues; mensaje de confirmacion
+  con resumen (n.º de dominios, estado del webhook) tras guardar.
+
+### Bug critico encontrado y corregido durante esta iteracion
+
+`init()` en el panel lateral llamaba a una funcion `wireQA()` que **nunca existio**
+(la logica de la pestana Auditoria vive en una IIFE autoejecutable `setupQaTab`).
+Esto lanzaba una excepcion no capturada que **impedia que se ejecutara todo lo que
+venia despues** en `init()`: la conexion inicial (`refreshConnection`), el registro
+del listener `storage.onChanged` (la sincronizacion popup<->panel), la carga inicial
+del indicador de webhook y el sondeo periodico de 4s. Es decir, la sincronizacion
+entre pestanas implementada en una iteracion anterior nunca llegaba a activarse.
+Se elimino la llamada invalida; validado en navegador real (Playwright, con
+listener de `pageerror`) que la pagina carga sin excepciones y que conexion,
+sincronizacion y sondeo ahora se ejecutan correctamente.
+
+### Analisis de accesibilidad de los elementos de accion (plus final)
+
+**Objetivo:** que el flujo de la extension —tanto visual como por teclado/lector de
+pantalla— sea inequivoco: que se pueda saber en todo momento que accion se va a
+tomar, cual es el estado actual (grabando/no, expandido/no, cargado/no) y que no
+haya callejones sin salida en la navegacion.
+
+**Hallazgos y correcciones aplicadas:**
+1. *Botones toggle sin estado anunciado* — `act-record` (Grabar/Detener) no
+   comunicaba su estado a tecnologia asistiva. Se agrego `aria-pressed`, sincronizado
+   con el estado real en cada refresco.
+2. *Desplegables sin relacion semantica* — `act-cfg` ya tenia `aria-expanded`; se
+   replico el patron en el nuevo `tl-kpis-toggle` (`aria-expanded` + `aria-controls`
+   apuntando al panel que despliega).
+3. *Pestanas de fuente sin rol de pestana* — el selector Temporal/Importado/
+   Repeticion tenia `role="tablist"` en el contenedor pero los botones no eran
+   `role="tab"`/`aria-selected`; se corrigio para que un lector de pantalla anuncie
+   correctamente cual esta activa.
+4. *Etiquetas ambiguas para lector de pantalla* — los botones "Cy"/"PW" (generar
+   prueba) tienen texto visual críptico; se agrego `aria-label` con el nombre
+   completo ("Generar prueba Cypress/Playwright") mientras se conserva el texto
+   corto visualmente (no penaliza el espacio en un panel angosto).
+5. *Foco de teclado invisible* — no habia estilo de foco diferenciado; con
+   `:focus-visible` en todos los elementos de accion, formularios y tabs se hace
+   visible EXACTAMENTE cuando se navega por teclado (sin "iluminar" en cada click de
+   mouse, que resulta molesto visualmente).
+6. *Mensajes de estado sin anuncio* — los mensajes transitorios (`cfg-settings-msg`)
+   no se anunciaban a lectores de pantalla al cambiar; se agrego `role="status"
+   aria-live="polite"` (los `toast` de ambas UIs ya lo tenian correctamente).
+7. *Boton Reproducir sin relacion con su estado textual* — se vinculo `act-play`
+   con `aria-describedby="act-replay-info"` para que un lector de pantalla anuncie
+   por que esta deshabilitado ("Sin replay cargado") al enfocarlo.
+8. *Consistencia visual de alertas* — se reutilizo la misma clase `.tl-row.bad`
+   (ya usada para inconsistencias de replay) para marcar known-issues del baseline
+   en la vista normal: el mismo patron visual siempre significa "requiere atencion",
+   reduciendo la carga cognitiva de aprender iconografia nueva por contexto.
+
+**Validado:** cero errores de pagina, `aria-pressed`/`aria-expanded` reflejan el
+estado real, deteccion de known-issue verificada con precision (marca solo el
+elemento realmente sin nombre accesible), navegacion por Tab alcanza los controles.
+
+**Pendiente de accesibilidad (no critico, para una pasada dedicada):** auditoria de
+contraste de color formal (WCAG AA) sobre la paleta personalizable por el usuario
+(la paleta es configurable, por lo que el contraste depende de la eleccion); orden
+de tabulacion completo documentado (skip-links); soporte de `prefers-reduced-motion`
+para la animacion del banner de "grabando" en la pagina auditada.
+
+## Estado de mejoras (actualizado 10)
+
+Resuelto en esta iteracion: UX (resto) completo — panel de KPIs, indicador de
+webhookPending, known-issues del baseline en la vista, ajustes con validacion clara
+— mas la correccion del bug critico de sincronizacion (`wireQA`) y la pasada de
+accesibilidad de los elementos de accion.
+
+Pendientes (por prioridad de ROI):
+1. **Performance:** INP real por interaccion, TBT por navegacion y waterfall de red
+   completo por `requestId`.
+2. **Replay:** screenshot diff (pixel) via `captureVisibleTab`; assertions de negocio
+   inferidas del baseline en los exports.
+3. **Seguridad:** re-lectura de cookies tras `Set-Cookie` por request.
+4. **Ingesta (resto):** gzip del cuerpo (CompressionStream) y modo webhook que envie
+   chunks con idempotencia. (Listo: HMAC + content-hash + chunking + KPIs.)
+5. **Accesibilidad (resto):** auditoria formal de contraste WCAG AA sobre la paleta
+   personalizable; skip-links; `prefers-reduced-motion` en el banner de grabacion.
+
+Backlog (ideas sumadas): muestreo de eventos ruidosos; retencion/auto-purga local;
+consentimiento explicito al grabar; shadow DOM/iframes en captura+replay;
+plugin-health (self-diagnostico); a11y del SITIO AUDITADO como categoria propia de
+auditoria (mas alla del known-issue puntual ya agregado); installId anonimo
+cross-sesion; suite de pruebas de modulos puros en CI.

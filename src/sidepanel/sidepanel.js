@@ -121,6 +121,7 @@ async function refreshState() {
   if (recBtn) {
     recBtn.textContent = st.isRecording ? "■ Detener" : "● Grabar";
     recBtn.classList.toggle("on", !!st.isRecording);
+    recBtn.setAttribute("aria-pressed", String(!!st.isRecording));
   }
   renderScopes();
 }
@@ -141,6 +142,53 @@ function qaControl(action, extra = {}) {
 }
 const linesToArr = (s) => String(s || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
 const arrToLines = (a) => (Array.isArray(a) ? a.join("\n") : "");
+
+// --- Panel de KPIs (colapsable): resumen de la sesion sin recorrer el timeline.
+let kpisOpen = false;
+function kpiCard(label, value, cls) {
+  return `<div class="tl-kpi${cls ? " tl-kpi--" + cls : ""}"><div class="tl-kpi__v">${value}</div><div class="tl-kpi__l">${label}</div></div>`;
+}
+async function renderKpis() {
+  const box = $("tl-kpis");
+  if (!box || box.hidden) return;
+  const res = await qaControl("getKpis");
+  const k = res && res.ok ? res.kpis : null;
+  if (!k) {
+    box.innerHTML = `<div class="tl-empty">Sin datos aun.</div>`;
+    return;
+  }
+  const p = k.performance || {};
+  const cards = [
+    kpiCard("Eventos", k.eventos),
+    kpiCard("Errores", k.errores, k.errores ? "bad" : "ok"),
+    kpiCard("LCP", p.lcpMs != null ? Math.round(p.lcpMs) + "ms" : "—", p.lcpMs > 2500 ? "warn" : p.lcpMs ? "ok" : ""),
+    kpiCard("CLS", p.cls != null ? p.cls.toFixed ? p.cls.toFixed(2) : p.cls : "—", p.cls > 0.1 ? "warn" : ""),
+    kpiCard("INP", p.inpMs != null ? Math.round(p.inpMs) + "ms" : "—", p.inpMs > 200 ? "warn" : ""),
+    kpiCard("TBT", p.tbtMs != null ? Math.round(p.tbtMs) + "ms" : "—", p.tbtMs > 300 ? "warn" : ""),
+    kpiCard("Red total", k.red.total),
+    kpiCard("Red fallida", k.red.fallidas, k.red.fallidas ? "bad" : "ok"),
+    kpiCard("Seguridad", k.seguridad.total, k.seguridad.porSeveridad.critica || k.seguridad.porSeveridad.alta ? "bad" : k.seguridad.total ? "warn" : "ok"),
+    kpiCard("Interacciones", k.interacciones),
+  ];
+  if (k.replay) cards.push(kpiCard("Fidelidad replay", k.replay.fidelidad + "%", k.replay.fidelidad >= 98 ? "ok" : k.replay.fidelidad >= 90 ? "warn" : "bad"));
+  box.innerHTML = cards.join("");
+}
+
+// --- Indicador de reintentos de webhook pendientes (qa:webhookPending). -----
+async function renderWebhookPending() {
+  const el = $("wh-pending");
+  if (!el) return;
+  const res = await qaControl("getWebhookStatus");
+  const p = res && res.pending;
+  if (!p) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = p.agotado
+    ? `Webhook: envio agotado tras ${p.intentos} intentos`
+    : `Webhook: reintentando (${p.intentos}, prox. ${p.proximoMin}min)`;
+}
 
 async function refreshReplayState() {
   const res = await qaControl("getReplay");
@@ -206,6 +254,19 @@ function wireActions() {
     }
     $("act-cfg").setAttribute("aria-expanded", String(open));
   });
+  // Panel de KPIs (desplegable): resumen de la sesion sin recorrer el timeline.
+  $("tl-kpis-toggle").addEventListener("click", () => {
+    const panel = $("tl-kpis");
+    const open = panel.hasAttribute("hidden");
+    if (open) {
+      panel.removeAttribute("hidden");
+      renderKpis();
+    } else {
+      panel.setAttribute("hidden", "");
+    }
+    kpisOpen = open;
+    $("tl-kpis-toggle").setAttribute("aria-expanded", String(open));
+  });
   $("cfg-capture-apply").addEventListener("click", async () => {
     const config = {
       maskSelectors: linesToArr($("cfg-mask").value),
@@ -233,6 +294,14 @@ function wireActions() {
       },
       autoStart: $("cfg-autostart").checked,
     };
+    // Validacion clara ANTES de guardar: el envio exige HTTPS (o localhost) y se
+    // rechaza en silencio si no — avisar aqui evita confusion sobre por que no
+    // llega la telemetria.
+    if (settings.webhook.enabled && settings.webhook.url && !/^https:\/\//i.test(settings.webhook.url) && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(settings.webhook.url)) {
+      $("cfg-settings-msg").textContent = "El webhook debe usar HTTPS (o localhost) para poder enviarse.";
+      $("cfg-wh-url").focus();
+      return;
+    }
     // Si hay webhook, pide permiso de host para poder enviarlo (gesto de usuario).
     if (settings.webhook.enabled && settings.webhook.url) {
       try {
@@ -242,7 +311,9 @@ function wireActions() {
       }
     }
     const res = await qaControl("setSettings", { settings });
-    $("cfg-settings-msg").textContent = res && res.ok ? "Ajustes guardados." : "Error al guardar.";
+    $("cfg-settings-msg").textContent = res && res.ok
+      ? `Ajustes guardados · ${settings.allowedDomains.length || "todos los"} dominio(s) · webhook ${settings.webhook.enabled ? "activo" : "inactivo"}.`
+      : "Error al guardar.";
     if (res && res.ok) state.settings = res.settings;
   });
   // Envio manual de la telemetria acumulada de la grabacion en curso.
@@ -591,7 +662,12 @@ async function init() {
   updateCacheSize();
   await refreshState();
   wireActions();
-  wireQA();
+  // Nota: la wiring de la pestana Auditoria (timeline, import/export, replay,
+  // paleta) vive en la IIFE `setupQaTab` mas abajo, que se autoejecuta al cargar
+  // el script. No existe una funcion `wireQA` — llamarla aqui lanzaba una
+  // excepcion no capturada que impedia que el resto de esta funcion (conexion,
+  // sincronizacion entre pestanas, indicador de webhook, sondeo periodico) se
+  // ejecutara jamas.
   refreshReplayState();
   refreshConnection();
   // Sincronia popup<->panel<->SW: al grabar/detener desde cualquier UI, el estado
@@ -604,15 +680,20 @@ async function init() {
         refreshReplayState();
       }
       if (changes["qa:replay"] || changes["qa:replayJob"]) refreshReplayState();
+      if (changes["qa:webhookPending"]) renderWebhookPending();
+      if (changes["qa:timeline"] && kpisOpen) renderKpis();
     });
   } catch {
     /* sin storage */
   }
+  renderWebhookPending();
   // Refresco ligero de conteos/grabacion/replay mientras el panel este visible.
   setInterval(() => {
     if (document.visibilityState === "visible") {
       refreshState();
       refreshReplayState();
+      renderWebhookPending();
+      if (kpisOpen) renderKpis();
     }
   }, 4000);
 }
@@ -687,6 +768,15 @@ init();
       add("codigo", `<pre class="tl-code">${d.snippet.map((s) => `<span class="${s.hit ? "hit" : ""}">${esc((s.hit ? "\u203a " : "  ") + s.n + ": " + s.code)}</span>`).join("\n")}</pre>`);
     if (d.attributes) add("attrs", `<pre class="tl-code">${esc(JSON.stringify(d.attributes))}</pre>`);
     if (d.css) add("css", `<pre class="tl-code">${esc(JSON.stringify(d.css))}</pre>`);
+    // Known-issue del baseline: la interaccion se capturo sobre un elemento SIN
+    // nombre accesible (ni name/aria-label/texto/placeholder) — dificulta el
+    // replay resiliente y es en si un hallazgo de accesibilidad del sitio auditado.
+    const a = d.anchor;
+    if (a && ["click", "dblclick", "middleclick", "input", "key"].includes(e.type)) {
+      const sinNombre = !a.name && !a.aria && !a.text && !a.ph;
+      if (sinNombre)
+        rows.push(`<dt>known-issue</dt><dd class="tl-issue">⚠ elemento &lt;${esc(a.tag || "?")}&gt; sin nombre accesible (agrega aria-label o texto visible)</dd>`);
+    }
     return `<dl class="tl-kv">${rows.join("")}</dl>`;
   }
 
@@ -753,9 +843,11 @@ init();
     list.innerHTML = rows
       .map((e) => {
         const m = meta(e.type);
-        return `<div class="tl-row"><div class="tl-row__head">
+        const a = e.data && e.data.anchor;
+        const issue = a && ["click", "dblclick", "middleclick", "input", "key"].includes(e.type) && !a.name && !a.aria && !a.text && !a.ph;
+        return `<div class="tl-row${issue ? " bad" : ""}"><div class="tl-row__head">
           <span class="tl-badge" style="background:${m.c}">${esc(m.l)}</span>
-          <span class="tl-desc">${esc(tlDesc(e))}</span>
+          <span class="tl-desc">${issue ? "⚠ " : ""}${esc(tlDesc(e))}</span>
           <span class="tl-delay">+${e.delay || 0}ms</span>
         </div><div class="tl-detail">${tlDetail(e)}</div></div>`;
       })

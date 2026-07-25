@@ -557,6 +557,33 @@
     sendToSW(meta);
   }
 
+  // Indicador visible en la propia pagina mientras se graba (transparencia para
+  // quien usa el sitio): banner discreto en Shadow DOM, no interfiere con el CSS
+  // ni el layout del host. Se muestra solo mientras dura la grabacion.
+  let bannerHost = null;
+  function showRecordingBanner() {
+    if (bannerHost) return;
+    try {
+      bannerHost = document.createElement("div");
+      bannerHost.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:0;bottom:0;";
+      const root = bannerHost.attachShadow({ mode: "closed" });
+      root.innerHTML = `<style>
+        .b{font:600 11px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;background:#111827;color:#fff;
+           padding:6px 10px;border-top-right-radius:8px;display:flex;align-items:center;gap:6px;
+           box-shadow:0 2px 10px rgba(0,0,0,.35);opacity:.92;}
+        .d{width:7px;height:7px;border-radius:50%;background:#ff6b5e;animation:p 1.4s infinite}
+        @keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
+      </style><div class="b"><span class="d"></span>CharlyAudit · grabando esta pestana</div>`;
+      (document.body || document.documentElement).appendChild(bannerHost);
+    } catch {
+      /* no critico */
+    }
+  }
+  function hideRecordingBanner() {
+    if (bannerHost && bannerHost.isConnected) bannerHost.remove();
+    bannerHost = null;
+  }
+
   function applyState(recording, config) {
     const wasRecording = local.recording;
     local.recording = !!recording;
@@ -564,6 +591,8 @@
     pushConfigToPage();
     postToInjected("set-recording", { recording: local.recording });
     if (local.recording && !wasRecording) startCapture();
+    if (local.recording) showRecordingBanner();
+    else hideRecordingBanner();
   }
 
   // El SW empuja cambios de estado/config (al pulsar grabar en el popup).

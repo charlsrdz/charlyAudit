@@ -781,3 +781,25 @@ dialog.settings::backdrop {
 .act--brand { background: var(--brand); color: #fff; border-color: var(--brand); }
 .act--brand:hover { filter: brightness(1.08); }
 .tl-genlabel { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+
+/* Panel de KPIs (colapsable) — resumen de la sesion sin recorrer el timeline. */
+.tl-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; padding: 8px 0; }
+.tl-kpi { background: var(--panel-2, rgba(255,255,255,.03)); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.tl-kpi__v { font: 700 15px/1.1 var(--mono); }
+.tl-kpi__l { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
+.tl-kpi--warn .tl-kpi__v { color: #f5b544; }
+.tl-kpi--bad .tl-kpi__v { color: #ef4444; }
+.tl-kpi--ok .tl-kpi__v { color: #34d399; }
+
+/* Indicador de reintentos de webhook pendientes. */
+.tl-srcbadge--warn { color: #f5b544; border-color: rgba(245,181,68,.5); }
+
+/* Pista de known-issue (baseline) inline en el detalle de un evento. */
+.tl-issue { color: #f5b544; font-size: 10px; margin-top: 2px; }
+
+/* Accesibilidad: foco de teclado siempre visible en elementos de accion. */
+.act:focus-visible, .btn:focus-visible, .iconbtn:focus-visible, .tab:focus-visible,
+.chk:focus-within, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--brand, #6366f1);
+  outline-offset: 1px;
+}
