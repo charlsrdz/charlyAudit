@@ -850,3 +850,12 @@ consentimiento explicito al grabar; shadow DOM/iframes en captura+replay;
 plugin-health (self-diagnostico); a11y del SITIO AUDITADO como categoria propia de
 auditoria (mas alla del known-issue puntual ya agregado); installId anonimo
 cross-sesion; suite de pruebas de modulos puros en CI.
+
+## Version
+
+**2.4.0** — sube desde 2.3.0. Incluye: fix critico de sincronizacion (`wireQA`
+inexistente bloqueaba `refreshConnection`/`storage.onChanged`/sondeo periodico en
+el panel), panel de KPIs, indicador de `qa:webhookPending`, known-issues del
+baseline en la vista, validacion de ajustes, y pasada de accesibilidad de los
+elementos de accion (aria-pressed/expanded/selected/label/describedby, foco de
+teclado visible, mensajes de estado anunciados).
