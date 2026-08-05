@@ -37,6 +37,7 @@ export const EVENT_TYPES = [
   "security",
   "response-headers",
   "worker",
+  "interaction-timing",
 ];
 
 /**
@@ -87,6 +88,9 @@ export function fingerprintEvent(e) {
     case "web-vitals":
       sig = "vitals";
       break;
+    case "interaction-timing":
+      sig = `inp|${d.tipo || "?"}|${d.inpMs > 200 ? "lento" : d.inpMs > 100 ? "medio" : "rapido"}`;
+      break;
     case "worker":
       sig = `worker|${d.clase || ""}`;
       break;
@@ -104,6 +108,43 @@ export function fingerprintEvent(e) {
       sig = `${(e && e.type) || "?"}`;
   }
   return "fp-" + fnv1a(sig);
+}
+
+const INTERACTIVE_TYPES = new Set(["click", "dblclick", "middleclick", "input", "key"]);
+
+/**
+ * INP real por interaccion (no aproximado): correlaciona cada evento
+ * "interaction-timing" (emitido por el PerformanceObserver de tipo "event" en
+ * injected.js, con su reloj epoch propio) con el evento de interaccion
+ * (click/input/tecla) que realmente lo origino, usando el MISMO reloj epoch
+ * (Event.timeStamp y performance.timeOrigin comparten base) — no una
+ * aproximacion por cercania arbitraria, sino la correlacion por el reloj real
+ * del navegador. Adjunta `data.inpMs`/`data.interactionId` al evento original y
+ * deja tambien la entrada `interaction-timing` cruda para trazabilidad.
+ * @param {Array} timeline ya ordenado y con `ts` presente.
+ */
+function attachInteractionLatency(timeline) {
+  const timed = timeline.filter((e) => e.type === "interaction-timing");
+  if (!timed.length) return timeline;
+  const candidates = timeline.filter((e) => INTERACTIVE_TYPES.has(e.type));
+  for (const t of timed) {
+    const tsEvent = t.data && t.data.tsEvent;
+    if (tsEvent == null) continue;
+    let best = null;
+    let bestDiff = Infinity;
+    for (const c of candidates) {
+      if (c.data && c.data.inpMs != null) continue; // ya correlacionado (no reasignar)
+      const diff = Math.abs((c.ts || 0) - tsEvent);
+      if (diff < bestDiff && diff <= 1000) {
+        best = c;
+        bestDiff = diff;
+      }
+    }
+    if (best) {
+      best.data = { ...best.data, inpMs: t.data.inpMs, interactionId: t.data.interactionId };
+    }
+  }
+  return timeline;
 }
 
 /**
@@ -146,6 +187,7 @@ export function assembleReport(rawTimeline, meta = {}) {
       data: entry.data,
     };
   });
+  attachInteractionLatency(timeline); // INP real por interaccion (correlacion pura)
 
   const startedAt = sorted.length ? sorted[0].ts : null;
   const endedAt = sorted.length ? sorted[sorted.length - 1].ts : null;

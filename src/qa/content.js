@@ -71,6 +71,13 @@
         out.redirects = nav.redirectCount || 0;
         out.ttfbMs = Math.round(nav.responseStart || 0);
         out.domListoMs = Math.round(nav.domContentLoadedEventEnd || 0);
+        // Carga total del documento (hasta que termina de procesar todo el HTML).
+        out.cargaMs = Math.round(nav.loadEventEnd || 0);
+        // TTI aproximado via domInteractive (cuando el parser termina; es conservador
+        // pero disponible sin libreria adicional).
+        out.ttiApproxMs = Math.round(nav.domInteractive || 0);
+        // Tamano del documento (informacion de red del propio HTML).
+        if (nav.transferSize) out.docKb = Math.round(nav.transferSize / 1024);
       }
     } catch {
       /* sin Navigation Timing */

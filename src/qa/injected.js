@@ -377,36 +377,87 @@
   // --- Herramienta 3: interceptor de red (fetch + XHR) -----------------------
   // Nunca se capturan cabeceras (Authorization, Cookie...) ni cuerpos: solo
   // metodo, URL redactada, status y tiempo de respuesta.
+  /**
+   * Waterfall completo de una peticion: busca la entrada de Resource Timing que
+   * corresponde (misma URL, startTime mas cercano) para anexar tamano/fases/
+   * protocolo. Puede no encontrar nada (ej. peticion fallida sin entrada) — se
+   * degrada con normalidad, sin bloquear la emision del evento base.
+   */
+  function waterfallFor(url, startPerfMs) {
+    try {
+      const entries = performance.getEntriesByName(url, "resource");
+      let best = null, bestDiff = Infinity;
+      for (const e of entries) {
+        const diff = Math.abs(e.startTime - startPerfMs);
+        if (diff < bestDiff && diff < 3000) {
+          best = e;
+          bestDiff = diff;
+        }
+      }
+      if (!best) return null;
+      return {
+        transferSize: best.transferSize || 0,
+        kb: Math.round((best.transferSize || 0) / 1024),
+        protocolo: best.nextHopProtocol || null,
+        cache: best.transferSize === 0 && best.decodedBodySize > 0,
+        fases: {
+          dnsMs: Math.round(Math.max(0, best.domainLookupEnd - best.domainLookupStart)),
+          conexionMs: Math.round(Math.max(0, best.connectEnd - best.connectStart)),
+          ttfbMs: Math.round(Math.max(0, (best.responseStart || 0) - (best.requestStart || best.startTime))),
+          descargaMs: Math.round(Math.max(0, (best.responseEnd || 0) - (best.responseStart || 0))),
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+  /** Emite el evento "network" completo (waterfall) tras un breve respiro para
+   *  que el navegador termine de publicar la entrada de Resource Timing. */
+  function emitNetworkFull(base, startPerfMs) {
+    setTimeout(() => {
+      const wf = waterfallFor(base.url, startPerfMs) || {};
+      emit("network", { ...base, ...wf, inicioMs: Math.round(startPerfMs), finMs: Math.round(startPerfMs + (base.durationMs || 0)) });
+    }, 60);
+  }
   const originalFetch = window.fetch;
   if (typeof originalFetch === "function") {
     window.fetch = function (input, init) {
       const start = performance.now();
+      const requestId = "req-" + netSeq++;
       const method = (init && init.method) || (input && input.method) || "GET";
       const url = typeof input === "string" ? input : input && input.url ? input.url : String(input);
       return originalFetch.apply(this, arguments).then(
         (response) => {
-          emit("network", {
-            type: "fetch",
-            method: method.toUpperCase(),
-            url: redactUrl(url),
-            status: response.status,
-            ok: response.ok,
-            durationMs: Math.round(performance.now() - start),
-          });
+          emitNetworkFull(
+            {
+              requestId,
+              type: "fetch",
+              method: method.toUpperCase(),
+              url: redactUrl(url),
+              status: response.status,
+              ok: response.ok,
+              durationMs: Math.round(performance.now() - start),
+            },
+            start
+          );
           securityScanUrl(url, "red");
           return response;
         },
         (err) => {
-          emit("network", {
-            type: "fetch",
-            method: method.toUpperCase(),
-            url: redactUrl(url),
-            status: 0,
-            ok: false,
-            error: err?.message || String(err),
-            durationMs: Math.round(performance.now() - start),
-            ...actionContext(),
-          });
+          emitNetworkFull(
+            {
+              requestId,
+              type: "fetch",
+              method: method.toUpperCase(),
+              url: redactUrl(url),
+              status: 0,
+              ok: false,
+              error: err?.message || String(err),
+              durationMs: Math.round(performance.now() - start),
+              ...actionContext(),
+            },
+            start
+          );
           throw err;
         }
       );
@@ -425,17 +476,22 @@
       const meta = this.__charly;
       if (meta) {
         const start = performance.now();
+        const requestId = "req-" + netSeq++;
         this.addEventListener("loadend", () => {
           const ok = this.status >= 200 && this.status < 400;
-          emit("network", {
-            type: "xhr",
-            method: meta.method,
-            url: redactUrl(meta.url),
-            status: this.status,
-            ok,
-            durationMs: Math.round(performance.now() - start),
-            ...(ok ? {} : actionContext()),
-          });
+          emitNetworkFull(
+            {
+              requestId,
+              type: "xhr",
+              method: meta.method,
+              url: redactUrl(meta.url),
+              status: this.status,
+              ok,
+              durationMs: Math.round(performance.now() - start),
+              ...(ok ? {} : actionContext()),
+            },
+            start
+          );
           securityScanUrl(meta.url, "red");
         });
       }
@@ -446,7 +502,10 @@
   // --- Herramienta 5: ruteo en SPA -------------------------------------------
   function emitRoute(method, from, to) {
     // Cambio de ruta sin recarga = navegacion SPA (pushState/replaceState/popstate).
-    emit("route", { method, from, to, tipo: "spa", referrer: from || document.referrer || null });
+    // Se adjunta el TBT/long tasks acumulados en el segmento que TERMINA aqui —
+    // TBT real por navegacion, no solo el acumulado total de la sesion.
+    const seg = perf.started ? flushTbtSegment() : { tbtSegmentMs: 0, longTasksSegment: 0 };
+    emit("route", { method, from, to, tipo: "spa", referrer: from || document.referrer || null, ...seg });
     securityScanPage();
     snapshotGlobals("route"); // estado en cada cambio de pagina (Herramienta 4)
   }
@@ -573,7 +632,13 @@
   // === Performance: Web Vitals + Long Tasks + recursos (tarea 2) ==============
   // Presupuesto de rendimiento por sesion. Se emite un snapshot "web-vitals"
   // periodico y uno final al ocultar la pestana. No captura contenido, solo metricas.
-  const perf = { started: false, lcp: 0, cls: 0, inp: 0, tbt: 0, longTasks: 0, observers: [] };
+  // perf.tbt / perf.longTasks = acumulado de SESION (para el web-vitals global).
+  // perf.tbtSegment / perf.longTasksSegment = acumulado desde la ULTIMA navegacion
+  // (se adjunta al evento de ruta/navegacion saliente y se reinicia) — TBT real
+  // por navegacion, no solo el total de la sesion.
+  const perf = { started: false, lcp: 0, cls: 0, inp: 0, tbt: 0, longTasks: 0, tbtSegment: 0, longTasksSegment: 0, observers: [] };
+  let resSeq = 0; // requestId de recursos pasivos (img/script/css/...)
+  let netSeq = 0; // requestId de peticiones activas (fetch/xhr)
   function obs(type, cb, extra) {
     try {
       const o = new PerformanceObserver((list) => cb(list.getEntries()));
@@ -592,7 +657,17 @@
       inpMs: Math.round(perf.inp),
       tbtMs: Math.round(perf.tbt),
       longTasks: perf.longTasks,
+      tbtSegmentMs: Math.round(perf.tbtSegment), // TBT de la navegacion/ruta actual
+      longTasksSegment: perf.longTasksSegment,
     });
+  }
+  /** Cierra el segmento de TBT actual (llamar justo antes de una navegacion/ruta
+   *  nueva) y devuelve lo acumulado desde la navegacion anterior. Reinicia. */
+  function flushTbtSegment() {
+    const out = { tbtSegmentMs: Math.round(perf.tbtSegment), longTasksSegment: perf.longTasksSegment };
+    perf.tbtSegment = 0;
+    perf.longTasksSegment = 0;
+    return out;
   }
   // Deteccion de Workers / Service Workers. Como la grabacion puede empezar con
   // la pagina ya cargada, primero enumera los EXISTENTES y luego intercepta los
@@ -672,28 +747,78 @@
       for (const e of es) if (!e.hadRecentInput) perf.cls += e.value;
     });
     obs("event", (es) => {
-      for (const e of es) perf.inp = Math.max(perf.inp, e.duration);
+      for (const e of es) {
+        perf.inp = Math.max(perf.inp, e.duration); // agregado de sesion (Web Vitals)
+        // INP REAL POR INTERACCION: cada entrada resuelta se emite con su propio
+        // reloj epoch (performance.timeOrigin + startTime), que es EL MISMO reloj
+        // que usa content.js (Date.now()) para el evento nativo que disparo esta
+        // interaccion (Event.timeStamp esta en la misma base). Esto permite
+        // correlacionar, en report-engine.js, esta latencia con el click/input/
+        // tecla EXACTOS que la originaron — no una aproximacion ni un maximo
+        // global, sino la medicion real de ESA interaccion especifica.
+        // Dedup: si el navegador reporta multiples entradas con el mismo
+        // interactionId (pointerdown + pointerup + click), solo emitimos una
+        // (la de mayor duracion) para no duplicar la correlacion.
+        const iid = e.interactionId;
+        if (iid != null) {
+          const prev = perf._inpSeen && perf._inpSeen.get(iid);
+          if (prev && prev >= e.duration) continue;
+          if (!perf._inpSeen) perf._inpSeen = new Map();
+          perf._inpSeen.set(iid, e.duration);
+          if (perf._inpSeen.size > 200) perf._inpSeen.delete(perf._inpSeen.keys().next().value);
+        }
+        emit("interaction-timing", {
+          tipo: e.name, // 'click' | 'pointerdown' | 'keydown' | ...
+          inpMs: Math.round(e.duration),
+          tsEvent: Math.round(performance.timeOrigin + e.startTime),
+          interactionId: iid != null ? iid : null,
+        });
+      }
     }, { durationThreshold: 40 });
     obs("longtask", (es) => {
       for (const e of es) {
         perf.longTasks++;
-        perf.tbt += Math.max(0, e.duration - 50); // Total Blocking Time
+        perf.longTasksSegment++;
+        const blocking = Math.max(0, e.duration - 50); // Total Blocking Time
+        perf.tbt += blocking;
+        perf.tbtSegment += blocking;
       }
     });
-    // Waterfall de recursos: tamanos de transferencia (sin cuerpos).
+    // Waterfall de red COMPLETO por requestId: todo recurso pasivo del navegador
+    // (no fetch/xhr, que ya se cubren abajo con su propio waterfall), sin filtrar
+    // por tamano/duracion — inicio, fin, tamano y fases para cada uno.
+    // Throttle de recursos de baja señal (imagenes/fonts/css ya cargados): se
+    // emiten siempre pero se compactan para no inflar el timeline con cientos de
+    // entradas de recursos de terceros que no aportan datos de auditoria.
+    const _resSeen = new Set();
     obs("resource", (es) => {
       if (!state.recording) return;
       for (const e of es) {
-        if (e.transferSize > 120000 || e.duration > 800) {
-          emit("resource-timing", {
-            url: redactUrl(e.name),
-            tipo: e.initiatorType,
-            ms: Math.round(e.duration),
-            kb: Math.round((e.transferSize || 0) / 1024),
-            cache: e.transferSize === 0 && e.decodedBodySize > 0,
-          });
-        }
         securityScanUrl(e.name, "recurso"); // mixed content en subrecursos
+        if (e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest") continue; // ya cubiertos
+        // Dedup por URL+inicio: buffered:true puede reportar el mismo recurso
+        // varias veces si startPerf se llama despues de la carga inicial de la pagina.
+        const key = `${e.name}|${Math.round(e.startTime)}`;
+        if (_resSeen.has(key)) continue;
+        _resSeen.add(key);
+        emit("resource-timing", {
+          requestId: "res-" + resSeq++,
+          url: redactUrl(e.name),
+          tipo: e.initiatorType,
+          inicioMs: Math.round(e.startTime),
+          finMs: Math.round(e.responseEnd || e.startTime + e.duration),
+          ms: Math.round(e.duration),
+          kb: Math.round((e.transferSize || 0) / 1024),
+          transferSize: e.transferSize || 0,
+          protocolo: e.nextHopProtocol || null,
+          cache: e.transferSize === 0 && e.decodedBodySize > 0,
+          fases: {
+            dnsMs: Math.round(Math.max(0, e.domainLookupEnd - e.domainLookupStart)),
+            conexionMs: Math.round(Math.max(0, e.connectEnd - e.connectStart)),
+            ttfbMs: Math.round(Math.max(0, (e.responseStart || 0) - (e.requestStart || e.startTime))),
+            descargaMs: Math.round(Math.max(0, (e.responseEnd || 0) - (e.responseStart || 0))),
+          },
+        });
       }
     });
     // Snapshot periodico y final.
