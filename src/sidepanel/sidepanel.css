@@ -803,3 +803,11 @@ dialog.settings::backdrop {
   outline: 2px solid var(--brand, #6366f1);
   outline-offset: 1px;
 }
+
+/* Parametros del modelo (details/summary collapsable) */
+.fld-group { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+.fld-group summary { cursor: pointer; font-size: 11px; color: var(--muted); user-select: none; padding: 2px 0; }
+.fld-group summary:hover { color: var(--text); }
+.fld-group .fld { margin-top: 8px; }
+#cfg-temp { width: 100%; accent-color: var(--brand); }
+#cfg-temp-val { font-size: 11px; color: var(--muted); font-family: var(--mono); }

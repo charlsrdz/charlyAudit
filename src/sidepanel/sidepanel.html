@@ -139,19 +139,35 @@
 
     <dialog id="settings" class="settings">
       <div class="settings__head">
-        <h2>Conexion Open WebUI</h2>
+        <h2>Configuracion del Asistente IA</h2>
         <button id="close-settings" class="iconbtn" type="button" aria-label="Cerrar">✕</button>
       </div>
       <div class="settings__body">
-        <div class="fld"><label for="cfg-base">Base URL</label><input id="cfg-base" type="url" placeholder="https://assistant.service24gps.com" /></div>
+        <div class="fld">
+          <label for="cfg-provider">Proveedor</label>
+          <select id="cfg-provider">
+            <option value="openwebui">Open WebUI (propio)</option>
+            <option value="openai">OpenAI / ChatGPT</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="claude">Anthropic Claude</option>
+            <option value="custom">Personalizado (OpenAI-compatible)</option>
+          </select>
+        </div>
+        <div class="fld" id="fld-base"><label for="cfg-base">Base URL</label><input id="cfg-base" type="url" placeholder="https://assistant.service24gps.com" /></div>
         <div class="fld"><label for="cfg-model">Modelo</label><input id="cfg-model" type="text" placeholder="charly-pt" /></div>
-        <div class="fld"><label for="cfg-key">API key</label><input id="cfg-key" type="password" placeholder="sk-…" autocomplete="off" /></div>
-        <div class="fld"><label for="cfg-proxy">Proxy URL (opcional, recomendado en produccion)</label><input id="cfg-proxy" type="url" placeholder="https://tu-proxy/seguro" /></div>
+        <div class="fld"><label for="cfg-key">API Key</label><input id="cfg-key" type="password" placeholder="sk-…" autocomplete="off" /></div>
+        <div class="fld" id="fld-proxy"><label for="cfg-proxy">Proxy URL <small>(opcional, recomendado en produccion)</small></label><input id="cfg-proxy" type="url" placeholder="https://tu-proxy/seguro" /></div>
+        <details class="fld-group" id="cfg-params">
+          <summary>Parametros del modelo</summary>
+          <div class="fld"><label for="cfg-temp">Temperatura <small>(0 = deterministico, 1 = creativo)</small></label><input id="cfg-temp" type="range" min="0" max="1" step="0.05" value="0.7" /><span id="cfg-temp-val">0.7</span></div>
+          <div class="fld"><label for="cfg-tokens">Tokens maximos en la respuesta</label><input id="cfg-tokens" type="number" min="256" max="8192" step="256" value="1024" /></div>
+          <div class="fld"><label for="cfg-turns">Turnos de historial a enviar <small>(pares usuario/asistente)</small></label><input id="cfg-turns" type="number" min="1" max="20" step="1" value="6" /></div>
+        </details>
         <div class="settings__row">
           <button id="cfg-save" class="btn btn--brand" type="button">Guardar</button>
           <button id="cfg-test" class="btn" type="button">Probar conexion</button>
         </div>
-        <p id="probe" class="probe"></p>
+        <p id="probe" class="probe" role="status" aria-live="polite"></p>
       </div>
     </dialog>
 

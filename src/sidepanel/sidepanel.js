@@ -1,5 +1,5 @@
 /**
- * sidepanel.js — Controlador del Asistente IA (CharlyPlugin)
+ * sidepanel.js — Controlador del Asistente IA (CharlyAudit)
  * =========================================================
  * Orquesta la UI del panel: configuracion, contexto de QA (solo lectura),
  * flujo bloqueante de solicitud->respuesta, cache en localStorage y ajustes.
@@ -13,22 +13,24 @@
  *     propio service worker (acciones de SOLO lectura) y con Open WebUI.
  *   - La salida del modelo se renderiza con Markdown saneado (nunca se ejecuta).
  */
-import { OpenWebUIClient } from "./lib/openwebui-client.js";
+import { OpenWebUIClient, PROVIDERS } from "./lib/openwebui-client.js";
 import { renderMarkdown, Markdown } from "./lib/markdown.js";
 import { ContextBridge, SCOPES } from "./lib/context-bridge.js";
 import { ChatCache } from "./lib/chat-cache.js";
 
 const AI_CONFIG_KEY = "charlyplugin:ai:config";
 const DEFAULT_AI = {
+  provider: "openwebui",
   baseUrl: "https://assistant.service24gps.com",
   model: "charly-pt",
   apiKey: "sk-3e17ab34903e4e1fbe68c683fabbb67c",
   proxyUrl: "",
+  temperature: 0.7,
+  maxTokens: 1024,
+  maxHistoryTurns: 6,
 };
 const MIN_INTERVAL = 1500; // ms minimo entre envios (anti-saturacion)
-const MAX_HISTORY_TURNS = 6; // pares usuario/asistente reenviados (un solo turno)
 const CONTEXT_BUDGET = 12000; // chars de contexto (~3k tokens) por peticion
-const HISTORY_BUDGET = 2500; // chars de historial reenviado por peticion
 
 const $ = (id) => document.getElementById(id);
 const bridge = new ContextBridge();
@@ -70,7 +72,10 @@ async function refreshConnection() {
   el.className = "bar__status";
   const ok = await state.client.available();
   el.className = "bar__status " + (ok ? "ok" : "down");
-  txt.textContent = ok ? "Conectado · " + state.config.model : "Sin conexion";
+  const prov = PROVIDERS[state.config.provider] || { label: state.config.provider || "IA" };
+  txt.textContent = ok
+    ? `${prov.label} · ${state.config.model}`
+    : `Sin conexion · ${prov.label}`;
 }
 
 // --- Contexto: chips de ambito ---------------------------------------------
@@ -447,17 +452,20 @@ async function send() {
   try {
     // Contexto presupuestado y cacheado (no se reconstruye si no cambio).
     const build = usedScopes.length ? await getContext(usedScopes) : null;
-    const sys = build ? bridge.systemPrompt(build) : bridge.systemPrompt({ snapshot: null, digest: "", meta: {} });
+    const sysContent = build
+      ? bridge.systemPrompt(build)
+      : bridge.systemPrompt({ snapshot: null, digest: "", meta: {} });
 
-    // Modelo de un solo turno: instrucciones + historial reciente (acotado) + consulta.
-    const recent = state.history.slice(-MAX_HISTORY_TURNS * 2);
-    let transcript = recent.map((m) => (m.role === "user" ? "Usuario" : "Charly") + ": " + m.content).join("\n");
-    if (transcript.length > HISTORY_BUDGET) transcript = "\u2026" + transcript.slice(-HISTORY_BUDGET); // prioriza lo reciente
-    const content =
-      sys +
-      (transcript ? "\n\n[Historial reciente]:\n" + transcript : "") +
-      "\n\n[Consulta del usuario] (responde solo a esto, sin reproducir el contexto):\n" +
-      text;
+    // CONVERSACION MULTI-TURNO: el historial viaja como mensajes reales con roles,
+    // no como texto incrustado en el ultimo user message. El modelo puede recordar
+    // lo dicho en el hilo y mantener coherencia entre turnos.
+    // Estructura: [system, ...historial(user/assistant), user_actual]
+    const recentPairs = state.history.slice(-((state.config.maxHistoryTurns || 6) * 2));
+    const messages = [
+      { role: "system", content: sysContent },
+      ...recentPairs.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: text },
+    ];
 
     // Burbuja de la IA que se va rellenando con el streaming.
     showTyping(false);
@@ -474,15 +482,14 @@ async function send() {
 
     let answer = "";
     try {
-      answer = await state.client.chatStream([{ role: "user", content }], state.abort.signal, (_d, full) => {
+      answer = await state.client.chatStream(messages, state.abort.signal, (_d, full) => {
         if (mySeq !== state.seq) return;
         acc = full;
         paint(full, false);
       });
     } catch (streamErr) {
-      // Fallback a no-stream si el streaming no esta disponible.
       if (state.abort && state.abort.signal.aborted) throw streamErr;
-      answer = await state.client.chat([{ role: "user", content }], state.abort.signal);
+      answer = await state.client.chat(messages, state.abort.signal);
     }
     if (mySeq !== state.seq) return; // respuesta obsoleta: descartar
 
@@ -563,28 +570,43 @@ function toast(msg) {
 
 // --- Ajustes ----------------------------------------------------------------
 function openSettings() {
-  $("cfg-base").value = state.config.baseUrl;
-  $("cfg-model").value = state.config.model;
-  $("cfg-key").value = state.config.apiKey;
-  $("cfg-proxy").value = state.config.proxyUrl;
+  const cfg = state.config;
+  const prov = cfg.provider || "openwebui";
+  $("cfg-provider").value = prov;
+  $("cfg-base").value = cfg.baseUrl || "";
+  $("cfg-model").value = cfg.model || "";
+  $("cfg-key").value = cfg.apiKey || "";
+  $("cfg-proxy").value = cfg.proxyUrl || "";
+  $("cfg-temp").value = cfg.temperature != null ? cfg.temperature : 0.7;
+  $("cfg-temp-val").textContent = $("cfg-temp").value;
+  $("cfg-tokens").value = cfg.maxTokens || 1024;
+  $("cfg-turns").value = cfg.maxHistoryTurns || 6;
   $("probe").textContent = "";
   $("probe").className = "probe";
+  updateProviderFields(prov);
   $("settings").showModal();
+}
+function updateProviderFields(prov) {
+  // Mostrar/ocultar Base URL segun el proveedor: OpenWebUI y custom la necesitan.
+  const needsBase = prov === "openwebui" || prov === "custom";
+  $("fld-base").style.display = needsBase ? "" : "none";
+  // Actualizar el placeholder del modelo con el default del proveedor.
+  const def = PROVIDERS[prov] || {};
+  $("cfg-model").placeholder = def.defaultModel || "";
+  // Sugerir la URL de base para proveedores conocidos.
+  const baseEl = $("cfg-base");
+  if (!needsBase && baseEl.value === "") {
+    baseEl.value = def.baseUrl || "";
+  }
 }
 
 // --- Cableado de eventos ----------------------------------------------------
 function wire() {
   $("send").addEventListener("click", () => (state.busy ? cancel() : send()));
   const input = $("input");
-  input.addEventListener("input", () => {
-    updateCounter();
-    autoGrow();
-  });
+  input.addEventListener("input", () => { updateCounter(); autoGrow(); });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!state.busy) send();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!state.busy) send(); }
   });
 
   // Cache
@@ -620,33 +642,46 @@ function wire() {
   // Ajustes
   $("open-settings").addEventListener("click", openSettings);
   $("close-settings").addEventListener("click", () => $("settings").close());
+  // Proveedor: actualiza campos segun seleccion
+  $("cfg-provider").addEventListener("change", () => updateProviderFields($("cfg-provider").value));
+  // Temperatura: muestra el valor en tiempo real
+  $("cfg-temp").addEventListener("input", () => { $("cfg-temp-val").textContent = $("cfg-temp").value; });
   $("cfg-save").addEventListener("click", async () => {
+    const prov = $("cfg-provider").value;
+    const pDef = PROVIDERS[prov] || {};
+    const base = $("cfg-base").value.trim() || pDef.baseUrl || DEFAULT_AI.baseUrl;
     await saveConfig({
-      baseUrl: $("cfg-base").value.trim() || DEFAULT_AI.baseUrl,
-      model: $("cfg-model").value.trim() || DEFAULT_AI.model,
+      provider: prov,
+      baseUrl: base,
+      model: $("cfg-model").value.trim() || pDef.defaultModel || DEFAULT_AI.model,
       apiKey: $("cfg-key").value.trim(),
       proxyUrl: $("cfg-proxy").value.trim(),
+      temperature: parseFloat($("cfg-temp").value) || 0.7,
+      maxTokens: parseInt($("cfg-tokens").value) || 1024,
+      maxHistoryTurns: parseInt($("cfg-turns").value) || 6,
     });
     $("settings").close();
-    toast("Conexion actualizada.");
+    toast("Configuracion guardada · " + (PROVIDERS[prov] ? PROVIDERS[prov].label : prov));
     refreshConnection();
   });
   $("cfg-test").addEventListener("click", async () => {
     const probe = $("probe");
-    probe.textContent = "Probando…";
+    probe.textContent = "Probando conexion…";
     probe.className = "probe";
+    const prov = $("cfg-provider").value;
+    const pDef = PROVIDERS[prov] || {};
     const tmp = new OpenWebUIClient({
-      baseUrl: $("cfg-base").value.trim(),
-      model: $("cfg-model").value.trim(),
+      provider: prov,
+      baseUrl: $("cfg-base").value.trim() || pDef.baseUrl || "",
+      model: $("cfg-model").value.trim() || pDef.defaultModel || "",
       apiKey: $("cfg-key").value.trim(),
       proxyUrl: $("cfg-proxy").value.trim(),
     });
     const ok = await tmp.available();
-    probe.textContent = ok ? "Conexion correcta." : "No se pudo conectar (revisa URL, key o permisos del host).";
+    probe.textContent = ok ? "Conexion correcta." : "Sin respuesta (revisa URL, API key o permisos del host).";
     probe.className = "probe " + (ok ? "ok" : "down");
   });
 
-  // Al cerrar el panel: respeta la preferencia de cache.
   window.addEventListener("pagehide", () => {
     if (ChatCache.getKeep()) ChatCache.saveCurrent(state.history);
     else ChatCache.clearCurrent();

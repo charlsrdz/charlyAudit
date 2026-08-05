@@ -1,5 +1,5 @@
 /**
- * markdown.js — Markdown seguro (CharlyPlugin · IA)
+ * markdown.js — Markdown seguro (CharlyAudit · IA)
  * =================================================
  * Renderiza un subconjunto de Markdown a HTML SEGURO. Estrategia "escape-first":
  * primero se escapa TODO el HTML del modelo y luego se aplican las
