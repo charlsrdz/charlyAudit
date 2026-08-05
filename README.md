@@ -180,3 +180,46 @@ done
 | **2.2.x** | Inyección 100% on-demand · grabación ligada a pestaña · ancla semántica · validación estricta del bundle · fingerprint semántico |
 | **2.1.x** | Replay fiel · exportadores Cypress/Playwright · panel de auditoría · perf/vitals |
 | **2.0.x** | MV3 · panel lateral · grabación/replay core |
+
+---
+
+## v2.5.1 — Rediseño de UI/UX del panel lateral
+
+**Sistema de diseño reescrito desde cero.** El CSS pasó de 813 líneas acumuladas
+por parches a 1166 líneas organizadas en 11 secciones con un sistema de tokens
+coherente. No se rompió ningún binding de JS (todos los `id` permanecen intactos).
+
+### Sistema de tokens
+| Token | Descripción |
+|---|---|
+| `--c-*` | 10 colores funcionales (bg, surface, surface2, border, brand, brand-dim, danger, success, warn, text, muted) |
+| `--t-xs/sm/base/lg` | 4 tamaños tipográficos (10/11.5/13/15px) en lugar de 11 |
+| `--s-1 a --s-5` | Escala de espaciado ×4 (4/8/12/16/24px) en lugar de 12 valores arbitrarios |
+| `--r-sm/md/lg/full` | 4 radios (6/8/12/999px) |
+| Aliases retrocompatibles | `--ink`, `--panel`, `--brand`, etc. — el JS y la paleta del usuario siguen funcionando |
+
+### Jerarquía de botones (antes 7 estilos, ahora 3)
+- **Primario** (`.act--brand`): acción con consecuencia — Exportar, Guardar, Aplicar
+- **Secundario** (`.act`): acción reversible o neutra — Importar, Cy, PW
+- **Ghost** (`.act--ghost`, `.cache-btn`): acción de bajo perfil — KPIs ▾, Captura ▾
+
+### Captura: de muro de campos a tres grupos legibles
+`CAPTURA` · `PERFIL Y DOMINIOS` · `TELEMETRÍA` — cada uno con encabezado, borde
+y espaciado propio. La jerarquía visual guía el ojo y reduce el tiempo de lectura.
+
+### KPI cards: grid predecible
+`repeat(3, 1fr)` fijo en lugar de `auto-fill, minmax(96px)` — 3 columnas en
+300-419px, 4 columnas en ≥420px vía media query.
+
+### Mobile-first: dos breakpoints
+- `max-width: 340px`: nombre truncado, tabs más pequeños, KPIs en 2 columnas,
+  `tl-srcbar` en columna
+- `min-width: 420px`: KPIs en 4 columnas, burbujas de chat más anchas
+
+### Accesibilidad
+- `min-height: 28px` en todos los chips/scopes (touch target)
+- `aria-selected` en pestañas `role="tab"`
+- `role="list"` en `tl-list`
+- `role="group"` en chips de filtro
+- `prefers-reduced-motion` en el indicador de escritura
+- Colores funcionales via tokens (nunca hardcodeados en componentes)
