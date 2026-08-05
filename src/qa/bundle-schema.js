@@ -183,6 +183,7 @@ export function partitionKeyOf(bundle) {
 const INDEXABLE = new Set([
   "error", "unhandledrejection", "security", "route", "navigation",
   "web-vitals", "worker", "code-block", "click", "input", "key",
+  "interaction-timing", // INP real por interaccion (latencia medida por el navegador)
 ]);
 
 /** Texto compacto y REDACTADO por evento, listo para embeddings. */
@@ -201,8 +202,12 @@ function chunkText(e) {
       return redactText(`Navegacion a ${d.to || d.url || ""}`);
     case "web-vitals":
       return `Vitals LCP ${d.lcpMs}ms CLS ${d.cls} INP ${d.inpMs}ms TBT ${d.tbtMs}ms longtasks ${d.longTasks}`;
+    case "interaction-timing":
+      return `INP ${d.tipo || "?"} ${d.inpMs}ms${d.inpMs > 200 ? " lento" : ""}${d.interactionId ? " id:" + d.interactionId : ""}`;
     case "worker":
       return redactText(`${d.clase || "worker"} ${d.script || d.scope || ""}`);
+    case "resource-timing":
+      return redactText(`Recurso ${d.tipo || ""} ${d.ms}ms ${d.kb}KB ${d.url || ""}`);
     case "code-block":
       return `Codigo culpable en ${d.ref || "?"}`;
     case "click":
@@ -247,6 +252,13 @@ export function chunkBundle(bundle) {
       const slow = (e.data && e.data.durationMs) > 1000;
       const failed = e.data && (e.data.ok === false || (e.data.status || 0) >= 400);
       if (!slow && !failed) continue;
+    } else if (e.type === "resource-timing") {
+      // Idem para recursos pasivos: ahora se captura el waterfall COMPLETO (no
+      // solo pesados) en el reporte crudo, pero para la vector DB solo indexamos
+      // los que aportan senal (lentos/pesados), igual que "network".
+      const slow = (e.data && e.data.ms) > 800;
+      const heavy = (e.data && e.data.kb) > 120;
+      if (!slow && !heavy) continue;
     } else if (!INDEXABLE.has(e.type)) {
       continue;
     }
@@ -291,6 +303,8 @@ export function computeKpis(report, replay) {
   const vitals = by("web-vitals").slice(-1)[0];
   const net = by("network");
   const netFail = net.filter((e) => e.data && (e.data.ok === false || (e.data.status || 0) >= 400));
+  const res = by("resource-timing");
+  const kbTotal = [...net, ...res].reduce((s, e) => s + ((e.data && e.data.kb) || 0), 0);
   const sec = by("security");
   const porSeveridad = { critica: 0, alta: 0, media: 0, baja: 0 };
   for (const e of sec) {
@@ -300,14 +314,35 @@ export function computeKpis(report, replay) {
   const trace = (replay && replay.trace) || [];
   const incons = trace.filter((t) => t.inconsistencias && t.inconsistencias.length).length;
   const interKinds = new Set(["click", "dblclick", "middleclick", "input", "key", "dragdrop"]);
+  // INP real por interaccion (p98 de las latencias YA correlacionadas a cada
+  // click/input/tecla concreto — no el aproximado de web-vitals) siguiendo la
+  // metodologia estandar (percentil 98, no el maximo absoluto de una sola vez).
+  const interLatencies = tl.filter((e) => e.data && e.data.inpMs != null).map((e) => e.data.inpMs).sort((a, b) => a - b);
+  const inpP98 = interLatencies.length ? interLatencies[Math.min(interLatencies.length - 1, Math.floor(interLatencies.length * 0.98))] : null;
+  // TBT por navegacion: el segmento (entre rutas) con mas bloqueo — util para
+  // localizar QUE vista/pagina especifica concentra el problema de performance.
+  const segs = [...by("route"), ...by("navigation")].map((e) => (e.data && e.data.tbtSegmentMs) || 0);
+  const tbtSegmentMax = segs.length ? Math.max(...segs) : null;
   return {
     eventos: tl.length,
     duracionMs: meta.durationMs || 0,
     errores: by("error").length + by("unhandledrejection").length,
     performance: vitals
-      ? { lcpMs: vitals.data.lcpMs, cls: vitals.data.cls, inpMs: vitals.data.inpMs, tbtMs: vitals.data.tbtMs, longTasks: vitals.data.longTasks }
+      ? {
+          lcpMs: vitals.data.lcpMs,
+          cls: vitals.data.cls,
+          inpMs: inpP98 != null ? inpP98 : vitals.data.inpMs, // real por interaccion (p98) si hay datos
+          tbtMs: vitals.data.tbtMs,
+          tbtSegmentMaxMs: tbtSegmentMax, // peor navegacion/vista de la sesion
+          longTasks: vitals.data.longTasks,
+        }
       : null,
-    red: { total: net.length, fallidas: netFail.length, masLentaMs: net.reduce((m, e) => Math.max(m, (e.data && e.data.durationMs) || 0), 0) },
+    red: {
+      total: net.length,
+      fallidas: netFail.length,
+      masLentaMs: net.reduce((m, e) => Math.max(m, (e.data && e.data.durationMs) || 0), 0),
+      kbTotal: Math.round(kbTotal),
+    },
     seguridad: { total: sec.length, porSeveridad },
     interacciones: tl.filter((e) => interKinds.has(e.type)).length,
     replay: trace.length ? { pasos: trace.length, inconsistencias: incons, fidelidad: Math.round(((trace.length - incons) / trace.length) * 100) } : null,

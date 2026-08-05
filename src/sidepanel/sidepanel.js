@@ -713,6 +713,7 @@ init();
     "global-state": { c: "#34d399", l: "estado" }, "function-call": { c: "#22d3ee", l: "fn" },
     scroll: { c: "#475569", l: "scroll" }, resize: { c: "#475569", l: "resize" }, meta: { c: "#475569", l: "meta" },
     "web-vitals": { c: "#f472b6", l: "vitals" }, "resource-timing": { c: "#fbbf24", l: "recurso" }, security: { c: "#ef4444", l: "seguridad" },
+    "interaction-timing": { c: "#818cf8", l: "inp" },
     "response-headers": { c: "#0ea5e9", l: "cabeceras" }, worker: { c: "#14b8a6", l: "worker" },
   };
   const G = (id) => document.getElementById(id);
@@ -738,6 +739,7 @@ init();
       case "function-call": return `${d.path} (${d.durationMs}ms)`;
       case "web-vitals": return `LCP ${d.lcpMs}ms · CLS ${d.cls} · INP ${d.inpMs}ms · TBT ${d.tbtMs}ms`;
       case "resource-timing": return `${d.kb}KB · ${d.ms}ms · ${shortUrl(d.url)}`;
+      case "interaction-timing": return `${d.tipo || "?"} · INP ${d.inpMs}ms${d.interactionId ? " #" + d.interactionId : ""}`;
       case "security": return `[${d.severidad}] ${d.kind} · ${d.donde}`;
       case "response-headers": { const s = d.seguridad || {}; return `${d.status || ""} · CSP:${s.csp ? "si" : "no"} HSTS:${s.hsts ? "si" : "no"} · ${shortUrl(d.url)}`; }
       case "worker": return `${d.clase}${d.existente ? " (existente)" : d.nuevo ? " (nuevo)" : ""} · ${shortUrl(d.script || d.scope)}`;
@@ -757,6 +759,18 @@ init();
     if (d.text !== undefined) add("texto", esc(String(d.text)));
     if (d.key !== undefined) add("tecla", esc(String(d.key)));
     if (d.method) add("peticion", esc(`${d.method} ${d.status || d.error || ""} ${d.url || ""}`));
+    // Waterfall completo: fases DNS/conexion/TTFB/descarga + tamano + protocolo.
+    if (d.fases) {
+      const f = d.fases;
+      const wf = [f.dnsMs != null ? `DNS ${f.dnsMs}ms` : null, f.conexionMs != null ? `TCP ${f.conexionMs}ms` : null, f.ttfbMs != null ? `TTFB ${f.ttfbMs}ms` : null, f.descargaMs != null ? `↓ ${f.descargaMs}ms` : null].filter(Boolean).join(" · ");
+      if (wf) add("waterfall", esc(wf));
+    }
+    if (d.kb != null) add("tamano", `${d.kb} KB${d.cache ? " (cache)" : ""}${d.protocolo ? " · " + esc(d.protocolo) : ""}`);
+    if (d.inicioMs != null) add("inicio/fin", `+${d.inicioMs}ms → +${d.finMs || d.inicioMs + (d.durationMs || d.ms || 0)}ms`);
+    // INP real: latencia medida por el navegador (PerformanceObserver "event").
+    if (d.inpMs != null && ["click","input","key","dblclick"].includes(e.type)) add("INP medido", `${d.inpMs}ms${d.inpMs > 200 ? " ⚠ lento" : d.inpMs > 100 ? " · revisar" : " ✓"}`);
+    if (e.type === "interaction-timing") { add("tipo", esc(d.tipo)); add("INP", `${d.inpMs}ms${d.inpMs > 200 ? " ⚠" : ""}`); if (d.interactionId) add("interactionId", esc(d.interactionId)); }
+    if (e.type === "web-vitals") { add("TBT segmento", `${d.tbtSegmentMs || 0}ms`); add("long tasks", `${d.longTasksSegment || 0} en segmento · ${d.longTasks || 0} total`); }
     if (d.message || d.reason) add("mensaje", esc(d.message || d.reason));
     if (d.ref) add("origen", esc(d.ref));
     if (d.trigger) add("disparo", esc(d.trigger));

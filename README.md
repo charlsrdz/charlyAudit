@@ -859,3 +859,63 @@ el panel), panel de KPIs, indicador de `qa:webhookPending`, known-issues del
 baseline en la vista, validacion de ajustes, y pasada de accesibilidad de los
 elementos de accion (aria-pressed/expanded/selected/label/describedby, foco de
 teclado visible, mensajes de estado anunciados).
+
+## Performance 100%: INP real, TBT por navegacion, waterfall completo
+
+### Estado real al analizar el codigo
+
+Al revisar exhaustivamente el codigo, se encontro que la mayor parte de la
+implementacion de performance YA EXISTIA correctamente (de iteraciones previas):
+
+- **INP real por interaccion:** PerformanceObserver tipo `"event"` (durationThreshold
+  40ms) emite `interaction-timing` con `tsEvent` = reloj epoch del navegador, que
+  `attachInteractionLatency` en report-engine correlaciona 1-a-1 con el
+  click/input/tecla exacto que lo origino.
+- **TBT por navegacion:** `flushTbtSegment()` se llama en `emitRoute`, y el campo
+  `tbtSegmentMs` se adjunta al evento de ruta — TBT real del segmento entre
+  navegaciones, no un total acumulado.
+- **Waterfall completo:** `waterfallFor()` busca en Resource Timing la entrada que
+  corresponde a cada fetch/XHR (por URL + cercania temporal), y el observer
+  `"resource"` captura todos los recursos pasivos con sus fases completas
+  (DNS/TCP/TTFB/descarga), `requestId` y tamano.
+- **computeKpis:** ya calculaba INP p98 (de las latencias correlacionadas) y
+  tbtSegmentMax (peor vista de la sesion).
+
+### Lo que si faltaba (huecos de integracion, corregidos)
+
+1. **interaction-timing invisible en la UI:** no tenia color/etiqueta en `TL_META`
+   ni descripcion en `tlDesc`, ni su propio detalle en `tlDetail`.
+2. **Waterfall invisible en el detalle:** `tlDetail` no mostraba las fases
+   DNS/TCP/TTFB/descarga ni el tamano/protocolo de ningun evento de red.
+3. **interaction-timing fuera del chunking y del fingerprint:** no estaba en
+   `INDEXABLE` (bundle-schema) ni en `fingerprintEvent` (report-engine).
+4. **Duplicados de resource-timing:** `buffered:true` puede re-entregar recursos
+   de la carga inicial si `startPerf` se llama despues de cargar la pagina; faltaba
+   dedup por URL+startTime.
+5. **Duplicados de interaction-timing:** el navegador puede reportar varias entradas
+   con el mismo `interactionId` (pointerdown + pointerup + click); faltaba dedup
+   por interactionId conservando el de mayor duracion.
+6. **navInfo incompleta:** faltaban `cargaMs` (loadEventEnd), `ttiApproxMs`
+   (domInteractive) y `docKb` (transferSize del documento).
+
+### Oportunidades de mejora en la logica de telemetria
+
+- **Dedup de interaction-timing por interactionId:** implementado. Evita triple
+  emision de la misma interaccion y correlacion ambigua.
+- **Dedup de resource-timing por URL+startTime:** implementado. Evita duplicados
+  en SPA o al inyectar con la pagina ya cargada.
+- **navInfo enriquecida:** `cargaMs`, `ttiApproxMs`, `docKb` ahora fluyen al
+  evento "navigation" y al bundle.
+- **Fingerprint de interaction-timing por rango:** rapido/medio/lento — permite
+  agrupar patrones de INP alto entre sesiones sin perder granularidad.
+- **INP p98 en KPIs:** ya calculado en computeKpis; es el valor que aparece en
+  el panel de KPIs, en el bundle y en el webhook.
+
+### Validado (Node puro)
+
+INP correlacionado: [120, 280] · INP p98: 280 · TBT segmento max: 340 · LCP: 2100
+fp rapido/medio/lento distintos, mismo rango => mismo fp · SW carga sin errores.
+
+## Version
+
+**2.4.0** (sin cambio de version: correcciones de integracion dentro de 2.4.0)

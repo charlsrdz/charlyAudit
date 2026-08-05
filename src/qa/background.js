@@ -17,7 +17,7 @@
  */
 import { assembleReport } from "./report-engine.js";
 import { toCypress, toPlaywright } from "./exporters.js";
-import { SCHEMA_CURRENT, validateBundle, stampIntegrity, redactBundle, chunkBundle, computeKpis } from "./bundle-schema.js";
+import { SCHEMA_CURRENT, validateBundle, stampIntegrity, redactBundle, chunkBundle, computeKpis, redactText, fnv1a } from "./bundle-schema.js";
 
 const K = {
   recording: "qa:isRecording",
@@ -100,6 +100,49 @@ async function hmacHex(message, secret) {
 let webhookAttempts = 0;
 const WEBHOOK_MAX_RETRY = 5;
 
+/**
+ * Bundle DELTA para modo "chunks": envia SOLO los eventos nuevos desde el
+ * ultimo flush, en vez de reconstruir y reenviar el reporte completo en cada
+ * lote. Mejora de eficiencia en la recoleccion telemetrica: con el diseno
+ * anterior, una sesion de N eventos en lotes de 25 reenviaba el historial
+ * completo en cada lote (crecimiento O(n^2) de trafico); con delta, cada
+ * evento se transmite UNA sola vez (O(n)). Los modos "manual"/"onclose"/
+ * "retry"/"export" siguen usando el snapshot COMPLETO (buildBundle), porque
+ * representan "el estado final/integro de la sesion", no un incremento.
+ */
+async function buildDeltaBundle(events) {
+  const meta = await getMeta();
+  const rec = meta.recording || {};
+  const redacted = events.map((e) => {
+    const d = e.data || {};
+    const rd = {};
+    if (d.message != null) rd.message = redactText(d.message);
+    if (d.reason != null) rd.reason = redactText(d.reason);
+    if (d.detalle != null) rd.detalle = redactText(d.detalle);
+    if (d.text != null && !d.masked) rd.text = redactText(d.text);
+    return Object.keys(rd).length ? { ...e, data: { ...d, ...rd } } : e;
+  });
+  let partitionKey = "domain:unknown";
+  try {
+    partitionKey = "domain:" + new URL(meta.url || rec.startUrl).hostname;
+  } catch {
+    /* url invalida o ausente */
+  }
+  const canon = redacted.map((e) => `${e.cid || e.seq || ""}:${e.type}:${e.tRel != null ? e.tRel : e.ts}`).join("|");
+  return {
+    schema: SCHEMA_CURRENT,
+    exportedAt: new Date().toISOString(),
+    reason: "chunk",
+    isDelta: true, // el servidor debe ANEXAR estos eventos, no reemplazar la sesion
+    extension: { name: "CharlyAudit", version: chrome.runtime.getManifest().version },
+    profileId: teleProfileId,
+    recordingId: rec.recordingId || null,
+    partitionKey,
+    events: redacted,
+    integrity: { eventos: redacted.length, contentHash: fnv1a(canon), schema: SCHEMA_CURRENT },
+  };
+}
+
 async function sendTelemetry(reason) {
   const isRetry = reason === "retry";
   // En un reintento re-enviamos el snapshot completo aunque el buffer este vacio.
@@ -109,7 +152,8 @@ async function sendTelemetry(reason) {
     teleBuffer = [];
     return;
   }
-  teleBuffer = []; // el bundle ya contiene todo el reporte (snapshot)
+  const bufferSnapshot = teleBuffer; // capturado ANTES de limpiar, para el delta
+  teleBuffer = []; // el bundle ya contiene todo el reporte (snapshot) o el delta
   // Seguridad: no enviar datos de sesion en claro (exige HTTPS, salvo localhost).
   const isHttps = /^https:\/\//i.test(s.webhook.url);
   const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(s.webhook.url);
@@ -123,7 +167,11 @@ async function sendTelemetry(reason) {
   const timer = setTimeout(() => ctrl.abort(), 15000); // no acumular peticiones colgadas
   let okSend = false;
   try {
-    const bundle = await buildBundle(reason); // mismo contenido que el export
+    // Modo "chunks" en su via feliz: delta (solo lo nuevo). Cualquier otro caso
+    // (manual/onclose/export/retry, o un chunk sin buffer disponible) envia el
+    // snapshot COMPLETO — garantiza no perder evidencia ante un reintento.
+    const bundle =
+      reason === "chunk" && bufferSnapshot.length ? await buildDeltaBundle(bufferSnapshot) : await buildBundle(reason);
     const body = JSON.stringify(bundle);
     // Integridad/autenticidad: firma HMAC-SHA256 del cuerpo con el token del
     // webhook como secreto compartido, y el contentHash para idempotencia. El
