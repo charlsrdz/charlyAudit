@@ -69,42 +69,20 @@
       </details>
 
       <p class="section-label">Exportar reporte</p>
-      <div class="export">
-        <button id="exp-json" class="btn btn--sm" type="button">JSON</button>
-        <button id="exp-cypress" class="btn btn--sm" type="button">Cypress</button>
-        <button id="exp-playwright" class="btn btn--sm" type="button">Playwright</button>
-      </div>
-      <div class="toolbar">
-        <button id="copy-json" class="btn btn--ghost btn--sm" type="button">Copiar JSON</button>
-        <span class="spacer"></span>
-        <button id="clear" class="btn btn--ghost btn--danger btn--sm" type="button">Vaciar</button>
-      </div>
-
-      <p class="section-label">Replay</p>
-      <div class="export">
-        <button id="imp-replay" class="btn btn--sm" type="button">Importar</button>
-        <button id="play-replay" class="btn btn--sm" type="button" disabled>Reproducir</button>
-        <button id="stop-replay" class="btn btn--sm" type="button">Detener</button>
-      </div>
-      <div class="toolbar">
-        <label for="replay-speed" style="font-size: 11px; color: var(--muted)">Velocidad</label>
-        <select id="replay-speed" class="btn btn--ghost btn--sm" style="cursor: pointer">
-          <option value="1">1x</option>
-          <option value="2">2x</option>
-          <option value="4">4x</option>
-          <option value="0.5">0.5x</option>
+      <div class="export export--2col">
+        <select id="export-select" class="btn btn--sm" aria-label="Exportar reporte">
+          <option value="" selected disabled>Exportar ▾</option>
+          <option value="json">JSON completo</option>
+          <option value="cypress">Cypress</option>
+          <option value="playwright">Playwright</option>
         </select>
-        <span class="spacer"></span>
-        <span id="replay-info" style="font-size: 10px; color: var(--muted)">Sin replay cargado</span>
+        <button id="open-audit" class="btn btn--ghost btn--sm" type="button">Ver en Auditoria</button>
       </div>
-      <input id="replay-file" type="file" accept="application/json,.json" hidden />
 
       <div id="wh-pending" class="foot" role="status" aria-live="polite" hidden style="color:#f5b544"></div>
 
       <div class="foot">
-        <span id="version">CharlyPlugin</span>
-        <span class="dot">•</span>
-        <span>CharlyAudit</span>
+        <span id="version">CharlyAudit</span>
       </div>
     </div>
 

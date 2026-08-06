@@ -1,5 +1,5 @@
 /**
- * chat-cache.js — Cache de conversacion (CharlyPlugin · IA)
+ * chat-cache.js — Cache de conversacion (CharlyAudit · IA)
  * ========================================================
  * Persiste la conversacion en el localStorage del panel (origen de la
  * extension). Espacio de nombres propio del plugin y controles para

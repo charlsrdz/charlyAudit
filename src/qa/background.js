@@ -43,6 +43,30 @@ const DEFAULT_CONFIG = {
 
 // Serializa escrituras del timeline e ids vistos (dedupe de reenvios).
 let writeChain = Promise.resolve();
+
+// Cola de escritura serializada especifica para K.replayJob. Durante un replay,
+// el content script envia "replayProgress" y "replayTrace" como mensajes
+// independientes (fire-and-forget) para CADA paso. Sin serializar, dos
+// escrituras concurrentes (get->modificar->set) sobre la MISMA clave pueden
+// interlazarse: la que termina de escribir ultimo pisa por completo el cambio
+// de la otra (lost update). En un replay de cientos de pasos esto perdia casi
+// toda la telemetria de "trace" (el modulo de Repeticion quedaba vacio aunque
+// el progreso avanzara con normalidad). Con esta cola, cada mutacion de
+// K.replayJob se resuelve de forma atomica antes de que empiece la siguiente.
+let replayJobChain = Promise.resolve();
+function mutateReplayJob(mutator) {
+  replayJobChain = replayJobChain
+    .then(async () => {
+      const data = await chrome.storage.local.get(K.replayJob);
+      const job = data[K.replayJob];
+      if (!job) return;
+      const changed = mutator(job);
+      if (changed === false) return; // el mutador puede cancelar (p.ej. tab distinto)
+      await chrome.storage.local.set({ [K.replayJob]: job });
+    })
+    .catch((e) => console.warn("[CharlyQA] Error mutando replayJob:", e));
+  return replayJobChain;
+}
 let seenIds = null; // Set perezoso, reconstruido tras reinicios del SW
 
 // --- Helpers de estado ------------------------------------------------------
@@ -853,6 +877,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await clearAll();
           sendResponse({ ok: true });
           break;
+        case "clearImported": {
+          // Vacia el reporte importado y su repeticion como si nunca se hubiera
+          // cargado — SIN tocar la grabacion temporal (K.timeline/K.meta).
+          const data = await chrome.storage.local.get(K.replayJob);
+          const job = data[K.replayJob];
+          if (job && job.active && job.tabId != null) {
+            chrome.tabs.sendMessage(job.tabId, { channel: "qa-replay", action: "stop" }).catch(() => {});
+          }
+          // Encadenado: si quedaba algun replayProgress/replayTrace en vuelo de
+          // un paso anterior, se aplica ANTES de vaciar (nunca despues, que
+          // resucitaria el job ya vaciado).
+          replayJobChain = replayJobChain.then(() => chrome.storage.local.set({ [K.replay]: null, [K.replayJob]: null }));
+          await replayJobChain;
+          sendResponse({ ok: true });
+          break;
+        }
 
         // --- Replay persistente (sobrevive al cierre del popup y a navegar) ---
         case "loadReplay": {
@@ -882,7 +922,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             break;
           }
           const job = { active: true, index: 0, options: message.options || {}, tabId, trace: [], startedAt: Date.now() };
-          await chrome.storage.local.set({ [K.replayJob]: job });
+          // Encadenado a la misma cola que replayProgress/replayTrace: garantiza
+          // que ningun mensaje residual de un replay anterior (aun en vuelo) se
+          // escriba DESPUES de este job nuevo y lo deje en un estado inconsistente.
+          replayJobChain = replayJobChain.then(() => chrome.storage.local.set({ [K.replayJob]: job }));
+          await replayJobChain;
           // Tarea 2: reproducir desde la URL donde se comenzo la grabacion, como si
           // el usuario entrara al sitio. La carga del documento dispara el replay
           // (el content script resuelve el job en su bootstrap) y permite capturar
@@ -903,27 +947,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case "replayProgress": {
           // El content script reporta el avance para poder reanudar tras navegar.
-          const data = await chrome.storage.local.get(K.replayJob);
-          const job = data[K.replayJob];
-          if (job && job.active && sender.tab && job.tabId === sender.tab.id) {
+          await mutateReplayJob((job) => {
+            if (!(job.active && sender.tab && job.tabId === sender.tab.id)) return false;
             job.index = message.index;
             if (message.done) job.active = false;
-            await chrome.storage.local.set({ [K.replayJob]: job });
-          }
+          });
           sendResponse({ ok: true });
           break;
         }
         case "replayTrace": {
           // Telemetria por paso (efecto esperado vs observado) para hallar
           // inconsistencias entre la grabacion y la repeticion (1.3).
-          const data = await chrome.storage.local.get(K.replayJob);
-          const job = data[K.replayJob];
-          if (job && sender.tab && job.tabId === sender.tab.id && message.entry) {
+          await mutateReplayJob((job) => {
+            if (!(sender.tab && job.tabId === sender.tab.id && message.entry)) return false;
             job.trace = job.trace || [];
             job.trace.push(message.entry);
             if (job.trace.length > MAX_EVENTS) job.trace.splice(0, job.trace.length - MAX_EVENTS);
-            await chrome.storage.local.set({ [K.replayJob]: job });
-          }
+          });
           sendResponse({ ok: true });
           break;
         }
@@ -948,12 +988,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
         case "stopReplay": {
-          const data = await chrome.storage.local.get(K.replayJob);
-          const job = data[K.replayJob] || {};
-          job.active = false;
-          await chrome.storage.local.set({ [K.replayJob]: job });
-          if (job.tabId != null) chrome.tabs.sendMessage(job.tabId, { channel: "qa-replay", action: "stop" }).catch(() => {});
-          else if (message.tabId != null) chrome.tabs.sendMessage(message.tabId, { channel: "qa-replay", action: "stop" }).catch(() => {});
+          let tabIdToStop = message.tabId;
+          await mutateReplayJob((job) => {
+            job.active = false;
+            tabIdToStop = job.tabId != null ? job.tabId : tabIdToStop;
+          });
+          if (tabIdToStop != null) chrome.tabs.sendMessage(tabIdToStop, { channel: "qa-replay", action: "stop" }).catch(() => {});
           sendResponse({ ok: true });
           break;
         }

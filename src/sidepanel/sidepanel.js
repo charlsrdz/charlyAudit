@@ -1,5 +1,5 @@
 /**
- * sidepanel.js — Controlador del Asistente IA (CharlyPlugin)
+ * sidepanel.js — Controlador del Asistente IA (CharlyAudit)
  * =========================================================
  * Orquesta la UI del panel: configuracion, contexto de QA (solo lectura),
  * flujo bloqueante de solicitud->respuesta, cache en localStorage y ajustes.
@@ -13,22 +13,25 @@
  *     propio service worker (acciones de SOLO lectura) y con Open WebUI.
  *   - La salida del modelo se renderiza con Markdown saneado (nunca se ejecuta).
  */
-import { OpenWebUIClient } from "./lib/openwebui-client.js";
+import { OpenWebUIClient, PROVIDERS } from "./lib/openwebui-client.js";
 import { renderMarkdown, Markdown } from "./lib/markdown.js";
 import { ContextBridge, SCOPES } from "./lib/context-bridge.js";
 import { ChatCache } from "./lib/chat-cache.js";
+import { computeKpis } from "../qa/bundle-schema.js";
 
 const AI_CONFIG_KEY = "charlyplugin:ai:config";
 const DEFAULT_AI = {
+  provider: "openwebui",
   baseUrl: "https://assistant.service24gps.com",
   model: "charly-pt",
   apiKey: "sk-3e17ab34903e4e1fbe68c683fabbb67c",
   proxyUrl: "",
+  temperature: 0.7,
+  maxTokens: 1024,
+  maxHistoryTurns: 6,
 };
 const MIN_INTERVAL = 1500; // ms minimo entre envios (anti-saturacion)
-const MAX_HISTORY_TURNS = 6; // pares usuario/asistente reenviados (un solo turno)
 const CONTEXT_BUDGET = 12000; // chars de contexto (~3k tokens) por peticion
-const HISTORY_BUDGET = 2500; // chars de historial reenviado por peticion
 
 const $ = (id) => document.getElementById(id);
 const bridge = new ContextBridge();
@@ -38,11 +41,14 @@ const state = {
   config: { ...DEFAULT_AI },
   history: [], // { role, content, scopes? }
   scopes: new Set(),
+  contextSource: "live", // "live" (temporal) | "imported" — que reporte analiza el asistente (2.1)
+  auditSource: "live", // "live" | "imported" | "replay" — fuente activa en la pestana Auditoria (para KPIs)
   busy: false,
   seq: 0,
   abort: null,
   lastSend: 0,
   counts: {},
+  replayPasos: "",
   ctxCache: { key: null, build: null }, // evita reconstruir el contexto en cada mensaje
 };
 
@@ -70,7 +76,10 @@ async function refreshConnection() {
   el.className = "bar__status";
   const ok = await state.client.available();
   el.className = "bar__status " + (ok ? "ok" : "down");
-  txt.textContent = ok ? "Conectado · " + state.config.model : "Sin conexion";
+  const prov = PROVIDERS[state.config.provider] || { label: state.config.provider || "IA" };
+  txt.textContent = ok
+    ? `${prov.label} · ${state.config.model}`
+    : `Sin conexion · ${prov.label}`;
 }
 
 // --- Contexto: chips de ambito ---------------------------------------------
@@ -83,7 +92,12 @@ function scopeCount(id) {
     case "console": return c.console || 0;
     case "routes": return c.route || 0;
     case "functions": return c["function-call"] || 0;
-    case "interactions": return (c.click || 0) + (c.input || 0);
+    case "globals": return c["global-state"] || 0;
+    case "interactions": return (c.click || 0) + (c.input || 0) + (c.key || 0) + (c.dblclick || 0) + (c.dragdrop || 0);
+    case "audit": return c.focus || 0;
+    case "security": return c.security || 0;
+    case "performance": return (c["web-vitals"] || 0) + (c["interaction-timing"] || 0) + (c["resource-timing"] || 0);
+    case "replay": return state.replayPasos || "";
     default: return "";
   }
 }
@@ -109,12 +123,36 @@ function renderScopes() {
 }
 async function refreshState() {
   const st = await bridge.getState();
-  state.counts = st.counts || {};
-  state.eventCount = st.count || 0;
+  // Antes state.counts/eventCount SIEMPRE venian de getState() (temporal),
+  // sin importar la fuente elegida en el selector Temporal/Importado del
+  // asistente — por eso los chips (Errores, Red, Variables...) y el contador
+  // "N eventos" nunca reflejaban el reporte importado aunque estuviera
+  // seleccionado. Ahora, si la fuente activa es "imported", se leen los
+  // conteos del reporte importado (K.replay) en su lugar.
+  let counts = st.counts || {};
+  let eventCount = st.count || 0;
+  if (state.contextSource === "imported") {
+    const imp = await bridge.getReport("imported");
+    counts = (imp && imp.metadata && imp.metadata.counts) || {};
+    eventCount = (imp && imp.metadata && imp.metadata.eventCount) || 0;
+  }
+  state.counts = counts;
+  state.eventCount = eventCount;
   state.config = state.config || {};
   state.captureConfig = st.config || {};
+  // Conteo ligero para el chip "Repeticion" (no viene en getState: vive en
+  // K.replayJob, no en el timeline temporal; es global, no depende de la
+  // fuente seleccionada arriba).
+  try {
+    const tr = await qaControl("getReplayTrace");
+    state.replayPasos = tr && tr.resumen ? tr.resumen.pasos : "";
+  } catch {
+    state.replayPasos = "";
+  }
   const rec = $("rec-state");
-  rec.textContent = st.isRecording ? `● grabando · ${st.count} ev` : `${st.count} eventos`;
+  // La grabacion en curso es un hecho global (no depende de la fuente
+  // elegida para el contexto), pero el conteo mostrado si respeta la fuente.
+  rec.textContent = st.isRecording ? `● grabando · ${st.count} ev` : `${eventCount} eventos`;
   rec.className = "context__rec" + (st.isRecording ? " live" : "");
   // Refleja el estado en el boton de accion del panel.
   const recBtn = $("act-record");
@@ -151,12 +189,24 @@ function kpiCard(label, value, cls) {
 async function renderKpis() {
   const box = $("tl-kpis");
   if (!box || box.hidden) return;
-  const res = await qaControl("getKpis");
-  const k = res && res.ok ? res.kpis : null;
-  if (!k) {
+  // Antes esto SIEMPRE pedia getKpis (SW), que solo conoce el reporte
+  // temporal. Al ver "Repeticion" (reproduciendo un reporte importado), los
+  // KPIs mostraban 0 eventos/errores/red del temporal (vacio) mezclados con
+  // la fidelidad real del replay — confuso y erroneo. Ahora se calcula aqui
+  // mismo, con la misma funcion pura que usa el SW, sobre el reporte y la
+  // traza que realmente corresponden a la fuente activa.
+  const wantsImported = state.auditSource === "imported" || state.auditSource === "replay";
+  const report = await bridge.getReport(wantsImported ? "imported" : "live");
+  if (!report) {
     box.innerHTML = `<div class="tl-empty">Sin datos aun.</div>`;
     return;
   }
+  let trace = [];
+  if (state.auditSource === "replay") {
+    const tr = await qaControl("getReplayTrace");
+    trace = (tr && tr.trace) || [];
+  }
+  const k = computeKpis(report, { trace });
   const p = k.performance || {};
   const cards = [
     kpiCard("Eventos", k.eventos),
@@ -192,19 +242,18 @@ async function renderWebhookPending() {
 
 async function refreshReplayState() {
   const res = await qaControl("getReplay");
-  const info = $("act-replay-info");
   const play = $("act-play");
+  const progress = $("replay-progress");
   if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
     if (play) play.disabled = false;
-    if (info) {
-      const active = res.job && res.job.active;
-      info.textContent = active
-        ? `reproduciendo ${res.job.index}/${res.report.timeline.length}`
-        : `${res.report.timeline.length} eventos listos`;
-    }
+    const active = res.job && res.job.active;
+    const txt = active
+      ? `reproduciendo ${res.job.index}/${res.report.timeline.length}`
+      : `${res.report.timeline.length} eventos listos`;
+    if (progress) progress.textContent = txt;
   } else {
     if (play) play.disabled = true;
-    if (info) info.textContent = "Sin replay cargado";
+    if (progress) progress.textContent = "";
   }
 }
 
@@ -214,13 +263,21 @@ function wireActions() {
     await qaControl("toggle");
     refreshState();
   });
-  // La importacion es unica y vive en la pestana Auditoria (tl-import).
+  // La importacion es unica y vive en la pestana Reporte (no en Auditoria).
   // Reproducir / Detener replay contra la pestana activa.
   $("act-play").addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || tab.id == null) return toast("Sin pestana activa.");
-    const res = await qaControl("startReplay", { tabId: tab.id, options: { speed: 1 } });
-    toast(res && res.ok ? "Reproduciendo en la pestana…" : "No se pudo iniciar el replay.");
+    const speedEl = $("replay-speed");
+    const speed = speedEl ? Number(speedEl.value) || 1 : 1;
+    const res = await qaControl("startReplay", { tabId: tab.id, options: { speed } });
+    if (res && res.ok) {
+      toast("Reproduciendo en la pestana…");
+      // Lleva la vista a "Repeticion" para ver el avance en vivo (2.3).
+      document.getElementById("src-replay")?.click();
+    } else {
+      toast("No se pudo iniciar el replay.");
+    }
   });
   $("act-stop").addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -228,7 +285,7 @@ function wireActions() {
     toast("Replay detenido.");
   });
   // Configuracion de captura (desplegable).
-  $("act-cfg").addEventListener("click", async () => {
+  $("act-cfg").addEventListener("click", () => {
     const panel = $("capture-cfg");
     const open = panel.hasAttribute("hidden");
     if (open) {
@@ -236,7 +293,18 @@ function wireActions() {
       $("cfg-mask").value = arrToLines(c.maskSelectors);
       $("cfg-globals").value = arrToLines(c.watchedGlobals);
       $("cfg-fns").value = arrToLines(c.patchedFunctions);
-      // Carga los ajustes persistentes (dominios, perfil, webhook, auto-inicio).
+      panel.removeAttribute("hidden");
+    } else {
+      panel.setAttribute("hidden", "");
+    }
+    $("act-cfg").setAttribute("aria-expanded", String(open));
+  });
+  // Perfil, dominios y telemetria: configuracion persistente, independiente de
+  // la sesion de captura — por eso vive en su propio panel con su propio boton.
+  $("act-domains").addEventListener("click", async () => {
+    const panel = $("domains-cfg");
+    const open = panel.hasAttribute("hidden");
+    if (open) {
       const s = (await qaControl("getSettings")) || {};
       const st = (s && s.settings) || {};
       state.settings = st;
@@ -252,7 +320,7 @@ function wireActions() {
     } else {
       panel.setAttribute("hidden", "");
     }
-    $("act-cfg").setAttribute("aria-expanded", String(open));
+    $("act-domains").setAttribute("aria-expanded", String(open));
   });
   // Panel de KPIs (desplegable): resumen de la sesion sin recorrer el timeline.
   $("tl-kpis-toggle").addEventListener("click", () => {
@@ -326,9 +394,9 @@ function wireActions() {
 // --- Contexto: construccion presupuestada + cache ---------------------------
 /** Devuelve el contexto (cacheado por ambitos + conteo de eventos). */
 async function getContext(scopes) {
-  const key = [...scopes].sort().join("|") + ":" + (state.eventCount || 0);
+  const key = state.contextSource + ":" + [...scopes].sort().join("|") + ":" + (state.eventCount || 0);
   if (state.ctxCache.key === key && state.ctxCache.build) return state.ctxCache.build;
-  const build = await bridge.buildContext(scopes, CONTEXT_BUDGET);
+  const build = await bridge.buildContext(scopes, CONTEXT_BUDGET, state.contextSource);
   state.ctxCache = { key, build };
   updateCtxIndicator(build);
   return build;
@@ -447,17 +515,20 @@ async function send() {
   try {
     // Contexto presupuestado y cacheado (no se reconstruye si no cambio).
     const build = usedScopes.length ? await getContext(usedScopes) : null;
-    const sys = build ? bridge.systemPrompt(build) : bridge.systemPrompt({ snapshot: null, digest: "", meta: {} });
+    const sysContent = build
+      ? bridge.systemPrompt(build)
+      : bridge.systemPrompt({ snapshot: null, digest: "", meta: {} });
 
-    // Modelo de un solo turno: instrucciones + historial reciente (acotado) + consulta.
-    const recent = state.history.slice(-MAX_HISTORY_TURNS * 2);
-    let transcript = recent.map((m) => (m.role === "user" ? "Usuario" : "Charly") + ": " + m.content).join("\n");
-    if (transcript.length > HISTORY_BUDGET) transcript = "\u2026" + transcript.slice(-HISTORY_BUDGET); // prioriza lo reciente
-    const content =
-      sys +
-      (transcript ? "\n\n[Historial reciente]:\n" + transcript : "") +
-      "\n\n[Consulta del usuario] (responde solo a esto, sin reproducir el contexto):\n" +
-      text;
+    // CONVERSACION MULTI-TURNO: el historial viaja como mensajes reales con roles,
+    // no como texto incrustado en el ultimo user message. El modelo puede recordar
+    // lo dicho en el hilo y mantener coherencia entre turnos.
+    // Estructura: [system, ...historial(user/assistant), user_actual]
+    const recentPairs = state.history.slice(-((state.config.maxHistoryTurns || 6) * 2));
+    const messages = [
+      { role: "system", content: sysContent },
+      ...recentPairs.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: text },
+    ];
 
     // Burbuja de la IA que se va rellenando con el streaming.
     showTyping(false);
@@ -474,15 +545,14 @@ async function send() {
 
     let answer = "";
     try {
-      answer = await state.client.chatStream([{ role: "user", content }], state.abort.signal, (_d, full) => {
+      answer = await state.client.chatStream(messages, state.abort.signal, (_d, full) => {
         if (mySeq !== state.seq) return;
         acc = full;
         paint(full, false);
       });
     } catch (streamErr) {
-      // Fallback a no-stream si el streaming no esta disponible.
       if (state.abort && state.abort.signal.aborted) throw streamErr;
-      answer = await state.client.chat([{ role: "user", content }], state.abort.signal);
+      answer = await state.client.chat(messages, state.abort.signal);
     }
     if (mySeq !== state.seq) return; // respuesta obsoleta: descartar
 
@@ -553,38 +623,111 @@ function autoGrow() {
 
 // --- Aviso ------------------------------------------------------------------
 let toastTimer = null;
+/** Mantiene --dock-h sincronizada con la altura real del dock del compositor,
+ *  para que el toast (posicionado por CSS relativo a esa variable) nunca quede
+ *  tapado ni se solape cuando el dock crece (dock__meta se envuelve en anchos
+ *  angostos) o cuando no esta visible (pestana Auditoria, sin dock en el flujo). */
+function watchDockHeight() {
+  const dock = $("dock") || document.querySelector(".dock");
+  if (!dock) return;
+  const apply = () => {
+    const visible = dock.offsetParent !== null; // oculto si su tabpane no es .is-on
+    document.documentElement.style.setProperty("--dock-h", visible ? `${dock.offsetHeight}px` : "16px");
+  };
+  apply();
+  try {
+    new ResizeObserver(apply).observe(dock);
+  } catch {
+    window.addEventListener("resize", apply); // navegador sin ResizeObserver
+  }
+  // El cambio de pestana no dispara resize del dock (solo cambia display); observarlo aparte.
+  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => setTimeout(apply, 0)));
+}
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg;
+  // Popover API: pone el aviso en el "top layer", por encima de cualquier
+  // <dialog> abierto (z-index no tiene efecto contra la capa de un dialog).
+  try {
+    if (!t.matches(":popover-open")) t.showPopover();
+  } catch {
+    /* navegador sin soporte: sigue visible via posicion fixed + clase */
+  }
   t.classList.add("on");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("on"), 2000);
+  toastTimer = setTimeout(() => {
+    t.classList.remove("on");
+    try { t.hidePopover(); } catch { /* no critico */ }
+  }, 2000);
 }
 
 // --- Ajustes ----------------------------------------------------------------
 function openSettings() {
-  $("cfg-base").value = state.config.baseUrl;
-  $("cfg-model").value = state.config.model;
-  $("cfg-key").value = state.config.apiKey;
-  $("cfg-proxy").value = state.config.proxyUrl;
+  const cfg = state.config;
+  const prov = cfg.provider || "openwebui";
+  $("cfg-provider").value = prov;
+  $("cfg-base").value = cfg.baseUrl || "";
+  $("cfg-model").value = cfg.model || "";
+  $("cfg-key").value = cfg.apiKey || "";
+  $("cfg-proxy").value = cfg.proxyUrl || "";
+  $("cfg-temp").value = cfg.temperature != null ? cfg.temperature : 0.7;
+  $("cfg-temp-val").textContent = $("cfg-temp").value;
+  $("cfg-tokens").value = cfg.maxTokens || 1024;
+  $("cfg-turns").value = cfg.maxHistoryTurns || 6;
   $("probe").textContent = "";
   $("probe").className = "probe";
+  updateProviderFields(prov);
   $("settings").showModal();
+}
+function updateProviderFields(prov) {
+  // Mostrar/ocultar Base URL segun el proveedor: OpenWebUI y custom la necesitan.
+  const needsBase = prov === "openwebui" || prov === "custom";
+  $("fld-base").style.display = needsBase ? "" : "none";
+  // Actualizar el placeholder del modelo con el default del proveedor.
+  const def = PROVIDERS[prov] || {};
+  $("cfg-model").placeholder = def.defaultModel || "";
+  // Sugerir la URL de base para proveedores conocidos.
+  const baseEl = $("cfg-base");
+  if (!needsBase && baseEl.value === "") {
+    baseEl.value = def.baseUrl || "";
+  }
 }
 
 // --- Cableado de eventos ----------------------------------------------------
 function wire() {
   $("send").addEventListener("click", () => (state.busy ? cancel() : send()));
   const input = $("input");
-  input.addEventListener("input", () => {
-    updateCounter();
-    autoGrow();
-  });
+  input.addEventListener("input", () => { updateCounter(); autoGrow(); });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!state.busy) send();
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!state.busy) send(); }
+  });
+
+  // Fuente del contexto: temporal (grabacion) vs reporte importado (2.1).
+  // Cambiar la fuente invalida el cache de contexto (la clave incluye la
+  // fuente) para no mezclar datos de una sesion con la otra.
+  $("ctx-src-live").addEventListener("click", async () => {
+    state.contextSource = "live";
+    $("ctx-src-live").classList.add("is-on");
+    $("ctx-src-live").setAttribute("aria-selected", "true");
+    $("ctx-src-imported").classList.remove("is-on");
+    $("ctx-src-imported").setAttribute("aria-selected", "false");
+    await refreshState(); // refresca los chips YA (antes se veian las cuentas de la fuente anterior)
+    previewContextSize();
+  });
+  $("ctx-src-imported").addEventListener("click", async () => {
+    const report = await bridge.getReport("imported");
+    if (!report) {
+      toast("No hay ningun reporte importado. Ve a la pestana Reporte.");
+      return;
     }
+    state.contextSource = "imported";
+    $("ctx-src-imported").classList.add("is-on");
+    $("ctx-src-imported").setAttribute("aria-selected", "true");
+    $("ctx-src-live").classList.remove("is-on");
+    $("ctx-src-live").setAttribute("aria-selected", "false");
+    await refreshState();
+    previewContextSize();
   });
 
   // Cache
@@ -620,33 +763,46 @@ function wire() {
   // Ajustes
   $("open-settings").addEventListener("click", openSettings);
   $("close-settings").addEventListener("click", () => $("settings").close());
+  // Proveedor: actualiza campos segun seleccion
+  $("cfg-provider").addEventListener("change", () => updateProviderFields($("cfg-provider").value));
+  // Temperatura: muestra el valor en tiempo real
+  $("cfg-temp").addEventListener("input", () => { $("cfg-temp-val").textContent = $("cfg-temp").value; });
   $("cfg-save").addEventListener("click", async () => {
+    const prov = $("cfg-provider").value;
+    const pDef = PROVIDERS[prov] || {};
+    const base = $("cfg-base").value.trim() || pDef.baseUrl || DEFAULT_AI.baseUrl;
     await saveConfig({
-      baseUrl: $("cfg-base").value.trim() || DEFAULT_AI.baseUrl,
-      model: $("cfg-model").value.trim() || DEFAULT_AI.model,
+      provider: prov,
+      baseUrl: base,
+      model: $("cfg-model").value.trim() || pDef.defaultModel || DEFAULT_AI.model,
       apiKey: $("cfg-key").value.trim(),
       proxyUrl: $("cfg-proxy").value.trim(),
+      temperature: parseFloat($("cfg-temp").value) || 0.7,
+      maxTokens: parseInt($("cfg-tokens").value) || 1024,
+      maxHistoryTurns: parseInt($("cfg-turns").value) || 6,
     });
     $("settings").close();
-    toast("Conexion actualizada.");
+    toast("Configuracion guardada · " + (PROVIDERS[prov] ? PROVIDERS[prov].label : prov));
     refreshConnection();
   });
   $("cfg-test").addEventListener("click", async () => {
     const probe = $("probe");
-    probe.textContent = "Probando…";
+    probe.textContent = "Probando conexion…";
     probe.className = "probe";
+    const prov = $("cfg-provider").value;
+    const pDef = PROVIDERS[prov] || {};
     const tmp = new OpenWebUIClient({
-      baseUrl: $("cfg-base").value.trim(),
-      model: $("cfg-model").value.trim(),
+      provider: prov,
+      baseUrl: $("cfg-base").value.trim() || pDef.baseUrl || "",
+      model: $("cfg-model").value.trim() || pDef.defaultModel || "",
       apiKey: $("cfg-key").value.trim(),
       proxyUrl: $("cfg-proxy").value.trim(),
     });
     const ok = await tmp.available();
-    probe.textContent = ok ? "Conexion correcta." : "No se pudo conectar (revisa URL, key o permisos del host).";
+    probe.textContent = ok ? "Conexion correcta." : "Sin respuesta (revisa URL, API key o permisos del host).";
     probe.className = "probe " + (ok ? "ok" : "down");
   });
 
-  // Al cerrar el panel: respeta la preferencia de cache.
   window.addEventListener("pagehide", () => {
     if (ChatCache.getKeep()) ChatCache.saveCurrent(state.history);
     else ChatCache.clearCurrent();
@@ -662,6 +818,7 @@ async function init() {
   updateCacheSize();
   await refreshState();
   wireActions();
+  watchDockHeight(); // sincroniza --dock-h para que el toast nunca se solape ni quede tapado
   // Nota: la wiring de la pestana Auditoria (timeline, import/export, replay,
   // paleta) vive en la IIFE `setupQaTab` mas abajo, que se autoejecuta al cargar
   // el script. No existe una funcion `wireQA` — llamarla aqui lanzaba una
@@ -670,6 +827,19 @@ async function init() {
   // ejecutara jamas.
   refreshReplayState();
   refreshConnection();
+  // Si el popup pidio abrir el panel en una pestana especifica (p. ej. "Abrir
+  // Auditoria" en la nueva barra de exportacion), respeta esa peticion una vez.
+  try {
+    const OPEN_TAB_KEY = "charlyaudit:openTab";
+    const stored = await chrome.storage.local.get(OPEN_TAB_KEY);
+    const wanted = stored[OPEN_TAB_KEY];
+    if (wanted === "qa" || wanted === "report" || wanted === "assistant") {
+      document.getElementById("tab-btn-" + wanted)?.click();
+      await chrome.storage.local.remove(OPEN_TAB_KEY);
+    }
+  } catch {
+    /* sin storage */
+  }
   // Sincronia popup<->panel<->SW: al grabar/detener desde cualquier UI, el estado
   // compartido cambia y ambas interfaces se refrescan (sin inconsistencias).
   try {
@@ -796,14 +966,30 @@ init();
 
   let lastReport = null;
   let lastCount = -1;
-  let source = "live"; // "live" (temporal) | "imported"
+  let source = "live"; // "live" (temporal) | "imported" | "replay"
   let importedReport = null;
+  let importedBundle = null;
   let activeType = null; // filtro por tipo al hacer clic en un chip
+
+  // Recupera el reporte importado ya persistido en el SW (sobrevive a cerrar
+  // y reabrir el panel; antes solo vivia en esta variable local).
+  async function hydrateImported() {
+    const res = await qaControl("getReplay");
+    if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
+      importedReport = res.report;
+    }
+  }
 
   async function getActiveReport() {
     return source === "imported" ? importedReport : await bridge.getReport();
   }
   function updateSourceUI() {
+    // Sincroniza con el state compartido: renderKpis() (fuera de este closure)
+    // necesita saber que fuente esta activa para no calcular siempre sobre el
+    // reporte temporal — antes eso hacia que los KPIs de "Repeticion" mostraran
+    // 0 eventos/errores/red (los del temporal, casi siempre vacio al reproducir
+    // un reporte importado) con solo la fidelidad del replay correcta.
+    state.auditSource = source;
     G("src-live").classList.toggle("is-on", source === "live");
     G("src-imported").classList.toggle("is-on", source === "imported");
     G("src-replay").classList.toggle("is-on", source === "replay");
@@ -819,6 +1005,11 @@ init();
     } else {
       badge.textContent = "grabacion en curso (temporal)";
     }
+    // Vaciar cambia de etiqueta segun que fuente se va a vaciar (2.2).
+    const clearBtn = G("tl-clear");
+    clearBtn.title = source === "live" ? "Vaciar la grabacion temporal" : "Vaciar el reporte importado (y su repeticion)";
+    // Controles de repeticion (velocidad) solo tienen sentido en esa fuente.
+    G("replay-controls").hidden = source !== "replay";
   }
 
   async function renderTimeline(force) {
@@ -941,73 +1132,124 @@ init();
 
   let qaTimer = null;
   function switchTab(name) {
-    for (const t of ["assistant", "qa"]) {
+    for (const t of ["assistant", "qa", "report"]) {
       G("tab-" + t).classList.toggle("is-on", t === name);
       G("tab-btn-" + t).classList.toggle("is-on", t === name);
+      G("tab-btn-" + t).setAttribute("aria-selected", String(t === name));
     }
     if (name === "qa") {
       updateSourceUI();
       renderTimeline(true);
       clearInterval(qaTimer);
-      qaTimer = setInterval(() => { if (document.visibilityState === "visible" && source === "live") renderTimeline(); }, 2500);
+      // "Importado" es una foto estatica del archivo cargado (no cambia sola);
+      // "live" y "replay" SI cambian con el tiempo (grabacion en curso / pasos
+      // de repeticion llegando) y deben refrescarse solos. Antes este timer
+      // excluia todo lo que no fuera "live", asi que la vista de Repeticion
+      // nunca se auto-actualizaba: solo se veia al salir de Auditoria y volver
+      // (lo que fuerza un renderTimeline(true) manual via switchTab).
+      qaTimer = setInterval(() => { if (document.visibilityState === "visible" && source !== "imported") renderTimeline(); }, 2500);
+    } else if (name === "report") {
+      clearInterval(qaTimer);
+      renderReportTab();
     } else {
       clearInterval(qaTimer);
     }
   }
   G("tab-btn-assistant").addEventListener("click", () => switchTab("assistant"));
   G("tab-btn-qa").addEventListener("click", () => switchTab("qa"));
+  G("tab-btn-report").addEventListener("click", () => switchTab("report"));
   G("tl-refresh").addEventListener("click", () => renderTimeline(true));
   G("tl-filter").addEventListener("input", () => renderTimeline(true));
 
-  // Fuente del reporte: temporal (grabacion) vs importado.
-  G("src-live").addEventListener("click", () => { source = "live"; activeType = null; updateSourceUI(); renderTimeline(true); });
-  G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; updateSourceUI(); renderTimeline(true); });
-  G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; updateSourceUI(); renderReplayTrace(); });
+  // Fuente del reporte: temporal (grabacion) vs importado vs repeticion.
+  G("src-live").addEventListener("click", () => { source = "live"; activeType = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
+  G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
+  G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; updateSourceUI(); renderReplayTrace(); if (kpisOpen) renderKpis(); });
 
-  // Importar un artefacto de auditoria (bundle completo) o un reporte suelto.
+  // Importa un artefacto de auditoria: SOLO existe este flujo (pestana Reporte).
   // NO reemplaza la configuracion persistente: el bundle es solo metadata para
-  // entender el contexto de quien lo exporto.
-  let importedBundle = null;
-  G("tl-import").addEventListener("click", () => G("tl-import-file").click());
-  G("tl-import-file").addEventListener("change", async (ev) => {
-    const file = ev.target.files[0];
-    if (!file) return;
-    try {
-      const data = JSON.parse(await file.text());
-      // Acepta el bundle canonico (schema) o un reporte suelto (compatibilidad).
-      const bundle = data && data.schema && String(data.schema).startsWith("charlyaudit/") ? data : null;
-      const report = bundle ? bundle.report : data;
-      if (!report || !Array.isArray(report.timeline)) throw new Error("formato");
-      // Validacion estricta en el SW: si el reporte esta mal formado, no se carga.
-      const res = await qaControl("loadReplay", { report });
-      if (!res || !res.ok) {
-        toast("Reporte rechazado: " + ((res && res.error) || "invalido"));
-        return;
-      }
-      importedBundle = bundle; // metadata del exportador (extension/settings), NO se aplica
-      importedReport = report;
-      source = "imported";
-      updateSourceUI();
+  // entender el contexto de quien lo exporto. Compartido por Auditoria (para
+  // que "Importado"/"Repeticion" reflejen lo mismo que se importa aqui).
+  async function importReportFile(file) {
+    const data = JSON.parse(await file.text());
+    // Acepta el bundle canonico (schema) o un reporte suelto (compatibilidad).
+    // NUNCA acepta cypress/playwright: el input solo toma .json y el SW valida
+    // que tenga la forma de nuestro reporte (report.timeline), no un script.
+    const bundle = data && data.schema && String(data.schema).startsWith("charlyaudit/") ? data : null;
+    const report = bundle ? bundle.report : data;
+    if (!report || !Array.isArray(report.timeline)) throw new Error("formato");
+    const res = await qaControl("loadReplay", { report });
+    if (!res || !res.ok) throw new Error(res && res.error ? res.error : "invalido");
+    importedBundle = bundle;
+    importedReport = report;
+    source = "imported";
+    updateSourceUI();
+    renderTimeline(true);
+    await refreshReplayState(); // habilita el boton Reproducir de la barra de acciones
+    renderReportTab();
+    return bundle;
+  }
+
+  // Vaciar: SIEMPRE actua sobre la fuente activa, nunca sobre la otra (2.2.1/2.2.2).
+  //  - "live"               -> vacia SOLO la grabacion temporal.
+  //  - "imported"/"replay"  -> vacia el reporte importado Y su repeticion,
+  //                            como si el archivo nunca se hubiera cargado.
+  async function clearImportedSource() {
+    await qaControl("clearImported");
+    importedReport = null;
+    importedBundle = null;
+    if (source !== "live") source = "live";
+    lastCount = -1;
+    updateSourceUI();
+    renderTimeline(true);
+    await refreshReplayState();
+    renderReportTab();
+  }
+  G("tl-clear").addEventListener("click", async () => {
+    if (source === "live") {
+      await qaControl("clear");
+      lastCount = -1;
       renderTimeline(true);
-      await refreshReplayState(); // habilita el boton Reproducir de la barra de acciones
-      toast(bundle ? `Auditoria importada (${bundle.extension?.name || "?"} v${bundle.extension?.version || "?"}).` : "Reporte importado.");
-    } catch {
-      toast("Artefacto de auditoria invalido.");
-    } finally {
-      ev.target.value = "";
+      toast("Grabacion temporal vaciada.");
+    } else {
+      await clearImportedSource();
+      toast("Reporte importado vaciado.");
     }
   });
 
-  // Vaciar el reporte temporal (equivalente al control del popup).
-  G("tl-clear").addEventListener("click", async () => {
-    await qaControl("clear");
-    lastCount = -1;
-    if (source === "live") renderTimeline(true);
-    toast("Reporte temporal vaciado.");
-  });
+  // ═══════════════════════════════════════════════════════════════════════
+  // Pestana REPORTE: unico lugar del panel donde se puede importar, descargar
+  // o enviar el reporte (temporal completo, o ver el importado). (2.1)
+  // ═══════════════════════════════════════════════════════════════════════
+  async function renderReportTab() {
+    // Resumen de la sesion temporal (vive siempre; usa los KPIs ya calculados).
+    const liveEl = G("report-live-summary");
+    try {
+      const res = await qaControl("getKpis");
+      const k = res && res.kpis;
+      liveEl.textContent = k && k.eventos
+        ? `${k.eventos} eventos · ${k.errores} errores · fidelidad no aplica aqui`
+        : "Aun sin eventos. Graba una sesion en la pestana Auditoria.";
+    } catch {
+      liveEl.textContent = "Sin datos disponibles.";
+    }
+    // Resumen del reporte importado.
+    const impEl = G("report-imported-summary");
+    const clearBtn = G("rep-clear-imported");
+    if (importedReport) {
+      const n = (importedReport.timeline || []).length;
+      const url = (importedReport.metadata && importedReport.metadata.url) || "?";
+      const ext = importedBundle && importedBundle.extension;
+      impEl.textContent = `${n} eventos · ${url}${ext ? ` · ${ext.name || "CharlyAudit"} v${ext.version || "?"}` : ""}`;
+      clearBtn.disabled = false;
+    } else {
+      impEl.textContent = "Sin reporte importado.";
+      clearBtn.disabled = true;
+    }
+  }
 
-  // Export UNICO y completo: el mismo artefacto que se envia por webhook.
-  G("exp-bundle").addEventListener("click", async () => {
+  // Descargas de la sesion TEMPORAL (unico lugar permitido, 2.1.5/2.1.6).
+  G("rep-dl-json").addEventListener("click", async () => {
     const res = await qaControl("exportBundle");
     if (res && res.bundle) {
       const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -1016,14 +1258,46 @@ init();
       toast("No se pudo exportar.");
     }
   });
-  // Generadores de prueba (artefacto distinto: codigo de test ejecutable).
-  G("exp-cy").addEventListener("click", async () => {
+  G("rep-dl-cy").addEventListener("click", async () => {
     const res = await qaControl("exportCypress");
     if (res && res.script) dl("charlyaudit-session.cy.js", res.script, "text/javascript");
   });
-  G("exp-pw").addEventListener("click", async () => {
+  G("rep-dl-pw").addEventListener("click", async () => {
     const res = await qaControl("exportPlaywright");
     if (res && res.script) dl("charlyaudit-session.spec.js", res.script, "text/javascript");
+  });
+
+  // Importar: SOLO existe aqui (2.1.3). Solo acepta nuestro JSON completo,
+  // nunca cypress/playwright (2.1.4) — el input restringe a .json y el SW
+  // valida la forma exacta del reporte antes de aceptarlo.
+  G("rep-import").addEventListener("click", () => G("rep-import-file").click());
+  G("rep-import-file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const bundle = await importReportFile(file);
+      G("report-msg").textContent = bundle
+        ? `Auditoria importada (${bundle.extension?.name || "CharlyAudit"} v${bundle.extension?.version || "?"}).`
+        : "Reporte importado.";
+      toast("Reporte importado.");
+    } catch (e) {
+      G("report-msg").textContent = "Archivo invalido: " + (e && e.message ? e.message : "formato desconocido");
+      toast("Archivo invalido.");
+    } finally {
+      ev.target.value = "";
+    }
+  });
+  G("rep-clear-imported").addEventListener("click", async () => {
+    await clearImportedSource();
+    G("report-msg").textContent = "";
+    toast("Reporte importado vaciado.");
+  });
+
+  // Al terminar de hidratar desde storage, refleja el resumen si el usuario
+  // ya esta viendo la pestana Reporte (o la abre despues).
+  hydrateImported().then(() => {
+    updateSourceUI();
+    if (G("tab-report").classList.contains("is-on")) renderReportTab();
   });
 })();
 
@@ -1033,7 +1307,11 @@ init();
 (function setupPalette() {
   const G = (id) => document.getElementById(id);
   const KEY = "charlyaudit:palette";
-  const VARS = ["--brand", "--ink", "--panel", "--line", "--text"];
+  // Los componentes leen los tokens canonicos --c-* directamente (v2.5.1+).
+  // Los alias legacy (--brand, --ink...) son solo `var(--c-*)` de un solo sentido:
+  // sobreescribir el alias NO cambia el token que los estilos realmente usan.
+  // Por eso la paleta debe apuntar a los tokens canonicos, no a los alias.
+  const VARS = ["--c-brand", "--c-bg", "--c-surface", "--c-border", "--c-text"];
   const inputs = () => Array.from(document.querySelectorAll("#palette input[type=color]"));
 
   function rgbToHex(v) {
