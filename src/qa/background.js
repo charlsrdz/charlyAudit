@@ -853,6 +853,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await clearAll();
           sendResponse({ ok: true });
           break;
+        case "clearImported": {
+          // Vacia el reporte importado y su repeticion como si nunca se hubiera
+          // cargado — SIN tocar la grabacion temporal (K.timeline/K.meta).
+          const data = await chrome.storage.local.get(K.replayJob);
+          const job = data[K.replayJob];
+          if (job && job.active && job.tabId != null) {
+            chrome.tabs.sendMessage(job.tabId, { channel: "qa-replay", action: "stop" }).catch(() => {});
+          }
+          await chrome.storage.local.set({ [K.replay]: null, [K.replayJob]: null });
+          sendResponse({ ok: true });
+          break;
+        }
 
         // --- Replay persistente (sobrevive al cierre del popup y a navegar) ---
         case "loadReplay": {

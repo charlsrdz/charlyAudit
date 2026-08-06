@@ -348,3 +348,111 @@ otro. Todos los `id` de los campos internos se conservaron exactamente
 (ningún binding de JS se rompió). Verificado: abrir Captura no muestra
 Ajustes y viceversa; los valores de dominios/perfil cargan correctamente en
 su panel dedicado.
+
+---
+
+## v2.5.5 — Popup simplificado, pestaña Reporte, fuentes independientes
+
+Reestructuración de flujo: import/export/replay quedan centralizados y cada
+fuente de datos (temporal/importado) se gestiona de forma independiente.
+
+### 1. Popup
+
+**1.1/1.2 — Exportar como dropdown + acceso a Auditoría.** La fila de 3
+botones (JSON/Cypress/Playwright) se reemplazó por un único `<select>`
+"Exportar ▾" con las 3 opciones (columna 1). "Copiar JSON" y "Vaciar" se
+eliminaron; en su lugar, columna 2 tiene **"Ver en Auditoria"**, que abre el
+panel lateral directo en esa pestaña (usa una bandera transitoria
+`charlyaudit:openTab` en `chrome.storage.local`, que `init()` del panel lee
+una vez al arrancar y borra — mecanismo genérico, reutilizable para futuras
+aperturas dirigidas).
+
+**1.3 — Sección Replay eliminada.** Importar/Reproducir/Detener/Velocidad ya
+no existen en el popup; toda la reproducción vive en el panel lateral
+(Auditoría → Repetición), con el mismo botón "Ver en Auditoria" como puente.
+
+### 2. Panel lateral
+
+**2.1 — Nueva pestaña "Reporte".** Único lugar del panel donde se puede:
+- Descargar la **sesión temporal** (JSON completo / Cypress / Playwright) —
+  usa `exportBundle`/`exportCypress`/`exportPlaywright`, igual que antes pero
+  reubicado.
+- Ver un resumen de la **sesión importada** (eventos, URL, versión de quien
+  exportó) y vaciarla de forma independiente.
+- **Importar** (única entrada de archivo del panel completo — se eliminó
+  `#tl-import` de Auditoría).
+- La importación solo acepta el JSON propio del reporte (`report.timeline`
+  validado por el SW vía `validateBundle`); nunca aceptó ni aceptará
+  Cypress/Playwright, que son scripts de prueba, no datos de reporte.
+- Exportar/enviar el reporte ya **no existe en ningún otro lugar** del panel
+  (se quitaron `#exp-bundle`/`#exp-cy`/`#exp-pw` de la barra de Auditoría).
+
+**Análisis del "reporte completo" (2.1.6).** Se auditó `buildBundle()` en el
+service worker antes de dar por completa la tarea. Ya incluye, sin huecos
+relevantes: `schema` versionado, metadata de extensión, `settings`+`capture`
+del exportador (solo referencia, nunca se aplica al importar), el `report`
+íntegro (metadata + timeline con `cid`/`tRel`/`fp` por evento), telemetría de
+la última repetición (`trace`+`resumen`), errores destacados, conteos, KPIs
+agregados (`computeKpis`) e integridad (`contentHash`, `ultimoCid`). Es el
+mismo artefacto que se firma y envía por webhook — no hay una versión "más
+completa" oculta en otro lugar del código. Un hallazgo no crítico para
+`pendientes`: los *known-issues* de accesibilidad (elementos sin nombre
+accesible) hoy solo se calculan al renderizar la tabla en el panel — no se
+persisten como una lista resumen en el bundle. Ver pendientes.
+
+**2.2 — Vaciar por fuente, no global.** Antes, el botón "Vaciar" de Auditoría
+llamaba siempre a la misma acción (`clear`, solo temporal) sin importar qué
+fuente estuviera activa — si estabas viendo "Importado", igual vaciaba la
+grabación temporal (o simplemente no tenía efecto sobre el importado, que
+persistía para siempre salvo cerrar sesión). Ahora el handler bifurca por
+`source`:
+- **Temporal** → `clear` (solo `qa:timeline`/`qa:meta`).
+- **Importado / Repetición** → nueva acción de SW **`clearImported`**, que
+  vacía `qa:replay` y `qa:replayJob` (detiene cualquier replay activo primero)
+  — el reporte y su repetición desaparecen como si el archivo nunca se
+  hubiera cargado, sin tocar la grabación temporal.
+
+El botón de Importar se eliminó de Auditoría (solo vive en Reporte, 2.2.3).
+
+Efecto colateral corregido de paso: el reporte importado ahora se **hidrata
+desde `storage`** al abrir el panel (antes solo vivía en una variable en
+memoria y se perdía al cerrar y reabrir el panel, aunque el dato seguía en el
+SW).
+
+**2.3 — Controles de reproducción en Repetición.** La Velocidad (antes solo
+en el popup, ahora eliminada de ahí) se agregó como `<select>` visible
+únicamente cuando la fuente activa es "Repetición". Al pulsar Reproducir, la
+vista cambia automáticamente a esa fuente para ver el avance en vivo
+(`replay-progress` muestra `índice/total` en tiempo real, reutilizando
+`refreshReplayState()`). Reproducir/Detener ya vivían en la barra de acciones
+de Auditoría (accesibles sin importar la sub-pestaña); ahora quedan
+explícitamente conectados al contexto de Repetición.
+
+### Validado
+Suite funcional en navegador real (Playwright, sin errores de página):
+3 pestañas presentes y conmutables; importar desde Reporte habilita
+"Importado" en Auditoría y refleja los datos; Vaciar en Temporal no afecta al
+importado y viceversa; controles de repetición se muestran solo en esa
+fuente; velocidad se aplica y la vista cambia a Repetición al reproducir;
+cero elementos huérfanos de import/export en Auditoría; cero IDs referenciados
+en JS ausentes del HTML (y viceversa) en panel lateral y popup.
+
+## Pendientes (por prioridad)
+
+### P2 — Fidelidad de evidencia
+- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
+- Assertions de negocio inferidas del baseline en los exports.
+- **Nuevo:** persistir un resumen de *known-issues* de accesibilidad
+  (elementos sin nombre accesible) dentro de `buildBundle`, no solo calculado
+  al renderizar en el panel — para que viaje también en el JSON exportado.
+
+### P3 — Ingesta
+- Gzip del cuerpo (CompressionStream) antes del webhook.
+- Modo webhook que envíe chunks con idempotencia por `contentHash`.
+- Re-lectura de cookies tras `Set-Cookie` por request.
+
+### P4 — UX / Accesibilidad
+- Panel de ajustes más completo para perfil/webhook/dominios.
+- `prefers-reduced-motion` en el banner de grabación de la página auditada.
+- Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
+- `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.

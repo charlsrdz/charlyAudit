@@ -751,6 +751,7 @@ select { cursor: pointer; appearance: auto; }
 }
 
 /* Barra de fuente */
+.tl-srcbar[hidden] { display: none; } /* replay-controls reusa esta clase y se oculta condicionalmente */
 .tl-srcbar {
   display: flex;
   align-items: center;
@@ -1179,4 +1180,24 @@ select:focus-visible,
 @media (min-width: 420px) {
   .tl-kpis { grid-template-columns: repeat(4, 1fr); }
   .msg { max-width: 85%; }
+}
+
+/* Pestaña Reporte: descargas y gestion del reporte importado, unico lugar
+   donde se permite importar/descargar/enviar (v2.5.5). */
+.report-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.report-body .cfg-group {
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
 }

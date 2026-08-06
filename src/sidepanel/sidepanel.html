@@ -23,6 +23,8 @@
                 data-tab="assistant" role="tab" aria-selected="true">Asistente</button>
         <button id="tab-btn-qa" class="tab" type="button"
                 data-tab="qa" role="tab" aria-selected="false">Auditoria</button>
+        <button id="tab-btn-report" class="tab" type="button"
+                data-tab="report" role="tab" aria-selected="false">Reporte</button>
       </nav>
       <button id="open-palette" class="iconbtn" type="button"
               title="Personalizar paleta" aria-label="Personalizar paleta">✎</button>
@@ -218,12 +220,20 @@
           <button id="tl-kpis-toggle" class="act act--ghost" type="button"
                   title="Ver KPIs de la sesion"
                   aria-expanded="false" aria-controls="tl-kpis">KPIs ▾</button>
-          <button id="tl-import" class="act" type="button"
-                  title="Importar un artefacto de auditoria (.json)">Importar</button>
           <button id="tl-clear" class="act" type="button"
-                  title="Vaciar el reporte temporal">Vaciar</button>
-          <input id="tl-import-file" type="file"
-                 accept="application/json,.json" hidden />
+                  title="Vaciar la fuente activa">Vaciar</button>
+        </div>
+
+        <!-- Controles de repeticion (solo visibles con fuente "Repeticion") -->
+        <div id="replay-controls" class="tl-srcbar" hidden>
+          <label for="replay-speed" class="tl-genlabel">Velocidad</label>
+          <select id="replay-speed" class="act" style="width:auto">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+          <span id="replay-progress" class="tl-genlabel"></span>
         </div>
 
         <!-- Panel KPIs (colapsable) -->
@@ -245,17 +255,6 @@
                  aria-label="Filtrar eventos por tipo o selector" />
           <button id="tl-refresh" class="act" type="button"
                   title="Actualizar" aria-label="Actualizar lista de eventos">↻</button>
-          <span class="act__sep"></span>
-          <button id="exp-bundle" class="act act--brand" type="button"
-                  title="Exportar artefacto completo de auditoria">Exportar</button>
-          <span class="act__sep"></span>
-          <span class="tl-genlabel">prueba:</span>
-          <button id="exp-cy" class="act" type="button"
-                  title="Generar prueba Cypress"
-                  aria-label="Generar prueba Cypress">Cy</button>
-          <button id="exp-pw" class="act" type="button"
-                  title="Generar prueba Playwright"
-                  aria-label="Generar prueba Playwright">PW</button>
         </div>
       </section>
 
@@ -263,6 +262,40 @@
       <div id="tl-list" class="tl-list"
            aria-label="Eventos de la grabacion" role="list">
         <div class="tl-empty">Sin eventos. Pulsa <strong>Grabar</strong> e interactua con la pagina.</div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════
+         PESTAÑA: REPORTE
+         ══════════════════════════════════════════════════════════ -->
+    <div id="tab-report" class="tabpane" role="tabpanel"
+         aria-labelledby="tab-btn-report">
+      <div class="report-body">
+
+        <!-- Sesion temporal: la unica fuente de descarga/envio de datos. -->
+        <section class="cfg-group">
+          <span class="cfg-group__title">Sesion actual (temporal)</span>
+          <p id="report-live-summary" class="cfg-msg">Cargando…</p>
+          <div class="capture-cfg__row">
+            <button id="rep-dl-json" class="act act--brand" type="button">JSON completo</button>
+            <button id="rep-dl-cy" class="act" type="button">Cypress</button>
+            <button id="rep-dl-pw" class="act" type="button">Playwright</button>
+          </div>
+        </section>
+
+        <!-- Sesion importada: unico lugar del panel donde se puede importar. -->
+        <section class="cfg-group">
+          <span class="cfg-group__title">Sesion importada</span>
+          <p id="report-imported-summary" class="cfg-msg">Sin reporte importado.</p>
+          <div class="capture-cfg__row">
+            <button id="rep-import" class="act act--brand" type="button">Importar .json</button>
+            <button id="rep-clear-imported" class="act" type="button" disabled>Vaciar importado</button>
+          </div>
+          <input id="rep-import-file" type="file"
+                 accept="application/json,.json" hidden />
+          <span id="report-msg" class="cfg-msg" role="status" aria-live="polite"></span>
+        </section>
+
       </div>
     </div>
 

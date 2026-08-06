@@ -226,31 +226,31 @@ $("save-config").addEventListener("click", async () => {
   toast(res && res.ok ? "Configuracion guardada" : "No se pudo guardar");
 });
 
-$("clear").addEventListener("click", async () => {
-  if (!confirm("Vaciar todos los eventos grabados?")) return;
-  await control("clear");
-  refresh();
-  toast("Timeline vaciado");
-});
+// Nota: "Vaciar" se elimino del popup — ahora vive en el panel lateral,
+// donde se puede vaciar la sesion temporal o el reporte importado por
+// separado (ver pestana Auditoria/Reporte).
 
-// Exportaciones (descarga de archivo)
-$("exp-json").addEventListener("click", async () => {
-  const res = await control("getReport");
-  if (res && res.ok) download("charly-qa-report.json", JSON.stringify(res.report, null, 2), "application/json");
-});
-$("exp-cypress").addEventListener("click", async () => {
-  const res = await control("exportCypress");
-  if (res && res.ok) download("charly-qa.cy.js", res.script, "text/javascript");
-});
-$("exp-playwright").addEventListener("click", async () => {
-  const res = await control("exportPlaywright");
-  if (res && res.ok) download("charly-qa.spec.js", res.script, "text/javascript");
-});
-$("copy-json").addEventListener("click", async () => {
-  const res = await control("getReport");
-  if (res && res.ok) {
-    const ok = await copyText(JSON.stringify(res.report, null, 2));
-    toast(ok ? "Reporte copiado al portapapeles" : "No se pudo copiar");
+// Exportacion unificada: un solo select con las 3 opciones (columna 1).
+// El reporte JSON completo usa el mismo artefacto canonico que el panel
+// lateral (bundle validado/redactado/sellado), no el timeline crudo.
+$("export-select").addEventListener("change", async (e) => {
+  const choice = e.target.value;
+  e.target.value = ""; // vuelve al placeholder "Exportar ▾" tras cada uso
+  if (!choice) return;
+  if (choice === "json") {
+    const res = await control("exportBundle");
+    if (res && res.ok && res.bundle) {
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      download(`charlyaudit-${ts}.json`, JSON.stringify(res.bundle, null, 2), "application/json");
+    } else {
+      toast("No se pudo exportar.");
+    }
+  } else if (choice === "cypress") {
+    const res = await control("exportCypress");
+    if (res && res.ok) download("charly-qa.cy.js", res.script, "text/javascript");
+  } else if (choice === "playwright") {
+    const res = await control("exportPlaywright");
+    if (res && res.ok) download("charly-qa.spec.js", res.script, "text/javascript");
   }
 });
 
@@ -267,54 +267,19 @@ $("open-assistant").addEventListener("click", async () => {
   }
 });
 
-// --- Replay: importar y ejecutar (persistente, sobrevive al cierre) ----------
-let replayLoaded = false;
-async function refreshReplay() {
-  // Restaura el reporte importado desde el SW (no se pierde al cerrar el popup).
-  const res = await control("getReplay");
-  if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
-    replayLoaded = true;
-    $("play-replay").disabled = false;
-    const active = res.job && res.job.active;
-    $("replay-info").textContent = active
-      ? `reproduciendo · ${res.job.index}/${res.report.timeline.length}`
-      : `${res.report.timeline.length} eventos · listo`;
-  } else {
-    replayLoaded = false;
-    $("play-replay").disabled = true;
-    $("replay-info").textContent = "Sin replay cargado";
-  }
-}
-$("imp-replay").addEventListener("click", () => $("replay-file").click());
-$("replay-file").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+// Abrir el panel lateral directo en la pestana Auditoria (reemplaza la seccion
+// de Replay del popup: reproducir/detener/importar ahora viven solo alli).
+$("open-audit").addEventListener("click", async () => {
   try {
-    const data = JSON.parse(await file.text());
-    if (!data || !Array.isArray(data.timeline)) throw new Error("formato");
-    // Persiste en el SW de inmediato: si el popup se cierra, no se pierde.
-    await control("loadReplay", { report: data });
-    await refreshReplay();
-    toast("Replay importado y guardado.");
-  } catch {
-    toast("Archivo de replay invalido.");
-  } finally {
-    e.target.value = ""; // permite reimportar el mismo archivo
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.id != null) {
+      await chrome.storage.local.set({ "charlyaudit:openTab": "qa" });
+      await chrome.sidePanel.open({ tabId: tab.id });
+      window.close();
+    }
+  } catch (e) {
+    toast("No se pudo abrir el panel");
   }
-});
-$("play-replay").addEventListener("click", async () => {
-  if (!replayLoaded) return;
-  const speed = Number($("replay-speed").value) || 1;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || tab.id == null) return toast("Sin pestana activa.");
-  const res = await control("startReplay", { tabId: tab.id, options: { speed } });
-  if (res && res.ok) toast("Reproduciendo en la pestana…"); // el popup NO se cierra
-  else toast("No se pudo iniciar el replay.");
-});
-$("stop-replay").addEventListener("click", async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  await control("stopReplay", { tabId: tab && tab.id });
-  toast("Replay detenido.");
 });
 
 // --- Utilidades de salida ---------------------------------------------------
@@ -329,30 +294,6 @@ function download(filename, text, mime) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   toast(`Descargado ${filename}`);
-}
-
-async function copyText(text) {
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    /* fallback abajo */
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  } catch {
-    return false;
-  }
 }
 
 let toastTimer = null;
@@ -381,7 +322,6 @@ async function renderWebhookPending() {
     : `Webhook: reintentando (${p.intentos}, prox. ${p.proximoMin}min)`;
 }
 refresh();
-refreshReplay();
 renderWebhookPending();
 pollTimer = setInterval(refresh, 1200);
 // Sincronia popup<->panel<->SW: reacciona al estado compartido para que grabar/
@@ -390,7 +330,6 @@ try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes["qa:isRecording"] || changes["qa:timeline"] || changes["qa:meta"]) refresh();
-    if (changes["qa:replay"] || changes["qa:replayJob"]) refreshReplay();
     if (changes["qa:webhookPending"]) renderWebhookPending();
   });
 } catch {

@@ -199,17 +199,19 @@ async function refreshReplayState() {
   const res = await qaControl("getReplay");
   const info = $("act-replay-info");
   const play = $("act-play");
+  const progress = $("replay-progress");
   if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
     if (play) play.disabled = false;
-    if (info) {
-      const active = res.job && res.job.active;
-      info.textContent = active
-        ? `reproduciendo ${res.job.index}/${res.report.timeline.length}`
-        : `${res.report.timeline.length} eventos listos`;
-    }
+    const active = res.job && res.job.active;
+    const txt = active
+      ? `reproduciendo ${res.job.index}/${res.report.timeline.length}`
+      : `${res.report.timeline.length} eventos listos`;
+    if (info) info.textContent = txt;
+    if (progress) progress.textContent = txt;
   } else {
     if (play) play.disabled = true;
     if (info) info.textContent = "Sin replay cargado";
+    if (progress) progress.textContent = "";
   }
 }
 
@@ -219,13 +221,21 @@ function wireActions() {
     await qaControl("toggle");
     refreshState();
   });
-  // La importacion es unica y vive en la pestana Auditoria (tl-import).
+  // La importacion es unica y vive en la pestana Reporte (no en Auditoria).
   // Reproducir / Detener replay contra la pestana activa.
   $("act-play").addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || tab.id == null) return toast("Sin pestana activa.");
-    const res = await qaControl("startReplay", { tabId: tab.id, options: { speed: 1 } });
-    toast(res && res.ok ? "Reproduciendo en la pestana…" : "No se pudo iniciar el replay.");
+    const speedEl = $("replay-speed");
+    const speed = speedEl ? Number(speedEl.value) || 1 : 1;
+    const res = await qaControl("startReplay", { tabId: tab.id, options: { speed } });
+    if (res && res.ok) {
+      toast("Reproduciendo en la pestana…");
+      // Lleva la vista a "Repeticion" para ver el avance en vivo (2.3).
+      document.getElementById("src-replay")?.click();
+    } else {
+      toast("No se pudo iniciar el replay.");
+    }
   });
   $("act-stop").addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -748,6 +758,19 @@ async function init() {
   // ejecutara jamas.
   refreshReplayState();
   refreshConnection();
+  // Si el popup pidio abrir el panel en una pestana especifica (p. ej. "Abrir
+  // Auditoria" en la nueva barra de exportacion), respeta esa peticion una vez.
+  try {
+    const OPEN_TAB_KEY = "charlyaudit:openTab";
+    const stored = await chrome.storage.local.get(OPEN_TAB_KEY);
+    const wanted = stored[OPEN_TAB_KEY];
+    if (wanted === "qa" || wanted === "report" || wanted === "assistant") {
+      document.getElementById("tab-btn-" + wanted)?.click();
+      await chrome.storage.local.remove(OPEN_TAB_KEY);
+    }
+  } catch {
+    /* sin storage */
+  }
   // Sincronia popup<->panel<->SW: al grabar/detener desde cualquier UI, el estado
   // compartido cambia y ambas interfaces se refrescan (sin inconsistencias).
   try {
@@ -874,9 +897,19 @@ init();
 
   let lastReport = null;
   let lastCount = -1;
-  let source = "live"; // "live" (temporal) | "imported"
+  let source = "live"; // "live" (temporal) | "imported" | "replay"
   let importedReport = null;
+  let importedBundle = null;
   let activeType = null; // filtro por tipo al hacer clic en un chip
+
+  // Recupera el reporte importado ya persistido en el SW (sobrevive a cerrar
+  // y reabrir el panel; antes solo vivia en esta variable local).
+  async function hydrateImported() {
+    const res = await qaControl("getReplay");
+    if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
+      importedReport = res.report;
+    }
+  }
 
   async function getActiveReport() {
     return source === "imported" ? importedReport : await bridge.getReport();
@@ -897,6 +930,11 @@ init();
     } else {
       badge.textContent = "grabacion en curso (temporal)";
     }
+    // Vaciar cambia de etiqueta segun que fuente se va a vaciar (2.2).
+    const clearBtn = G("tl-clear");
+    clearBtn.title = source === "live" ? "Vaciar la grabacion temporal" : "Vaciar el reporte importado (y su repeticion)";
+    // Controles de repeticion (velocidad) solo tienen sentido en esa fuente.
+    G("replay-controls").hidden = source !== "replay";
   }
 
   async function renderTimeline(force) {
@@ -1019,73 +1057,118 @@ init();
 
   let qaTimer = null;
   function switchTab(name) {
-    for (const t of ["assistant", "qa"]) {
+    for (const t of ["assistant", "qa", "report"]) {
       G("tab-" + t).classList.toggle("is-on", t === name);
       G("tab-btn-" + t).classList.toggle("is-on", t === name);
+      G("tab-btn-" + t).setAttribute("aria-selected", String(t === name));
     }
     if (name === "qa") {
       updateSourceUI();
       renderTimeline(true);
       clearInterval(qaTimer);
       qaTimer = setInterval(() => { if (document.visibilityState === "visible" && source === "live") renderTimeline(); }, 2500);
+    } else if (name === "report") {
+      clearInterval(qaTimer);
+      renderReportTab();
     } else {
       clearInterval(qaTimer);
     }
   }
   G("tab-btn-assistant").addEventListener("click", () => switchTab("assistant"));
   G("tab-btn-qa").addEventListener("click", () => switchTab("qa"));
+  G("tab-btn-report").addEventListener("click", () => switchTab("report"));
   G("tl-refresh").addEventListener("click", () => renderTimeline(true));
   G("tl-filter").addEventListener("input", () => renderTimeline(true));
 
-  // Fuente del reporte: temporal (grabacion) vs importado.
+  // Fuente del reporte: temporal (grabacion) vs importado vs repeticion.
   G("src-live").addEventListener("click", () => { source = "live"; activeType = null; updateSourceUI(); renderTimeline(true); });
   G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; updateSourceUI(); renderTimeline(true); });
   G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; updateSourceUI(); renderReplayTrace(); });
 
-  // Importar un artefacto de auditoria (bundle completo) o un reporte suelto.
+  // Importa un artefacto de auditoria: SOLO existe este flujo (pestana Reporte).
   // NO reemplaza la configuracion persistente: el bundle es solo metadata para
-  // entender el contexto de quien lo exporto.
-  let importedBundle = null;
-  G("tl-import").addEventListener("click", () => G("tl-import-file").click());
-  G("tl-import-file").addEventListener("change", async (ev) => {
-    const file = ev.target.files[0];
-    if (!file) return;
-    try {
-      const data = JSON.parse(await file.text());
-      // Acepta el bundle canonico (schema) o un reporte suelto (compatibilidad).
-      const bundle = data && data.schema && String(data.schema).startsWith("charlyaudit/") ? data : null;
-      const report = bundle ? bundle.report : data;
-      if (!report || !Array.isArray(report.timeline)) throw new Error("formato");
-      // Validacion estricta en el SW: si el reporte esta mal formado, no se carga.
-      const res = await qaControl("loadReplay", { report });
-      if (!res || !res.ok) {
-        toast("Reporte rechazado: " + ((res && res.error) || "invalido"));
-        return;
-      }
-      importedBundle = bundle; // metadata del exportador (extension/settings), NO se aplica
-      importedReport = report;
-      source = "imported";
-      updateSourceUI();
+  // entender el contexto de quien lo exporto. Compartido por Auditoria (para
+  // que "Importado"/"Repeticion" reflejen lo mismo que se importa aqui).
+  async function importReportFile(file) {
+    const data = JSON.parse(await file.text());
+    // Acepta el bundle canonico (schema) o un reporte suelto (compatibilidad).
+    // NUNCA acepta cypress/playwright: el input solo toma .json y el SW valida
+    // que tenga la forma de nuestro reporte (report.timeline), no un script.
+    const bundle = data && data.schema && String(data.schema).startsWith("charlyaudit/") ? data : null;
+    const report = bundle ? bundle.report : data;
+    if (!report || !Array.isArray(report.timeline)) throw new Error("formato");
+    const res = await qaControl("loadReplay", { report });
+    if (!res || !res.ok) throw new Error(res && res.error ? res.error : "invalido");
+    importedBundle = bundle;
+    importedReport = report;
+    source = "imported";
+    updateSourceUI();
+    renderTimeline(true);
+    await refreshReplayState(); // habilita el boton Reproducir de la barra de acciones
+    renderReportTab();
+    return bundle;
+  }
+
+  // Vaciar: SIEMPRE actua sobre la fuente activa, nunca sobre la otra (2.2.1/2.2.2).
+  //  - "live"               -> vacia SOLO la grabacion temporal.
+  //  - "imported"/"replay"  -> vacia el reporte importado Y su repeticion,
+  //                            como si el archivo nunca se hubiera cargado.
+  async function clearImportedSource() {
+    await qaControl("clearImported");
+    importedReport = null;
+    importedBundle = null;
+    if (source !== "live") source = "live";
+    lastCount = -1;
+    updateSourceUI();
+    renderTimeline(true);
+    await refreshReplayState();
+    renderReportTab();
+  }
+  G("tl-clear").addEventListener("click", async () => {
+    if (source === "live") {
+      await qaControl("clear");
+      lastCount = -1;
       renderTimeline(true);
-      await refreshReplayState(); // habilita el boton Reproducir de la barra de acciones
-      toast(bundle ? `Auditoria importada (${bundle.extension?.name || "?"} v${bundle.extension?.version || "?"}).` : "Reporte importado.");
-    } catch {
-      toast("Artefacto de auditoria invalido.");
-    } finally {
-      ev.target.value = "";
+      toast("Grabacion temporal vaciada.");
+    } else {
+      await clearImportedSource();
+      toast("Reporte importado vaciado.");
     }
   });
 
-  // Vaciar el reporte temporal (equivalente al control del popup).
-  G("tl-clear").addEventListener("click", async () => {
-    await qaControl("clear");
-    lastCount = -1;
-    if (source === "live") renderTimeline(true);
-    toast("Reporte temporal vaciado.");
-  });
+  // ═══════════════════════════════════════════════════════════════════════
+  // Pestana REPORTE: unico lugar del panel donde se puede importar, descargar
+  // o enviar el reporte (temporal completo, o ver el importado). (2.1)
+  // ═══════════════════════════════════════════════════════════════════════
+  async function renderReportTab() {
+    // Resumen de la sesion temporal (vive siempre; usa los KPIs ya calculados).
+    const liveEl = G("report-live-summary");
+    try {
+      const res = await qaControl("getKpis");
+      const k = res && res.kpis;
+      liveEl.textContent = k && k.eventos
+        ? `${k.eventos} eventos · ${k.errores} errores · fidelidad no aplica aqui`
+        : "Aun sin eventos. Graba una sesion en la pestana Auditoria.";
+    } catch {
+      liveEl.textContent = "Sin datos disponibles.";
+    }
+    // Resumen del reporte importado.
+    const impEl = G("report-imported-summary");
+    const clearBtn = G("rep-clear-imported");
+    if (importedReport) {
+      const n = (importedReport.timeline || []).length;
+      const url = (importedReport.metadata && importedReport.metadata.url) || "?";
+      const ext = importedBundle && importedBundle.extension;
+      impEl.textContent = `${n} eventos · ${url}${ext ? ` · ${ext.name || "CharlyAudit"} v${ext.version || "?"}` : ""}`;
+      clearBtn.disabled = false;
+    } else {
+      impEl.textContent = "Sin reporte importado.";
+      clearBtn.disabled = true;
+    }
+  }
 
-  // Export UNICO y completo: el mismo artefacto que se envia por webhook.
-  G("exp-bundle").addEventListener("click", async () => {
+  // Descargas de la sesion TEMPORAL (unico lugar permitido, 2.1.5/2.1.6).
+  G("rep-dl-json").addEventListener("click", async () => {
     const res = await qaControl("exportBundle");
     if (res && res.bundle) {
       const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
@@ -1094,14 +1177,46 @@ init();
       toast("No se pudo exportar.");
     }
   });
-  // Generadores de prueba (artefacto distinto: codigo de test ejecutable).
-  G("exp-cy").addEventListener("click", async () => {
+  G("rep-dl-cy").addEventListener("click", async () => {
     const res = await qaControl("exportCypress");
     if (res && res.script) dl("charlyaudit-session.cy.js", res.script, "text/javascript");
   });
-  G("exp-pw").addEventListener("click", async () => {
+  G("rep-dl-pw").addEventListener("click", async () => {
     const res = await qaControl("exportPlaywright");
     if (res && res.script) dl("charlyaudit-session.spec.js", res.script, "text/javascript");
+  });
+
+  // Importar: SOLO existe aqui (2.1.3). Solo acepta nuestro JSON completo,
+  // nunca cypress/playwright (2.1.4) — el input restringe a .json y el SW
+  // valida la forma exacta del reporte antes de aceptarlo.
+  G("rep-import").addEventListener("click", () => G("rep-import-file").click());
+  G("rep-import-file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const bundle = await importReportFile(file);
+      G("report-msg").textContent = bundle
+        ? `Auditoria importada (${bundle.extension?.name || "CharlyAudit"} v${bundle.extension?.version || "?"}).`
+        : "Reporte importado.";
+      toast("Reporte importado.");
+    } catch (e) {
+      G("report-msg").textContent = "Archivo invalido: " + (e && e.message ? e.message : "formato desconocido");
+      toast("Archivo invalido.");
+    } finally {
+      ev.target.value = "";
+    }
+  });
+  G("rep-clear-imported").addEventListener("click", async () => {
+    await clearImportedSource();
+    G("report-msg").textContent = "";
+    toast("Reporte importado vaciado.");
+  });
+
+  // Al terminar de hidratar desde storage, refleja el resumen si el usuario
+  // ya esta viendo la pestana Reporte (o la abre despues).
+  hydrateImported().then(() => {
+    updateSourceUI();
+    if (G("tab-report").classList.contains("is-on")) renderReportTab();
   });
 })();
 
