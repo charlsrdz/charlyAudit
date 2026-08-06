@@ -781,7 +781,12 @@ select { cursor: pointer; appearance: auto; }
 }
 .tl-source button + button { border-left: 1px solid var(--c-border); }
 .tl-source button.is-on  { background: var(--c-brand); color: #fff; }
-.tl-source button:disabled { opacity: .35; cursor: not-allowed; }
+.tl-source button:disabled {
+  /* Antes: opacity .35 sobre --c-muted (contraste efectivo 1.78:1, ilegible).
+     Color solido calculado para dar >=4.5:1 sobre el fondo (WCAG AA). */
+  color: #7e84b5;
+  cursor: not-allowed;
+}
 
 .tl-srcbadge {
   font-size: var(--t-xs);
@@ -986,6 +991,7 @@ select { cursor: pointer; appearance: auto; }
   gap: var(--s-2);
   padding: var(--s-1) 0;
 }
+.tl-kpis[hidden] { display: none; }
 
 .tl-kpi {
   background: var(--c-surface2);
@@ -1014,6 +1020,9 @@ select { cursor: pointer; appearance: auto; }
 
 /* ── 8. DIÁLOGOS ───────────────────────────────────────────── */
 dialog.settings {
+  /* El reset global `* { margin:0 }` anula el `margin:auto` con el que Chrome
+     centra un <dialog> abierto via showModal(). Se restaura explicitamente. */
+  margin: auto;
   width: min(92vw, 340px);
   background: var(--c-surface);
   color: var(--c-text);
@@ -1117,9 +1126,14 @@ dialog.settings::backdrop { background: rgba(5,6,16,.65); }
 /* ── 9. NOTIFICACIÓN TOAST ─────────────────────────────────── */
 .toast {
   position: fixed;
+  top: auto; /* la Popover API trae top:0 por defecto; sin esto domina sobre bottom */
   left: var(--s-3);
   right: var(--s-3);
-  bottom: 72px;
+  /* Antes: bottom:72px fijo, asumiendo una altura de .dock que no es constante
+     (dock__meta se envuelve en paneles angostos y crece). Ahora usa la altura
+     real medida por ResizeObserver (--dock-h), con una base segura si aun no
+     se ha medido o el dock no esta visible (pestana Auditoria). */
+  bottom: calc(var(--dock-h, 64px) + var(--s-2));
   background: var(--c-surface2);
   border: 1px solid var(--c-brand);
   border-radius: var(--r-md);
@@ -1130,7 +1144,7 @@ dialog.settings::backdrop { background: rgba(5,6,16,.65); }
   transform: translateY(6px);
   transition: opacity .2s, transform .2s;
   pointer-events: none;
-  z-index: 100;
+  margin: 0; /* el reset ya lo pone en 0; explicito para no depender del popover UA */
 }
 .toast.on { opacity: 1; transform: translateY(0); }
 
@@ -1153,9 +1167,11 @@ select:focus-visible,
 /* ── 11. RESPONSIVE ────────────────────────────────────────── */
 /* El panel Chrome puede ser <320px en monitores pequeños */
 @media (max-width: 340px) {
+  .bar { gap: var(--s-1); padding: var(--s-2); }
   .bar__name { font-size: 12px; }
-  .tabs { gap: 2px; }
-  .tab { padding: var(--s-1) var(--s-2); }
+  .tabs { gap: 2px; min-width: 0; flex-shrink: 1; } /* sin min-width:0 no se comprimia y desbordaba a 280px */
+  .tab { padding: var(--s-1) 6px; }
+  .iconbtn { width: 28px; height: 28px; }
   .tl-kpis { grid-template-columns: repeat(2, 1fr); }
   .tl-srcbar { flex-direction: column; align-items: flex-start; }
 }

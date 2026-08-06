@@ -560,12 +560,43 @@ function autoGrow() {
 
 // --- Aviso ------------------------------------------------------------------
 let toastTimer = null;
+/** Mantiene --dock-h sincronizada con la altura real del dock del compositor,
+ *  para que el toast (posicionado por CSS relativo a esa variable) nunca quede
+ *  tapado ni se solape cuando el dock crece (dock__meta se envuelve en anchos
+ *  angostos) o cuando no esta visible (pestana Auditoria, sin dock en el flujo). */
+function watchDockHeight() {
+  const dock = $("dock") || document.querySelector(".dock");
+  if (!dock) return;
+  const apply = () => {
+    const visible = dock.offsetParent !== null; // oculto si su tabpane no es .is-on
+    document.documentElement.style.setProperty("--dock-h", visible ? `${dock.offsetHeight}px` : "16px");
+  };
+  apply();
+  try {
+    new ResizeObserver(apply).observe(dock);
+  } catch {
+    window.addEventListener("resize", apply); // navegador sin ResizeObserver
+  }
+  // El cambio de pestana no dispara resize del dock (solo cambia display); observarlo aparte.
+  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => setTimeout(apply, 0)));
+}
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg;
+  // Popover API: pone el aviso en el "top layer", por encima de cualquier
+  // <dialog> abierto (z-index no tiene efecto contra la capa de un dialog).
+  try {
+    if (!t.matches(":popover-open")) t.showPopover();
+  } catch {
+    /* navegador sin soporte: sigue visible via posicion fixed + clase */
+  }
   t.classList.add("on");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("on"), 2000);
+  toastTimer = setTimeout(() => {
+    t.classList.remove("on");
+    try { t.hidePopover(); } catch { /* no critico */ }
+  }, 2000);
 }
 
 // --- Ajustes ----------------------------------------------------------------
@@ -697,6 +728,7 @@ async function init() {
   updateCacheSize();
   await refreshState();
   wireActions();
+  watchDockHeight(); // sincroniza --dock-h para que el toast nunca se solape ni quede tapado
   // Nota: la wiring de la pestana Auditoria (timeline, import/export, replay,
   // paleta) vive en la IIFE `setupQaTab` mas abajo, que se autoejecuta al cargar
   // el script. No existe una funcion `wireQA` — llamarla aqui lanzaba una

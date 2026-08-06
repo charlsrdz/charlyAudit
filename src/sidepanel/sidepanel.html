@@ -366,8 +366,9 @@
       </div>
     </dialog>
 
-    <!-- Notificación transitoria -->
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <!-- Notificación transitoria: popover para quedar en el "top layer" por
+         encima de cualquier <dialog> abierto (z-index no aplica contra dialogs) -->
+    <div id="toast" class="toast" popover="manual" role="status" aria-live="polite"></div>
 
     <script type="module" src="sidepanel.js"></script>
   </body>

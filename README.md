@@ -156,8 +156,12 @@ done
 
 ### P4 — UX
 - Panel de ajustes más completo para perfil/webhook/dominios.
-- `prefers-reduced-motion` en el banner de grabación.
-- Contraste WCAG AA formal sobre la paleta personalizable.
+- `prefers-reduced-motion` en el banner de grabación (la página auditada; ya
+  aplicado al indicador "pensando" del asistente).
+- Auditoría de contraste WCAG AA en el resto de combinaciones de la paleta
+  personalizable (v2.5.3 corrigió el caso conocido de "Importado" deshabilitado;
+  falta una pasada sistemática sobre todas las combinaciones posibles cuando el
+  usuario personaliza colores en `#palette`).
 
 ### Backlog
 - Shadow DOM/iframes en captura y replay.
@@ -173,6 +177,8 @@ done
 
 | Versión | Cambios principales |
 |---|---|
+| **2.5.3** | Auditoría de los 6 hallazgos visuales de v2.5.1: 4 ya resueltos (verificados), 2 corregidos (toast solapado con dock envuelto, overflow del header a 280px) |
+| **2.5.1** | Rediseño de UI/UX del panel lateral: sistema de tokens, jerarquía de 3 botones, grupos semánticos en captura, KPI grid predecible, mobile-first, accesibilidad |
 | **2.5.0** | Análisis y validación completa · `web_accessible_resources` para inyección on-demand · rebrand CharlyPlugin→CharlyAudit en lib · criterio de automejora continua |
 | **2.4.1** | Asistente IA multi-proveedor (OpenWebUI/OpenAI/Gemini/Claude) · conversación multi-turno real con roles nativos · parámetros configurables · contexto performance con INP p98 y TBT por segmento |
 | **2.4.0** | Performance 100%: INP real por interacción, TBT por navegación, waterfall completo · dedup de interaction-timing y resource-timing · navInfo enriquecida |
@@ -223,3 +229,56 @@ y espaciado propio. La jerarquía visual guía el ojo y reduce el tiempo de lect
 - `role="group"` en chips de filtro
 - `prefers-reduced-motion` en el indicador de escritura
 - Colores funcionales via tokens (nunca hardcodeados en componentes)
+
+---
+
+## v2.5.3 — Auditoría y cierre de los 6 hallazgos de UI/UX
+
+Se revisaron los seis problemas del reporte visual de v2.5.1 con verificación
+empírica en navegador (Playwright) antes de tocar código, para no corregir
+nada que ya estuviera resuelto ni dejar sin corregir algo real.
+
+### Ya estaban corregidos (verificado, sin cambios adicionales)
+1. **KPIs no cerraban** — `.tl-kpis[hidden] { display: none; }` ya tenía mayor
+   especificidad (clase+atributo) que `.tl-kpis { display: grid }` y gana
+   correctamente. Medido: `display: none` tras cerrar. Sin acción.
+2. **Modales no céntricos** — `dialog.settings { margin: auto; }` ya restauraba
+   explícitamente lo que el reset global (`* { margin: 0 }`) le quitaba al
+   `margin: auto` nativo de `<dialog>`. Medido: centrado correcto en 380px y 280px.
+3. **Toast detrás de un modal abierto** — ya resuelto con `popover="manual"` +
+   `showPopover()`/`hidePopover()`, que saca al toast del flujo normal y lo pone
+   en la capa superior (top layer), por encima de cualquier `<dialog>` sin
+   importar `z-index`. Confirmado con captura de pixel: el toast se ve sobre
+   el modal abierto.
+4. **Contraste del texto "Importado" (deshabilitado)** — ya no usa `opacity`
+   sobre `--c-muted` (que caía a 1.78:1, ilegible); usa un color sólido
+   precalculado. Medido: 5.26:1 sobre `--c-bg`, 4.78:1 sobre `--c-surface`
+   (ambos superan el mínimo AA de 4.5:1).
+
+### Corregidos en esta versión
+5. **Toast podía solaparse con el dock envuelto (paneles angostos)** — el
+   mecanismo (`--dock-h` vía `ResizeObserver`) ya existía en CSS y JS pero
+   tenía dos fallas:
+   - `watchDockHeight()` estaba definida pero **nunca se invocaba** desde
+     `init()` → `--dock-h` quedaba sin valor real. **Fix:** se añadió la
+     llamada en `init()`.
+   - Al adoptar la Popover API para el fix #3, el toast heredó el `top: 0`
+     por defecto de un popover sin anclaje, que ganaba sobre `bottom` al no
+     haber un `top` explícito en el CSS del autor. **Fix:** `top: auto;`
+     explícito en `.toast`.
+   - Verificado: `--dock-h` ahora resuelve a `108px` (altura real medida),
+     el toast se posiciona justo encima del dock sin superposición.
+6. **Header desbordaba 2px en el ancho mínimo (280px)** — `.tabs` no tenía
+   `min-width: 0`, así que no podía comprimirse por debajo de su ancho de
+   contenido dentro del `.bar` flex, forzando overflow horizontal aun con
+   `.bar__name` ya truncado. **Fix:** `min-width: 0; flex-shrink: 1` en
+   `.tabs`, más ajuste fino de padding/gap/tamaño de ícono en el breakpoint
+   `max-width: 340px`. Verificado: `scrollWidth` del header = 280px exactos,
+   sin overflow.
+
+### Nota de proceso
+Antes de aplicar cualquier corrección se reverificó cada uno de los 6 puntos
+contra el código real (no contra la memoria del reporte anterior). Cuatro de
+seis ya estaban resueltos correctamente; solo dos necesitaban trabajo real.
+Aplicar "fixes" sobre código que ya funciona introduce riesgo sin beneficio,
+así que se documenta la verificación en vez de tocar lo que no estaba roto.
