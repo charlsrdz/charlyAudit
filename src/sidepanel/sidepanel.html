@@ -95,15 +95,18 @@
                 aria-describedby="act-replay-info" disabled>Reproducir</button>
         <button id="act-stop" class="act" type="button"
                 title="Detener reproduccion">Detener</button>
+        <span class="act__sep"></span>
         <button id="act-cfg" class="act act--ghost" type="button"
-                title="Configuracion de captura" aria-expanded="false">Captura ▾</button>
+                title="Que capturar durante la grabacion" aria-expanded="false"
+                aria-controls="capture-cfg">Captura ▾</button>
+        <button id="act-domains" class="act act--ghost" type="button"
+                title="Perfil, dominios y telemetria" aria-expanded="false"
+                aria-controls="domains-cfg">Ajustes ▾</button>
       </section>
 
-      <!-- Panel de configuración de captura (colapsable) -->
+      <!-- Panel: QUE capturar durante la grabacion (config por sesion) -->
       <section id="capture-cfg" class="capture-cfg" hidden
                aria-label="Configuracion de captura">
-
-        <!-- Grupo 1: Captura -->
         <div class="cfg-group">
           <span class="cfg-group__title">Captura</span>
           <div class="fld">
@@ -126,8 +129,13 @@
             <span id="act-replay-info" class="cfg-msg">Sin replay cargado</span>
           </div>
         </div>
+      </section>
 
-        <!-- Grupo 2: Perfil y dominios -->
+      <!-- Panel: QUIEN graba y A DONDE se envia (config persistente, independiente
+           de la sesion de captura — por eso vive en un panel propio). -->
+      <section id="domains-cfg" class="capture-cfg" hidden
+               aria-label="Perfil, dominios y telemetria">
+
         <div class="cfg-group">
           <span class="cfg-group__title">Perfil y dominios</span>
           <div class="fld">
@@ -145,7 +153,6 @@
           </div>
         </div>
 
-        <!-- Grupo 3: Telemetría -->
         <div class="cfg-group">
           <span class="cfg-group__title">Telemetria</span>
           <div class="fld">
@@ -176,7 +183,6 @@
           </label>
         </div>
 
-        <!-- Acciones -->
         <div class="cfg-group">
           <div class="capture-cfg__row">
             <button id="cfg-settings-save" class="act act--brand"
@@ -340,23 +346,23 @@
       <div class="settings__body">
         <div class="pal-row">
           <label for="pal-brand">Color de marca</label>
-          <input id="pal-brand" type="color" data-var="--brand" />
+          <input id="pal-brand" type="color" data-var="--c-brand" />
         </div>
         <div class="pal-row">
           <label for="pal-ink">Fondo</label>
-          <input id="pal-ink" type="color" data-var="--ink" />
+          <input id="pal-ink" type="color" data-var="--c-bg" />
         </div>
         <div class="pal-row">
           <label for="pal-panel">Paneles</label>
-          <input id="pal-panel" type="color" data-var="--panel" />
+          <input id="pal-panel" type="color" data-var="--c-surface" />
         </div>
         <div class="pal-row">
           <label for="pal-line">Bordes</label>
-          <input id="pal-line" type="color" data-var="--line" />
+          <input id="pal-line" type="color" data-var="--c-border" />
         </div>
         <div class="pal-row">
           <label for="pal-text">Texto</label>
-          <input id="pal-text" type="color" data-var="--text" />
+          <input id="pal-text" type="color" data-var="--c-text" />
         </div>
         <div class="settings__row">
           <button id="pal-save" class="act act--brand" type="button">Guardar</button>

@@ -162,6 +162,9 @@ done
   personalizable (v2.5.3 corrigió el caso conocido de "Importado" deshabilitado;
   falta una pasada sistemática sobre todas las combinaciones posibles cuando el
   usuario personaliza colores en `#palette`).
+- `--c-brand-dim` (hovers, bordes sutiles) no se deriva automáticamente del
+  `--c-brand` personalizado — sigue fijo al valor por defecto. Calcular un tono
+  derivado (o añadirlo como sexto control en la paleta) para consistencia total.
 
 ### Backlog
 - Shadow DOM/iframes en captura y replay.
@@ -177,6 +180,7 @@ done
 
 | Versión | Cambios principales |
 |---|---|
+| **2.5.4** | Personalización de colores: la paleta apuntaba a alias que ya nadie leía, ahora apunta a los tokens canónicos · footer del popup sin "CharlyAudit" duplicado · CAPTURA y AJUSTES (perfil/dominios/telemetría) separados en paneles y botones independientes |
 | **2.5.3** | Auditoría de los 6 hallazgos visuales de v2.5.1: 4 ya resueltos (verificados), 2 corregidos (toast solapado con dock envuelto, overflow del header a 280px) |
 | **2.5.1** | Rediseño de UI/UX del panel lateral: sistema de tokens, jerarquía de 3 botones, grupos semánticos en captura, KPI grid predecible, mobile-first, accesibilidad |
 | **2.5.0** | Análisis y validación completa · `web_accessible_resources` para inyección on-demand · rebrand CharlyPlugin→CharlyAudit en lib · criterio de automejora continua |
@@ -282,3 +286,65 @@ contra el código real (no contra la memoria del reporte anterior). Cuatro de
 seis ya estaban resueltos correctamente; solo dos necesitaban trabajo real.
 Aplicar "fixes" sobre código que ya funciona introduce riesgo sin beneficio,
 así que se documenta la verificación en vez de tocar lo que no estaba roto.
+
+---
+
+## v2.5.4 — Personalización de colores, footer duplicado, separación de formularios
+
+Tres hallazgos reportados tras revisión del producto final. Los tres tenían
+causa raíz real (no falsos positivos esta vez) y se corrigieron.
+
+### 1. La personalización de colores no se aplicaba
+
+**Causa raíz:** el diálogo "Personalizar paleta" y su lógica en `setupPalette()`
+seguían apuntando a los alias legacy del sistema de tokens (`--brand`, `--ink`,
+`--panel`, `--line`, `--text`), que desde el rediseño de v2.5.1 son solo
+`var(--c-*)` de un único sentido — sirven para que CSS *viejo* siga funcionando,
+pero **nada los lee de vuelta**. Todos los componentes reales (`.act--brand`,
+fondos, texto) leen los tokens canónicos `--c-brand`, `--c-bg`, `--c-surface`,
+`--c-border`, `--c-text` directamente. Al guardar una paleta, el JS hacía
+`setProperty('--brand', ...)`, que no tenía ningún efecto visual porque ese
+alias no alimenta a `--c-brand` en sentido inverso.
+
+**Fix:** `VARS` en `setupPalette()` y los `data-var` del diálogo ahora apuntan
+a los tokens canónicos. Verificado: cambiar el color de marca a naranja
+(`#f5a623`) y guardar recolorea el botón "Exportar" de `rgb(91,108,255)` a
+`rgb(245,166,35)` de inmediato.
+
+**Nota:** `--c-brand-dim` (usado en hovers y bordes sutiles) no se deriva
+automáticamente del nuevo `--c-brand` — sigue siendo un valor fijo. No es el
+bug reportado (los botones y superficies principales ya recolorean
+correctamente), pero queda anotado como mejora futura en pendientes.
+
+### 2. "CharlyAudit" duplicado en el pie del popup
+
+**Causa raíz:** el HTML tenía `<span id="version">CharlyPlugin</span>` (texto
+de relleno con el nombre de marca antiguo) seguido de `<span>CharlyAudit</span>`
+estático. El JS sobrescribe el primer span con `"CharlyAudit v" + version` en
+tiempo de ejecución, pero el segundo span nunca se tocó — resultado:
+"CharlyAudit v2.5.3 • CharlyAudit".
+
+**Fix:** se eliminó el `<span>` estático duplicado y el separador `•`. El pie
+ahora muestra solo lo que el JS ya generaba correctamente: "CharlyAudit v2.5.4".
+
+### 3. CAPTURA y PERFIL Y DOMINIOS eran el mismo formulario
+
+**Antes:** un único botón "Captura ▾" abría un panel con tres grupos visuales
+(Captura, Perfil y dominios, Telemetría) dentro de la misma sección
+desplazable — visualmente separados por líneas, pero funcionalmente un solo
+formulario con un solo estado abierto/cerrado.
+
+**Fix:** se dividió en dos secciones y dos botones independientes en la barra
+de acciones:
+- **`Captura ▾`** — solo "qué capturar durante la grabación" (selectores a
+  enmascarar, variables globales, funciones a interceptar, Aplicar). Config
+  de sesión.
+- **`Ajustes ▾`** — perfil, dominios permitidos y telemetría (webhook, modo de
+  envío, auto-inicio). Config persistente, independiente de una grabación en
+  curso.
+
+Cada botón carga y muestra solo sus propios campos; abrir uno no afecta al
+otro. Todos los `id` de los campos internos se conservaron exactamente
+(ningún binding de JS se rompió). Verificado: abrir Captura no muestra
+Ajustes y viceversa; los valores de dominios/perfil cargan correctamente en
+su panel dedicado.

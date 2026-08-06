@@ -233,7 +233,7 @@ function wireActions() {
     toast("Replay detenido.");
   });
   // Configuracion de captura (desplegable).
-  $("act-cfg").addEventListener("click", async () => {
+  $("act-cfg").addEventListener("click", () => {
     const panel = $("capture-cfg");
     const open = panel.hasAttribute("hidden");
     if (open) {
@@ -241,7 +241,18 @@ function wireActions() {
       $("cfg-mask").value = arrToLines(c.maskSelectors);
       $("cfg-globals").value = arrToLines(c.watchedGlobals);
       $("cfg-fns").value = arrToLines(c.patchedFunctions);
-      // Carga los ajustes persistentes (dominios, perfil, webhook, auto-inicio).
+      panel.removeAttribute("hidden");
+    } else {
+      panel.setAttribute("hidden", "");
+    }
+    $("act-cfg").setAttribute("aria-expanded", String(open));
+  });
+  // Perfil, dominios y telemetria: configuracion persistente, independiente de
+  // la sesion de captura — por eso vive en su propio panel con su propio boton.
+  $("act-domains").addEventListener("click", async () => {
+    const panel = $("domains-cfg");
+    const open = panel.hasAttribute("hidden");
+    if (open) {
       const s = (await qaControl("getSettings")) || {};
       const st = (s && s.settings) || {};
       state.settings = st;
@@ -257,7 +268,7 @@ function wireActions() {
     } else {
       panel.setAttribute("hidden", "");
     }
-    $("act-cfg").setAttribute("aria-expanded", String(open));
+    $("act-domains").setAttribute("aria-expanded", String(open));
   });
   // Panel de KPIs (desplegable): resumen de la sesion sin recorrer el timeline.
   $("tl-kpis-toggle").addEventListener("click", () => {
@@ -1100,7 +1111,11 @@ init();
 (function setupPalette() {
   const G = (id) => document.getElementById(id);
   const KEY = "charlyaudit:palette";
-  const VARS = ["--brand", "--ink", "--panel", "--line", "--text"];
+  // Los componentes leen los tokens canonicos --c-* directamente (v2.5.1+).
+  // Los alias legacy (--brand, --ink...) son solo `var(--c-*)` de un solo sentido:
+  // sobreescribir el alias NO cambia el token que los estilos realmente usan.
+  // Por eso la paleta debe apuntar a los tokens canonicos, no a los alias.
+  const VARS = ["--c-brand", "--c-bg", "--c-surface", "--c-border", "--c-text"];
   const inputs = () => Array.from(document.querySelectorAll("#palette input[type=color]"));
 
   function rgbToHex(v) {
