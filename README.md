@@ -1,8 +1,20 @@
-# CharlyAudit v2.5.0
+# CharlyAudit
+
+**Versión actual: 2.5.7**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
 para QA, Performance y Security, con ingesta directa a bases vectoriales.
+
+---
+
+## Índice
+
+1. [Arquitectura](#arquitectura)
+2. [Estado funcional actual](#estado-funcional-actual)
+3. [Criterio de automejora continua](#criterio-de-automejora-continua)
+4. [Pendientes por prioridad](#pendientes-por-prioridad)
+5. [Historial de versiones](#historial-de-versiones)
 
 ---
 
@@ -12,51 +24,60 @@ para QA, Performance y Security, con ingesta directa a bases vectoriales.
 manifest.json           MV3 · sin content_scripts declarativos · inyección on-demand
 src/background/         Service worker (orquestador)
   service-worker.js     Importa CharlyAPI + qa/background
-src/lib/CharlyAPI.js    API de abstracción Chrome (storage, menus, screenshots...)
+src/lib/CharlyAPI.js    API de abstracción Chrome (storage, menús, screenshots...)
+src/content/            content-script.js — NO declarado en el manifest (código
+                        muerto, ver Pendientes P1)
 src/qa/
-  background.js         Ciclo de grabación, lifecycle de pestaña, telemetría, webhook
-  content.js            Puente DOM↔SW (captura eventos, replay, banner de grabación)
-  injected.js           MAIN world: perf/INP/waterfall, red, console, workers, globals
-  report-engine.js      assembleReport, fingerprintEvent, attachInteractionLatency
-  bundle-schema.js      validateBundle, stampIntegrity, redactBundle, chunkBundle,
+  background.js         Ciclo de grabación, lifecycle de pestaña, telemetría,
+                        webhook, cola serializada de replayJob (replayJobChain)
+  content.js             Puente DOM↔SW (captura eventos, replay, banner de grabación)
+  injected.js            MAIN world: perf/INP/waterfall, red, console, workers, globals
+  report-engine.js       assembleReport, fingerprintEvent, attachInteractionLatency
+  bundle-schema.js       validateBundle, stampIntegrity, redactBundle, chunkBundle,
                         computeKpis, partitionKeyOf, hmacHex
-  exporters.js          toCypress, toPlaywright
-src/popup/              Popup de control rápido (grabar, importar, reproducir)
+  exporters.js           toCypress, toPlaywright
+src/popup/               Popup de control rápido (grabar, exportar, atajo a Auditoría)
 src/sidepanel/
-  sidepanel.html/js/css Panel lateral: asistente IA + auditoría
+  sidepanel.html/js/css  Panel lateral: 3 pestañas — Asistente / Auditoría / Reporte
   lib/
-    openwebui-client.js Cliente multi-proveedor (OpenWebUI/OpenAI/Gemini/Claude/custom)
-    context-bridge.js   Puente de contexto QA→IA (12 scopes, budget, digest)
-    chat-cache.js       Caché de conversación en localStorage
-    markdown.js         Render Markdown seguro (sin eval)
+    openwebui-client.js  Cliente multi-proveedor (OpenWebUI/OpenAI/Gemini/Claude/custom)
+    context-bridge.js    Puente de contexto QA→IA (12 scopes, budget, digest,
+                        fuente Temporal/Importado)
+    chat-cache.js        Caché de conversación en localStorage
+    markdown.js          Render Markdown seguro (sin eval)
 ```
+
+**Las tres pestañas del panel lateral:**
+| Pestaña | Función |
+|---|---|
+| **Asistente** | Chat con IA sobre la sesión; selector de fuente Temporal/Importado; 12 ámbitos de contexto |
+| **Auditoría** | Grabar, ver el timeline evento a evento, y reproducir (Temporal / Importado / Repetición) |
+| **Reporte** | Único lugar para importar un archivo, descargar la sesión temporal (JSON/Cypress/Playwright) y gestionar el reporte importado |
 
 ---
 
-## Estado de implementación
+## Estado funcional actual
 
-### ✅ Completado y validado
-
-**Captura**
-- Inyección 100% on-demand (sin content_scripts declarativos; SW orquesta todo)
+### ✅ Captura
+- Inyección 100% on-demand (sin `content_scripts` declarativos; el SW orquesta todo vía `ensureInjected()`)
 - Grabación ligada a una pestaña: `recordingId`, `tabId`, `windowId`, `startUrl`, `startedAtMs`
-- Grabación única (rechaza segunda pestaña simultánea)
-- Stop automático al cerrar la pestaña grabada (con telemetría onclose)
+- Grabación única (rechaza una segunda pestaña simultánea)
+- Stop automático al cerrar la pestaña grabada (con telemetría `onclose`)
 - Banner visible en la página grabada (Shadow DOM, no interfiere con el host)
 - Badge del ícono anclado a la pestaña grabada (muestra dominio)
-- Metadata de entorno al iniciar: CPU, RAM, OS, navegador, ventana, cookies (flags)
+- Metadata de entorno al iniciar: CPU, RAM, OS, navegador, ventana, cookies (solo flags)
 - Re-muestreo periódico (1/min) + dirigido por navegación (debounce 2s)
-- `recState` rehidratado tras reinicio del SW (MV3 robustez)
+- `recState` rehidratado tras reinicio del SW (robustez MV3)
 
-**Performance (100% real)**
-- INP real por interacción: PerformanceObserver `"event"` → `interaction-timing` con `tsEvent` (reloj epoch) → correlación 1-a-1 con el click/input exacto en `attachInteractionLatency`
+### ✅ Performance (100% real, no aproximado)
+- INP real por interacción: `PerformanceObserver("event")` → `interaction-timing` con `tsEvent` (reloj epoch) → correlación 1-a-1 con el click/input exacto vía `attachInteractionLatency`
 - TBT real por navegación: `flushTbtSegment()` en cada `emitRoute` → `tbtSegmentMs` por segmento → `tbtPeorSegmento` en KPIs
-- Waterfall completo: `waterfallFor()` por fetch/XHR + observer `"resource"` por recursos pasivos; fases DNS/TCP/TTFB/descarga, tamaño, protocolo, caché
+- Waterfall completo: `waterfallFor()` por fetch/XHR + observer `"resource"` para recursos pasivos; fases DNS/TCP/TTFB/descarga, tamaño, protocolo, caché
 - Dedup de `interaction-timing` por `interactionId` (evita triple emisión pointerdown+up+click)
 - Dedup de `resource-timing` por URL+startTime (evita duplicados con `buffered:true`)
 - `navInfo` enriquecida: tipo, referrer, redirects, TTFB, domListo, cargaMs, ttiApproxMs, docKb
 
-**Datos y trazabilidad**
+### ✅ Datos y trazabilidad
 - `cid` canónico determinista (`recordingId#seq`) por evento
 - `tRel` monotónico por sesión (sobrevive reinicios del SW)
 - `fp` fingerprint semántico por tipo (agrupa errores/endpoints/INP equivalentes entre sesiones)
@@ -64,26 +85,41 @@ src/sidepanel/
 - `stampIntegrity`: `contentHash` FNV-1a + `ultimoCid` + nº eventos (idempotencia en ingesta)
 - Redacción canónica pre-embedding (email, JWT, Bearer, api-keys, tarjetas, hashes)
 - `chunkBundle`: unidades indexables por tipo con `partitionKey` por dominio/tenant
-- `computeKpis`: INP p98, TBT peor segmento, red, seguridad por severidad, fidelidad replay
+- `computeKpis`: INP p98, TBT peor segmento, red, seguridad por severidad, fidelidad de replay — función **pura**, calculable client-side o server-side sobre cualquier reporte (temporal o importado)
 - HMAC-SHA256 del payload webhook (`X-CharlyAudit-Signature`)
-- Reintentos con backoff exponencial (2→4→8→16→30min, max 5)
+- Reintentos con backoff exponencial (2→4→8→16→30 min, máx. 5) vía `replayJobChain` serializado — elimina condiciones de carrera al escribir `K.replayJob` desde múltiples mensajes concurrentes (`replayProgress`, `replayTrace`, `startReplay`, `stopReplay`, `clearImported`)
 
-**Asistente IA (v2.4.1 → v2.5.0)**
+### ✅ Replay y Repetición
+- Reproducir/Detener/Velocidad viven **exclusivamente** dentro del bloque de Repetición (Auditoría), visibles solo con esa fuente activa
+- La vista de Repetición se auto-refresca sola (timer periódico, sin necesidad de cambiar de pestaña) mientras hay un replay en curso
+- KPIs de Repetición se calculan sobre el reporte **realmente en reproducción** (el importado + su traza), nunca mezclados con el temporal
+- Telemetría por paso: efecto esperado (grabación) vs. observado (replay), con diff estructural del DOM
+
+### ✅ Asistente IA
 - **Conversación multi-turno real**: `messages: [{role:"system",...},{role:"user",...},{role:"assistant",...},...,{role:"user"}]`; el historial viaja como roles nativos, no como texto incrustado
 - **Multi-proveedor**: OpenWebUI (propio), OpenAI/ChatGPT, Google Gemini, Anthropic Claude, endpoint personalizado. Claude separa `system` en su campo propio; Gemini usa el endpoint OpenAI-compatible
 - **Parámetros configurables**: temperatura, tokens máximos, turnos de historial
-- **Contexto enriquecido**: INP real p98, TBT por segmento, waterfall con TTFB y caché
+- **Selector de fuente Temporal/Importado**: el asistente puede analizar la grabación en curso o un reporte importado, sin mezclar datos entre ambos (caché de contexto con clave por fuente)
+- **12 ámbitos de contexto**, todos con conteo visible y actualizado según la fuente activa: Resumen, Errores, Red, Consola, Rutas, Funciones, Variables, Interacción, Estructura, Repetición, Performance, Seguridad
+- El ámbito Resumen incluye entorno de grabación (CPU/RAM/navegador), identidad de sesión (`recordingId`/`startUrl`) y KPIs agregados completos
 
-**UX y accesibilidad**
+### ✅ Reporte (pestaña dedicada)
+- Único lugar del panel para **importar** un archivo (`.json` propio, nunca Cypress/Playwright)
+- Único lugar para **descargar o enviar** el reporte: JSON completo (bundle canónico validado/redactado/sellado), Cypress o Playwright — siempre de la sesión temporal
+- Gestión del reporte importado: resumen (eventos, URL, versión del exportador) y vaciado independiente (`clearImported`, no afecta la grabación temporal)
+
+### ✅ UX y accesibilidad
+- Sistema de diseño con tokens (`--c-*`), jerarquía de 3 niveles de botón, mobile-first (breakpoints 340px/420px)
 - Panel de KPIs colapsable (11 métricas: LCP/CLS/INP/TBT/errores/red/seguridad/replay)
 - Indicador `qa:webhookPending` en panel y popup
 - Known-issues del baseline inline (elementos sin nombre accesible)
 - Validación del webhook antes de guardar (exige HTTPS/localhost)
 - `aria-pressed`, `aria-expanded`, `aria-selected`, `aria-describedby`, `aria-live`
 - Foco de teclado visible con `:focus-visible` en todos los controles
+- Personalización de paleta de colores (tokens canónicos, aplica en vivo)
 
-**Seguridad**
-- CSP/HSTS/XFO/XCTO ausentes detectados por `webRequest.onHeadersReceived`
+### ✅ Seguridad
+- CSP/HSTS/XFO/XCTO ausentes, detectados por `webRequest.onHeadersReceived`
 - Set-Cookie inseguro (sin `Secure`/`HttpOnly`) detectado por cabecera de respuesta
 - Fugas de token/PII en requests (`Authorization`, JWT, cookies sensibles)
 - Scanner pasivo de URLs (JWT, api-keys, mixed-content)
@@ -92,7 +128,7 @@ src/sidepanel/
 
 ## Criterio de automejora continua
 
-El criterio que rige el desarrollo de CharlyAudit es:
+El criterio que rige el desarrollo de CharlyAudit:
 
 > **Toda mejora debe ser medible, verificable y no debe degradar ninguna garantía existente.**
 
@@ -100,9 +136,9 @@ El criterio que rige el desarrollo de CharlyAudit es:
 
 1. **Sin inyección silenciosa.** Ningún código llega a una pestaña sin que el usuario haya iniciado una grabación o reproducción en ella. El manifest no tiene `content_scripts`. Cualquier cambio que requiera inyección debe pasar por `ensureInjected()` con su handshake.
 
-2. **Sin pérdida de evidencia.** Un evento capturado siempre llega al timeline con `cid` canónico y `tRel` monotónico. Un bundle exportado siempre está validado (`validateBundle`), redactado (`redactBundle`) y sellado (`stampIntegrity`). El webhook tiene reintentos.
+2. **Sin pérdida de evidencia.** Un evento capturado siempre llega al timeline con `cid` canónico y `tRel` monotónico. Un bundle exportado siempre está validado (`validateBundle`), redactado (`redactBundle`) y sellado (`stampIntegrity`). El webhook tiene reintentos. Las escrituras concurrentes sobre una misma clave de storage (p. ej. `K.replayJob`) deben serializarse — nunca asumir que dos `get→modificar→set` independientes son seguros en paralelo.
 
-3. **Sin regresión de módulos puros.** `report-engine.js`, `bundle-schema.js` y `exporters.js` son funciones puras. Cualquier cambio en ellas debe pasar los tests unitarios antes de tocar el SW o la UI.
+3. **Sin regresión de módulos puros.** `report-engine.js`, `bundle-schema.js` y `exporters.js` son funciones puras. Cualquier cambio en ellas debe pasar los tests unitarios antes de tocar el SW o la UI. Cuando una vista de la UI necesita KPIs o un reporte, debe quedar explícito **de qué fuente** (temporal vs. importada) — nunca asumir una por defecto sin verificarlo contra el selector activo.
 
 ### Proceso de mejora
 
@@ -110,6 +146,7 @@ Antes de implementar cualquier cambio, responder:
 - ¿Rompe alguno de los tres invariantes?
 - ¿Tiene una forma de verificarse sin navegador (test puro en Node)?
 - ¿Afecta el contrato del bundle (schema, campos obligatorios)? → incrementar versión de schema.
+- ¿Hay más de una "fuente de datos" posible (temporal/importado)? → verificar que la UI lee la fuente correcta, no una fija por defecto.
 
 Antes de empaquetar, ejecutar siempre:
 ```bash
@@ -123,7 +160,10 @@ done
 
 # 3. Service worker arranca sin errores con chrome mockeado
 
-# 4. Tests de módulos puros (assembleReport, validateBundle, chunkBundle, computeKpis, fingerprintEvent)
+# 4. Tests de módulos puros (assembleReport, validateBundle, chunkBundle,
+#    computeKpis, fingerprintEvent)
+
+# 5. Verificación cruzada de IDs (todo id usado en JS existe en el HTML y viceversa)
 ```
 
 ### Escala de prioridad para nuevas mejoras
@@ -133,525 +173,355 @@ done
 | **P0 — Bug crítico** | Rompe un invariante, pierde evidencia o falla en el navegador |
 | **P1 — Gap de integración** | Una característica ya implementada no fluye a la UI, al bundle o al contexto IA |
 | **P2 — Fidelidad de evidencia** | Mejora la precisión de los datos (INP real, waterfall, replay) |
-| **P3 — Base vectorial** | Mejora la calidad de lo que se ingesta (fingerprint, chunking, redacción) |
-| **P4 — UX / DX** | Mejora la comprensión sin cambiar el modelo de datos |
-| **Backlog** | Valioso pero no urgente; requiere validación en navegador real |
+| **P3 — Ingesta / base vectorial** | Mejora la calidad de lo que se envía o almacena (fingerprint, chunking, redacción, webhook) |
+| **P4 — UX / Accesibilidad / DX** | Mejora la comprensión o el mantenimiento sin cambiar el modelo de datos |
+| **Backlog** | Valioso pero no urgente; suele requerir validación extensa en navegador real |
 
 ---
 
-## Pendientes (por prioridad)
+## Pendientes por prioridad
 
-### P1 — Gaps de integración detectados en el análisis de v2.5.0
-- **`src/content/content-script.js`** existe pero no está declarado en el manifest (no tiene efecto). Evaluar si su lógica (`page:getMetrics`) debe fusionarse en `src/qa/content.js` o eliminarse.
-- **`web_accessible_resources`** añadido en v2.5.0 (faltaba para que `executeScript` con `world:MAIN` funcione en páginas de terceros en Chrome 116+).
+> Lista única y consolidada — reemplaza las cinco listas parciales que
+> quedaron dispersas en versiones anteriores del README (v2.5.0, v2.5.5,
+> v2.5.6, v2.5.7), cada una una foto parcial del momento en que se escribió.
+> Los ítems ya resueltos (`web_accessible_resources`, migración de
+> Reproducir/Detener a Repetición, etc.) se retiraron; se recuperó la
+> sección **Backlog**, que se había perdido por completo desde v2.5.5.
+
+### P1 — Gaps de integración
+- **`src/content/content-script.js`** existe pero no está declarado en el manifest (sin efecto en producción). Evaluar si su lógica (`page:getMetrics`) debe fusionarse en `src/qa/content.js` o eliminarse directamente.
 
 ### P2 — Fidelidad de evidencia
-- Screenshot diff (pixel) via `captureVisibleTab` por paso de replay.
+- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
 - Assertions de negocio inferidas del baseline en los exports (texto visible, conteos, estados).
+- Persistir un resumen de *known-issues* de accesibilidad (elementos sin nombre accesible) dentro de `buildBundle` — hoy solo se calcula al renderizar la tabla en el panel, no viaja en el JSON exportado.
 
-### P3 — Ingesta
-- Gzip del cuerpo (CompressionStream) antes del webhook.
+### P3 — Ingesta / base vectorial
+- Gzip del cuerpo (CompressionStream) antes de enviar el webhook.
 - Modo webhook que envíe chunks con idempotencia por `contentHash`.
 - Re-lectura de cookies tras `Set-Cookie` por request (correlación request↔cookie).
 
-### P4 — UX
-- Panel de ajustes más completo para perfil/webhook/dominios.
-- `prefers-reduced-motion` en el banner de grabación (la página auditada; ya
-  aplicado al indicador "pensando" del asistente).
-- Auditoría de contraste WCAG AA en el resto de combinaciones de la paleta
-  personalizable (v2.5.3 corrigió el caso conocido de "Importado" deshabilitado;
-  falta una pasada sistemática sobre todas las combinaciones posibles cuando el
-  usuario personaliza colores en `#palette`).
-- `--c-brand-dim` (hovers, bordes sutiles) no se deriva automáticamente del
-  `--c-brand` personalizado — sigue fijo al valor por defecto. Calcular un tono
-  derivado (o añadirlo como sexto control en la paleta) para consistencia total.
+### P4 — UX / Accesibilidad / DX
+- Panel de ajustes más completo para perfil, webhook y dominios.
+- `prefers-reduced-motion` en el banner de grabación de la página auditada (ya aplicado al indicador "pensando" del asistente).
+- Auditoría sistemática de contraste WCAG AA sobre el resto de combinaciones posibles de la paleta personalizable (el caso conocido de "Importado" deshabilitado ya se corrigió en v2.5.3).
+- `--c-brand-dim` (hovers, bordes sutiles) no se deriva automáticamente del `--c-brand` personalizado — sigue fijo al valor por defecto. Calcular un tono derivado, o añadirlo como sexto control en la paleta.
+- El `digest()` del asistente (resumen en lenguaje natural que encabeza el contexto) aún no incorpora KPIs de performance/seguridad en su texto — solo cuenta eventos, duración, errores y red fallida, aunque los KPIs ya viajan en el snapshot desde v2.5.6.
+- `ctx-src-imported` hace dos llamadas en cascada a `getReport("imported")` (una para verificar disponibilidad, otra dentro de `refreshState()`). Funciona correctamente pero es una ronda de red de más; se podría cachear el resultado de la primera.
 
 ### Backlog
-- Shadow DOM/iframes en captura y replay.
-- Plugin-health (self-diagnóstico: si la inyección o un observer falla, emitir evento).
-- A11y del sitio auditado como categoría propia de auditoría (más allá del known-issue puntual).
-- `installId` anónimo cross-sesión para correlación por equipo/dispositivo.
-- Suite de tests de módulos puros en CI.
-- Diff entre dos reportes exportable (baseline vs hoy).
+- Shadow DOM / iframes en captura y replay.
+- Plugin-health (self-diagnóstico: si la inyección o un observer falla, emitir un evento propio).
+- A11y del sitio auditado como categoría propia de auditoría (más allá del known-issue puntual ya existente).
+- `installId` anónimo cross-sesión, para correlación por equipo/dispositivo.
+- Suite de tests de los módulos puros integrada en CI.
+- Diff entre dos reportes exportable (baseline vs. hoy).
 
 ---
 
-## Changelog
+## Historial de versiones
 
-| Versión | Cambios principales |
+### Resumen rápido
+
+| Versión | Foco principal |
 |---|---|
-| **2.5.4** | Personalización de colores: la paleta apuntaba a alias que ya nadie leía, ahora apunta a los tokens canónicos · footer del popup sin "CharlyAudit" duplicado · CAPTURA y AJUSTES (perfil/dominios/telemetría) separados en paneles y botones independientes |
-| **2.5.3** | Auditoría de los 6 hallazgos visuales de v2.5.1: 4 ya resueltos (verificados), 2 corregidos (toast solapado con dock envuelto, overflow del header a 280px) |
-| **2.5.1** | Rediseño de UI/UX del panel lateral: sistema de tokens, jerarquía de 3 botones, grupos semánticos en captura, KPI grid predecible, mobile-first, accesibilidad |
-| **2.5.0** | Análisis y validación completa · `web_accessible_resources` para inyección on-demand · rebrand CharlyPlugin→CharlyAudit en lib · criterio de automejora continua |
-| **2.4.1** | Asistente IA multi-proveedor (OpenWebUI/OpenAI/Gemini/Claude) · conversación multi-turno real con roles nativos · parámetros configurables · contexto performance con INP p98 y TBT por segmento |
-| **2.4.0** | Performance 100%: INP real por interacción, TBT por navegación, waterfall completo · dedup de interaction-timing y resource-timing · navInfo enriquecida |
-| **2.3.x** | UX (KPIs, webhook pending, known-issues baseline) · indicador de grabación · navegación fina · chunking+partitionKey · HMAC webhook · multi-proveedor base |
-| **2.2.x** | Inyección 100% on-demand · grabación ligada a pestaña · ancla semántica · validación estricta del bundle · fingerprint semántico |
+| **2.5.7** | Repetición sin auto-refresco, KPIs y contexto del asistente leyendo la fuente equivocada |
+| **2.5.6** | Race condition que vaciaba Repetición · contexto del asistente completo (12/12 ámbitos) · Reproducir/Detener migrados a Repetición |
+| **2.5.5** | Popup simplificado · pestaña Reporte nueva · Temporal/Importado gestionados de forma independiente |
+| **2.5.4** | Personalización de colores rota · footer duplicado · Captura y Ajustes separados |
+| **2.5.3** | Auditoría de 6 hallazgos visuales (4 ya resueltos, 2 corregidos) |
+| **2.5.1** | Rediseño completo de UI/UX del panel lateral (sistema de tokens, mobile-first) |
+| **2.5.0** | `web_accessible_resources` para inyección on-demand · rebrand CharlyPlugin→CharlyAudit · criterio de automejora continua |
+| **2.4.1** | Asistente IA multi-proveedor · conversación multi-turno real con roles nativos |
+| **2.4.0** | Performance 100% real: INP por interacción, TBT por navegación, waterfall completo |
+| **2.3.x** | UX (KPIs, webhook pending, known-issues) · navegación fina · chunking+partitionKey · HMAC webhook |
+| **2.2.x** | Inyección 100% on-demand · grabación ligada a pestaña · ancla semántica · fingerprint semántico |
 | **2.1.x** | Replay fiel · exportadores Cypress/Playwright · panel de auditoría · perf/vitals |
-| **2.0.x** | MV3 · panel lateral · grabación/replay core |
+| **2.0.x** | MV3 · panel lateral · núcleo de grabación/replay |
+
+Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
+en ese punto; versiones anteriores solo tienen el resumen de la tabla).
 
 ---
 
-## v2.5.1 — Rediseño de UI/UX del panel lateral
+### v2.5.7 — Repetición sin auto-refresco, KPIs y contexto del asistente de la fuente equivocada
 
-**Sistema de diseño reescrito desde cero.** El CSS pasó de 813 líneas acumuladas
-por parches a 1166 líneas organizadas en 11 secciones con un sistema de tokens
-coherente. No se rompió ningún binding de JS (todos los `id` permanecen intactos).
+Se probó la v2.5.6 en un caso real (exportar, reimportar, reproducir) y el
+síntoma parecía persistir — pero el fix del *race condition* de esa versión
+**sí funcionó** (los datos se guardaban correctamente; visibles al cambiar
+de pestaña y volver). El problema real de esta versión era distinto: tres
+puntos de la UI nunca refrescaban solos, o leían la fuente de datos
+equivocada.
 
-### Sistema de tokens
+**Hallazgo 1 — La vista de Repetición no se auto-actualizaba.**
+*Causa raíz:* el temporizador periódico de la pestaña Auditoría (`qaTimer`,
+cada 2.5s) tenía la condición `source === "live"` — solo refrescaba cuando
+la fuente activa era "Temporal". Al ver "Repetición" (reproduciendo un
+reporte importado), ese temporizador no hacía nada nunca. La única forma de
+ver los datos actualizados era forzar un `renderTimeline(true)` manual, que
+solo ocurre al entrar a la pestaña Auditoría (`switchTab`) — de ahí que
+cambiar a Asistente o Reporte y volver "arreglara" la vista: no era magia,
+era el único punto del código que disparaba un re-render.
+*Fix:* la condición pasó a `source !== "imported"` — "Temporal" y
+"Repetición" se refrescan solos (ambos cambian con el tiempo), "Importado"
+sigue sin refrescarse innecesariamente (es una foto estática).
+
+**Hallazgo 2 — Los KPIs mostraban el reporte temporal, no el que se estaba reproduciendo.**
+*Causa raíz:* `renderKpis()` llamaba siempre a la acción `getKpis` del
+service worker, que internamente **siempre** calcula sobre el reporte
+temporal. Al reproducir un reporte importado, el panel de KPIs mostraba 0
+eventos/errores/red (los del temporal, vacío) mezclados con la fidelidad de
+replay correcta (esa sí calculada desde la traza real, independiente del
+reporte "activo"). Resultado: un panel con números contradictorios entre sí.
+*Fix:* `renderKpis()` calcula ahora client-side con `computeKpis` (la misma
+función pura que usa el SW) sobre el reporte y la traza que **realmente**
+corresponden a la fuente activa: Temporal usa el reporte vivo sin traza;
+Importado usa el reporte importado sin traza; Repetición usa el reporte
+importado **con** la traza del replay en curso. `updateSourceUI()`
+sincroniza la fuente activa a `state.auditSource` para que `renderKpis()`
+(fuera del cierre de la pestaña Auditoría) pueda leerla.
+
+**Hallazgo 3 — Los chips de contexto del asistente no reflejaban el selector Temporal/Importado.**
+*Causa raíz:* `refreshState()` — la función que llena `state.counts` y el
+contador "N eventos" — llamaba siempre a `getState()` del SW (temporal), sin
+mirar `state.contextSource`. El selector agregado en v2.5.6 sí cambiaba qué
+se enviaba a la IA al preguntar, pero los chips visuales seguían mostrando
+los números del reporte temporal sin importar cuál estuviera seleccionado.
+*Fix:* `refreshState()` ahora lee `report.metadata.counts`/`eventCount` del
+reporte importado cuando `state.contextSource === "imported"`. Los botones
+del selector llaman a `refreshState()` de inmediato al hacer clic.
+
+**Validado:** escenario reproducido exactamente como fue reportado (reporte
+temporal vacío + reporte importado con 399 eventos + traza de replay con 5
+pasos y 3 inconsistencias), confirmado en Playwright **sin cambiar de
+pestaña en ningún momento**: la vista de Repetición se actualiza sola; el
+panel de KPIs muestra "5 eventos" (el importado) en vez de "0" (el
+temporal); el selector del asistente cambia "0 eventos" → "399 eventos" y
+actualiza los 12 chips al alternar la fuente. Cero errores de página;
+verificación cruzada de IDs sin huérfanos.
+
+---
+
+### v2.5.6 — Race condition en Repetición, contexto del asistente completo, Reproducir/Detener en su módulo
+
+**Hallazgo 1 — Repetición quedaba vacía tras importar y reproducir (bug crítico).**
+*Causa raíz — condición de carrera real:* durante un replay, `content.js`
+envía dos mensajes independientes por cada paso — `replayProgress` (avance)
+y `replayTrace` (telemetría) — cada uno `sendMessage` sin esperar respuesta
+(fire-and-forget). En el service worker, cada acción hacía su propio ciclo
+`get(K.replayJob) → modificar → set(K.replayJob)` de forma independiente.
+Con cientos de pasos en rápida sucesión, dos ciclos podían solaparse: si A
+lee, B lee (antes de que A escriba), A escribe, B escribe — el `set` de B
+**pisa por completo** el objeto que dejó A, descartando su cambio en
+silencio (*lost update* clásico). Con 291 pasos esto perdía casi toda la
+telemetría de `trace`, mientras que `index` (el progreso) sobrevivía con más
+frecuencia por la casualidad del orden — explica exactamente el síntoma: el
+banner avanzaba ("5/291") pero Repetición mostraba "0 pasos, 0 inconsistencias".
+*Fix:* nueva cola de escritura serializada `replayJobChain` (mismo patrón ya
+probado que usa `writeChain` para los eventos del timeline). Todas las
+mutaciones de `K.replayJob` — `replayProgress`, `replayTrace`,
+`startReplay`, `stopReplay`, `clearImported` — pasan por `mutateReplayJob()`,
+que garantiza que cada ciclo get→modificar→set se complete antes de que
+empiece el siguiente.
+*Validado:* simulación determinística del race confirma la pérdida con el
+patrón viejo y su ausencia con la cola nueva; prueba de estrés con 291 pasos
+concurrentes **contra el código real del service worker** — resultado
+exacto: 291/291 progreso, 291/291 traza, sin pérdidas.
+
+**Hallazgo 2 — Contexto del asistente desactualizado e incompleto.**
+- *Selector de fuente (Temporal/Importado):* el asistente solo podía leer el
+  reporte temporal; no había forma de analizar un reporte importado. Se
+  agregó `ContextBridge.getReport(source)` (`"live"` o `"imported"`), un
+  selector visual en la pestaña Asistente, caché de contexto con la fuente
+  en su clave (para no mezclar sesiones), y el `systemPrompt` declara
+  explícitamente qué fuente está analizando.
+- *Variables de contexto incompletas:* `scopeCount()` solo mapeaba 6 de los
+  12 ámbitos — Variables, Estructura, Repetición, Performance y Seguridad
+  quedaban siempre en blanco aunque tuvieran datos. El ámbito Resumen no
+  incluía entorno de grabación (CPU/RAM/navegador), identidad de sesión
+  (`recordingId`/`startUrl`) ni KPIs agregados. Ahora los 12 ámbitos
+  muestran su conteo real, y Resumen incluye todo lo anterior — los KPIs se
+  calculan client-side con `computeKpis` sobre el reporte de la fuente
+  activa, para no mezclar KPIs del temporal con los del importado.
+
+**Hallazgo 3 — Reproducir/Detener migrados al módulo de Repetición.**
+Antes vivían en la barra de acciones persistente de Auditoría, visibles sin
+importar qué fuente estuviera activa. Ahora viven exclusivamente dentro de
+`#replay-controls`, visible solo con la fuente "Repetición" activa. De paso
+se eliminó `#act-replay-info`, que duplicaba la misma información que
+`#replay-progress`.
+
+**Validado:** verificación cruzada de IDs sin huérfanos; sintaxis de los 16
+JS como módulo ES; los 12 chips de contexto muestran conteos correctos;
+selector de fuente cambia solo cuando hay datos disponibles; Reproducir/
+Detener ausentes de la barra persistente y presentes solo en Repetición —
+todo sin errores de página en Playwright.
+
+---
+
+### v2.5.5 — Popup simplificado, pestaña Reporte, fuentes independientes
+
+Reestructuración de flujo: import/export/replay quedan centralizados y cada
+fuente de datos (temporal/importado) se gestiona de forma independiente.
+
+**Popup:**
+- *Exportar como dropdown + acceso a Auditoría:* la fila de 3 botones
+  (JSON/Cypress/Playwright) se reemplazó por un único `<select>`
+  "Exportar ▾". "Copiar JSON" y "Vaciar" se eliminaron; en su lugar, un
+  botón **"Ver en Auditoria"** abre el panel lateral directo en esa pestaña
+  (bandera transitoria `charlyaudit:openTab` en `chrome.storage.local`, leída
+  una vez por `init()` del panel y luego borrada — mecanismo genérico,
+  reutilizable para futuras aperturas dirigidas).
+- *Sección Replay eliminada:* Importar/Reproducir/Detener/Velocidad ya no
+  existen en el popup; toda la reproducción vive en el panel lateral.
+
+**Panel lateral:**
+- *Nueva pestaña "Reporte":* único lugar del panel para descargar la sesión
+  temporal (JSON completo/Cypress/Playwright), ver un resumen de la sesión
+  importada (eventos, URL, versión de quien exportó) y vaciarla de forma
+  independiente. También el único lugar para **importar** (se eliminó
+  `#tl-import` de Auditoría). La importación solo acepta el JSON propio del
+  reporte, nunca Cypress/Playwright.
+- *Análisis del "reporte completo":* se auditó `buildBundle()` en el
+  service worker antes de dar la tarea por completa. Ya incluye, sin huecos
+  relevantes: `schema` versionado, metadata de extensión, `settings`+
+  `capture` del exportador (solo referencia), el `report` íntegro
+  (metadata+timeline con `cid`/`tRel`/`fp` por evento), telemetría de la
+  última repetición, errores destacados, conteos, KPIs agregados e
+  integridad. Es el mismo artefacto que se firma y envía por webhook.
+- *Vaciar por fuente, no global:* antes, "Vaciar" en Auditoría siempre
+  llamaba a la misma acción (solo temporal) sin importar la fuente activa.
+  Ahora bifurca: Temporal → `clear`; Importado/Repetición → nueva acción
+  `clearImported` (vacía `qa:replay` y `qa:replayJob`, detiene cualquier
+  replay activo primero). Efecto colateral corregido de paso: el reporte
+  importado ahora se hidrata desde `storage` al abrir el panel (antes se
+  perdía al cerrar y reabrir, aunque el dato seguía en el SW).
+- *Controles de reproducción en Repetición:* la Velocidad (antes solo en el
+  popup) se agregó como `<select>` visible únicamente con la fuente
+  "Repetición" activa. Al pulsar Reproducir, la vista cambia automáticamente
+  a esa fuente.
+
+**Validado:** suite funcional en navegador real (Playwright, sin errores de
+página): 3 pestañas presentes y conmutables; importar desde Reporte habilita
+"Importado" en Auditoría; Vaciar en Temporal no afecta al importado y
+viceversa; controles de repetición solo en esa fuente; cero elementos
+huérfanos de import/export en Auditoría; cero IDs referenciados en JS
+ausentes del HTML (y viceversa).
+
+---
+
+### v2.5.4 — Personalización de colores, footer duplicado, separación de formularios
+
+**Hallazgo 1 — La personalización de colores no se aplicaba.**
+*Causa raíz:* el diálogo "Personalizar paleta" seguía apuntando a los alias
+legacy del sistema de tokens (`--brand`, `--ink`, `--panel`, `--line`,
+`--text`), que desde el rediseño de v2.5.1 son solo `var(--c-*)` de un único
+sentido — nada los lee de vuelta. Todos los componentes reales leen los
+tokens canónicos (`--c-brand`, `--c-bg`...) directamente.
+*Fix:* `VARS` en `setupPalette()` y los `data-var` del diálogo ahora apuntan
+a los tokens canónicos. Verificado: cambiar el color de marca a naranja y
+guardar recolorea el botón "Exportar" de inmediato.
+*Nota:* `--c-brand-dim` (hovers, bordes sutiles) no se deriva automáticamente
+del `--c-brand` personalizado — queda como pendiente (ver P4).
+
+**Hallazgo 2 — "CharlyAudit" duplicado en el pie del popup.**
+*Causa raíz:* el HTML tenía un `<span>` de relleno (sobrescrito por JS en
+tiempo de ejecución) seguido de OTRO `<span>CharlyAudit</span>` estático que
+nunca se tocaba — resultado: "CharlyAudit v2.5.3 • CharlyAudit".
+*Fix:* se eliminó el `<span>` estático duplicado y su separador.
+
+**Hallazgo 3 — CAPTURA y PERFIL Y DOMINIOS eran el mismo formulario.**
+Un único botón "Captura ▾" abría un panel con tres grupos visuales
+(Captura, Perfil y dominios, Telemetría) — visualmente separados pero
+funcionalmente un solo formulario con un solo estado abierto/cerrado.
+*Fix:* se dividió en dos secciones y dos botones independientes: **Captura ▾**
+(qué capturar durante la grabación: config de sesión) y **Ajustes ▾**
+(perfil, dominios, telemetría: config persistente). Todos los `id` de los
+campos internos se conservaron; ningún binding de JS se rompió.
+
+---
+
+### v2.5.3 — Auditoría y cierre de los 6 hallazgos de UI/UX
+
+Se revisaron los seis problemas del reporte visual de v2.5.1 con
+verificación empírica en navegador (Playwright) **antes** de tocar código,
+para no corregir nada que ya estuviera resuelto ni dejar sin corregir algo
+real.
+
+**Ya estaban corregidos (verificado, sin cambios adicionales):**
+1. *KPIs no cerraban* — `.tl-kpis[hidden] { display: none; }` ya tenía mayor
+   especificidad que `.tl-kpis { display: grid }` y ganaba correctamente.
+2. *Modales no céntricos* — `dialog.settings { margin: auto; }` ya
+   restauraba lo que el reset global (`* { margin: 0 }`) le quitaba al
+   `margin: auto` nativo de `<dialog>`.
+3. *Toast detrás de un modal abierto* — ya resuelto con `popover="manual"` +
+   `showPopover()`/`hidePopover()`, que saca al toast del flujo normal y lo
+   coloca en la capa superior por encima de cualquier `<dialog>`.
+4. *Contraste del texto "Importado" (deshabilitado)* — ya no usaba
+   `opacity` sobre `--c-muted` (caía a 1.78:1, ilegible); usaba un color
+   sólido precalculado (5.26:1 sobre `--c-bg`).
+
+**Corregidos en esta versión:**
+5. *Toast podía solaparse con el dock envuelto* (paneles angostos) — el
+   mecanismo `--dock-h` vía `ResizeObserver` ya existía pero
+   `watchDockHeight()` estaba definida y **nunca se invocaba**; además, al
+   adoptar la Popover API para el hallazgo #3, el toast heredó un `top: 0`
+   por defecto que ganaba sobre `bottom`. *Fix:* se añadió la llamada a
+   `watchDockHeight()` en `init()` y `top: auto;` explícito en `.toast`.
+6. *Header desbordaba 2px en el ancho mínimo (280px)* — `.tabs` no tenía
+   `min-width: 0`, así que no podía comprimirse dentro del `.bar` flex.
+   *Fix:* `min-width: 0; flex-shrink: 1` en `.tabs` + ajuste fino del
+   breakpoint `max-width: 340px`.
+
+**Nota de proceso:** aplicar "fixes" sobre código que ya funciona introduce
+riesgo sin beneficio — de ahí la verificación empírica previa. Cuatro de
+seis hallazgos ya estaban resueltos; solo dos necesitaban trabajo real.
+
+---
+
+### v2.5.1 — Rediseño de UI/UX del panel lateral
+
+Sistema de diseño reescrito desde cero. El CSS pasó de 813 líneas
+acumuladas por parches a 1166 líneas organizadas en 11 secciones con un
+sistema de tokens coherente. Ningún binding de JS se rompió (todos los `id`
+permanecen intactos).
+
+**Sistema de tokens:**
 | Token | Descripción |
 |---|---|
 | `--c-*` | 10 colores funcionales (bg, surface, surface2, border, brand, brand-dim, danger, success, warn, text, muted) |
 | `--t-xs/sm/base/lg` | 4 tamaños tipográficos (10/11.5/13/15px) en lugar de 11 |
 | `--s-1 a --s-5` | Escala de espaciado ×4 (4/8/12/16/24px) en lugar de 12 valores arbitrarios |
 | `--r-sm/md/lg/full` | 4 radios (6/8/12/999px) |
-| Aliases retrocompatibles | `--ink`, `--panel`, `--brand`, etc. — el JS y la paleta del usuario siguen funcionando |
+| Aliases retrocompatibles | `--ink`, `--panel`, `--brand`, etc. — solo para CSS legacy; los componentes reales leen los tokens `--c-*` directamente |
 
-### Jerarquía de botones (antes 7 estilos, ahora 3)
-- **Primario** (`.act--brand`): acción con consecuencia — Exportar, Guardar, Aplicar
-- **Secundario** (`.act`): acción reversible o neutra — Importar, Cy, PW
-- **Ghost** (`.act--ghost`, `.cache-btn`): acción de bajo perfil — KPIs ▾, Captura ▾
+**Jerarquía de botones** (antes 7 estilos, ahora 3): Primario (`.act--brand`,
+acción con consecuencia), Secundario (`.act`, acción reversible/neutra),
+Ghost (`.act--ghost`, `.cache-btn`, acción de bajo perfil).
 
-### Captura: de muro de campos a tres grupos legibles
-`CAPTURA` · `PERFIL Y DOMINIOS` · `TELEMETRÍA` — cada uno con encabezado, borde
-y espaciado propio. La jerarquía visual guía el ojo y reduce el tiempo de lectura.
+**Captura:** de un muro de campos a tres grupos legibles (CAPTURA · PERFIL Y
+DOMINIOS · TELEMETRÍA), cada uno con encabezado, borde y espaciado propio.
 
-### KPI cards: grid predecible
-`repeat(3, 1fr)` fijo en lugar de `auto-fill, minmax(96px)` — 3 columnas en
-300-419px, 4 columnas en ≥420px vía media query.
+**KPI cards:** grid predecible `repeat(3, 1fr)` en lugar de
+`auto-fill, minmax(96px)` — 3 columnas en 300-419px, 4 columnas en ≥420px.
 
-### Mobile-first: dos breakpoints
-- `max-width: 340px`: nombre truncado, tabs más pequeños, KPIs en 2 columnas,
-  `tl-srcbar` en columna
-- `min-width: 420px`: KPIs en 4 columnas, burbujas de chat más anchas
+**Mobile-first:** dos breakpoints (`max-width: 340px` — nombre truncado,
+tabs más pequeños, KPIs en 2 columnas; `min-width: 420px` — KPIs en 4
+columnas, burbujas de chat más anchas).
 
-### Accesibilidad
-- `min-height: 28px` en todos los chips/scopes (touch target)
-- `aria-selected` en pestañas `role="tab"`
-- `role="list"` en `tl-list`
-- `role="group"` en chips de filtro
-- `prefers-reduced-motion` en el indicador de escritura
-- Colores funcionales via tokens (nunca hardcodeados en componentes)
+**Accesibilidad:** `min-height: 28px` en chips/scopes (touch target),
+`aria-selected` en pestañas, `role="list"`/`role="group"` donde corresponde,
+`prefers-reduced-motion` en el indicador de escritura, colores funcionales
+siempre vía tokens.
 
 ---
 
-## v2.5.3 — Auditoría y cierre de los 6 hallazgos de UI/UX
-
-Se revisaron los seis problemas del reporte visual de v2.5.1 con verificación
-empírica en navegador (Playwright) antes de tocar código, para no corregir
-nada que ya estuviera resuelto ni dejar sin corregir algo real.
-
-### Ya estaban corregidos (verificado, sin cambios adicionales)
-1. **KPIs no cerraban** — `.tl-kpis[hidden] { display: none; }` ya tenía mayor
-   especificidad (clase+atributo) que `.tl-kpis { display: grid }` y gana
-   correctamente. Medido: `display: none` tras cerrar. Sin acción.
-2. **Modales no céntricos** — `dialog.settings { margin: auto; }` ya restauraba
-   explícitamente lo que el reset global (`* { margin: 0 }`) le quitaba al
-   `margin: auto` nativo de `<dialog>`. Medido: centrado correcto en 380px y 280px.
-3. **Toast detrás de un modal abierto** — ya resuelto con `popover="manual"` +
-   `showPopover()`/`hidePopover()`, que saca al toast del flujo normal y lo pone
-   en la capa superior (top layer), por encima de cualquier `<dialog>` sin
-   importar `z-index`. Confirmado con captura de pixel: el toast se ve sobre
-   el modal abierto.
-4. **Contraste del texto "Importado" (deshabilitado)** — ya no usa `opacity`
-   sobre `--c-muted` (que caía a 1.78:1, ilegible); usa un color sólido
-   precalculado. Medido: 5.26:1 sobre `--c-bg`, 4.78:1 sobre `--c-surface`
-   (ambos superan el mínimo AA de 4.5:1).
-
-### Corregidos en esta versión
-5. **Toast podía solaparse con el dock envuelto (paneles angostos)** — el
-   mecanismo (`--dock-h` vía `ResizeObserver`) ya existía en CSS y JS pero
-   tenía dos fallas:
-   - `watchDockHeight()` estaba definida pero **nunca se invocaba** desde
-     `init()` → `--dock-h` quedaba sin valor real. **Fix:** se añadió la
-     llamada en `init()`.
-   - Al adoptar la Popover API para el fix #3, el toast heredó el `top: 0`
-     por defecto de un popover sin anclaje, que ganaba sobre `bottom` al no
-     haber un `top` explícito en el CSS del autor. **Fix:** `top: auto;`
-     explícito en `.toast`.
-   - Verificado: `--dock-h` ahora resuelve a `108px` (altura real medida),
-     el toast se posiciona justo encima del dock sin superposición.
-6. **Header desbordaba 2px en el ancho mínimo (280px)** — `.tabs` no tenía
-   `min-width: 0`, así que no podía comprimirse por debajo de su ancho de
-   contenido dentro del `.bar` flex, forzando overflow horizontal aun con
-   `.bar__name` ya truncado. **Fix:** `min-width: 0; flex-shrink: 1` en
-   `.tabs`, más ajuste fino de padding/gap/tamaño de ícono en el breakpoint
-   `max-width: 340px`. Verificado: `scrollWidth` del header = 280px exactos,
-   sin overflow.
-
-### Nota de proceso
-Antes de aplicar cualquier corrección se reverificó cada uno de los 6 puntos
-contra el código real (no contra la memoria del reporte anterior). Cuatro de
-seis ya estaban resueltos correctamente; solo dos necesitaban trabajo real.
-Aplicar "fixes" sobre código que ya funciona introduce riesgo sin beneficio,
-así que se documenta la verificación en vez de tocar lo que no estaba roto.
-
----
-
-## v2.5.4 — Personalización de colores, footer duplicado, separación de formularios
-
-Tres hallazgos reportados tras revisión del producto final. Los tres tenían
-causa raíz real (no falsos positivos esta vez) y se corrigieron.
-
-### 1. La personalización de colores no se aplicaba
-
-**Causa raíz:** el diálogo "Personalizar paleta" y su lógica en `setupPalette()`
-seguían apuntando a los alias legacy del sistema de tokens (`--brand`, `--ink`,
-`--panel`, `--line`, `--text`), que desde el rediseño de v2.5.1 son solo
-`var(--c-*)` de un único sentido — sirven para que CSS *viejo* siga funcionando,
-pero **nada los lee de vuelta**. Todos los componentes reales (`.act--brand`,
-fondos, texto) leen los tokens canónicos `--c-brand`, `--c-bg`, `--c-surface`,
-`--c-border`, `--c-text` directamente. Al guardar una paleta, el JS hacía
-`setProperty('--brand', ...)`, que no tenía ningún efecto visual porque ese
-alias no alimenta a `--c-brand` en sentido inverso.
-
-**Fix:** `VARS` en `setupPalette()` y los `data-var` del diálogo ahora apuntan
-a los tokens canónicos. Verificado: cambiar el color de marca a naranja
-(`#f5a623`) y guardar recolorea el botón "Exportar" de `rgb(91,108,255)` a
-`rgb(245,166,35)` de inmediato.
-
-**Nota:** `--c-brand-dim` (usado en hovers y bordes sutiles) no se deriva
-automáticamente del nuevo `--c-brand` — sigue siendo un valor fijo. No es el
-bug reportado (los botones y superficies principales ya recolorean
-correctamente), pero queda anotado como mejora futura en pendientes.
-
-### 2. "CharlyAudit" duplicado en el pie del popup
-
-**Causa raíz:** el HTML tenía `<span id="version">CharlyPlugin</span>` (texto
-de relleno con el nombre de marca antiguo) seguido de `<span>CharlyAudit</span>`
-estático. El JS sobrescribe el primer span con `"CharlyAudit v" + version` en
-tiempo de ejecución, pero el segundo span nunca se tocó — resultado:
-"CharlyAudit v2.5.3 • CharlyAudit".
-
-**Fix:** se eliminó el `<span>` estático duplicado y el separador `•`. El pie
-ahora muestra solo lo que el JS ya generaba correctamente: "CharlyAudit v2.5.4".
-
-### 3. CAPTURA y PERFIL Y DOMINIOS eran el mismo formulario
-
-**Antes:** un único botón "Captura ▾" abría un panel con tres grupos visuales
-(Captura, Perfil y dominios, Telemetría) dentro de la misma sección
-desplazable — visualmente separados por líneas, pero funcionalmente un solo
-formulario con un solo estado abierto/cerrado.
-
-**Fix:** se dividió en dos secciones y dos botones independientes en la barra
-de acciones:
-- **`Captura ▾`** — solo "qué capturar durante la grabación" (selectores a
-  enmascarar, variables globales, funciones a interceptar, Aplicar). Config
-  de sesión.
-- **`Ajustes ▾`** — perfil, dominios permitidos y telemetría (webhook, modo de
-  envío, auto-inicio). Config persistente, independiente de una grabación en
-  curso.
-
-Cada botón carga y muestra solo sus propios campos; abrir uno no afecta al
-otro. Todos los `id` de los campos internos se conservaron exactamente
-(ningún binding de JS se rompió). Verificado: abrir Captura no muestra
-Ajustes y viceversa; los valores de dominios/perfil cargan correctamente en
-su panel dedicado.
-
----
-
-## v2.5.5 — Popup simplificado, pestaña Reporte, fuentes independientes
-
-Reestructuración de flujo: import/export/replay quedan centralizados y cada
-fuente de datos (temporal/importado) se gestiona de forma independiente.
-
-### 1. Popup
-
-**1.1/1.2 — Exportar como dropdown + acceso a Auditoría.** La fila de 3
-botones (JSON/Cypress/Playwright) se reemplazó por un único `<select>`
-"Exportar ▾" con las 3 opciones (columna 1). "Copiar JSON" y "Vaciar" se
-eliminaron; en su lugar, columna 2 tiene **"Ver en Auditoria"**, que abre el
-panel lateral directo en esa pestaña (usa una bandera transitoria
-`charlyaudit:openTab` en `chrome.storage.local`, que `init()` del panel lee
-una vez al arrancar y borra — mecanismo genérico, reutilizable para futuras
-aperturas dirigidas).
-
-**1.3 — Sección Replay eliminada.** Importar/Reproducir/Detener/Velocidad ya
-no existen en el popup; toda la reproducción vive en el panel lateral
-(Auditoría → Repetición), con el mismo botón "Ver en Auditoria" como puente.
-
-### 2. Panel lateral
-
-**2.1 — Nueva pestaña "Reporte".** Único lugar del panel donde se puede:
-- Descargar la **sesión temporal** (JSON completo / Cypress / Playwright) —
-  usa `exportBundle`/`exportCypress`/`exportPlaywright`, igual que antes pero
-  reubicado.
-- Ver un resumen de la **sesión importada** (eventos, URL, versión de quien
-  exportó) y vaciarla de forma independiente.
-- **Importar** (única entrada de archivo del panel completo — se eliminó
-  `#tl-import` de Auditoría).
-- La importación solo acepta el JSON propio del reporte (`report.timeline`
-  validado por el SW vía `validateBundle`); nunca aceptó ni aceptará
-  Cypress/Playwright, que son scripts de prueba, no datos de reporte.
-- Exportar/enviar el reporte ya **no existe en ningún otro lugar** del panel
-  (se quitaron `#exp-bundle`/`#exp-cy`/`#exp-pw` de la barra de Auditoría).
-
-**Análisis del "reporte completo" (2.1.6).** Se auditó `buildBundle()` en el
-service worker antes de dar por completa la tarea. Ya incluye, sin huecos
-relevantes: `schema` versionado, metadata de extensión, `settings`+`capture`
-del exportador (solo referencia, nunca se aplica al importar), el `report`
-íntegro (metadata + timeline con `cid`/`tRel`/`fp` por evento), telemetría de
-la última repetición (`trace`+`resumen`), errores destacados, conteos, KPIs
-agregados (`computeKpis`) e integridad (`contentHash`, `ultimoCid`). Es el
-mismo artefacto que se firma y envía por webhook — no hay una versión "más
-completa" oculta en otro lugar del código. Un hallazgo no crítico para
-`pendientes`: los *known-issues* de accesibilidad (elementos sin nombre
-accesible) hoy solo se calculan al renderizar la tabla en el panel — no se
-persisten como una lista resumen en el bundle. Ver pendientes.
-
-**2.2 — Vaciar por fuente, no global.** Antes, el botón "Vaciar" de Auditoría
-llamaba siempre a la misma acción (`clear`, solo temporal) sin importar qué
-fuente estuviera activa — si estabas viendo "Importado", igual vaciaba la
-grabación temporal (o simplemente no tenía efecto sobre el importado, que
-persistía para siempre salvo cerrar sesión). Ahora el handler bifurca por
-`source`:
-- **Temporal** → `clear` (solo `qa:timeline`/`qa:meta`).
-- **Importado / Repetición** → nueva acción de SW **`clearImported`**, que
-  vacía `qa:replay` y `qa:replayJob` (detiene cualquier replay activo primero)
-  — el reporte y su repetición desaparecen como si el archivo nunca se
-  hubiera cargado, sin tocar la grabación temporal.
-
-El botón de Importar se eliminó de Auditoría (solo vive en Reporte, 2.2.3).
-
-Efecto colateral corregido de paso: el reporte importado ahora se **hidrata
-desde `storage`** al abrir el panel (antes solo vivía en una variable en
-memoria y se perdía al cerrar y reabrir el panel, aunque el dato seguía en el
-SW).
-
-**2.3 — Controles de reproducción en Repetición.** La Velocidad (antes solo
-en el popup, ahora eliminada de ahí) se agregó como `<select>` visible
-únicamente cuando la fuente activa es "Repetición". Al pulsar Reproducir, la
-vista cambia automáticamente a esa fuente para ver el avance en vivo
-(`replay-progress` muestra `índice/total` en tiempo real, reutilizando
-`refreshReplayState()`). Reproducir/Detener ya vivían en la barra de acciones
-de Auditoría (accesibles sin importar la sub-pestaña); ahora quedan
-explícitamente conectados al contexto de Repetición.
-
-### Validado
-Suite funcional en navegador real (Playwright, sin errores de página):
-3 pestañas presentes y conmutables; importar desde Reporte habilita
-"Importado" en Auditoría y refleja los datos; Vaciar en Temporal no afecta al
-importado y viceversa; controles de repetición se muestran solo en esa
-fuente; velocidad se aplica y la vista cambia a Repetición al reproducir;
-cero elementos huérfanos de import/export en Auditoría; cero IDs referenciados
-en JS ausentes del HTML (y viceversa) en panel lateral y popup.
-
-## Pendientes (por prioridad)
-
-### P2 — Fidelidad de evidencia
-- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
-- Assertions de negocio inferidas del baseline en los exports.
-- **Nuevo:** persistir un resumen de *known-issues* de accesibilidad
-  (elementos sin nombre accesible) dentro de `buildBundle`, no solo calculado
-  al renderizar en el panel — para que viaje también en el JSON exportado.
-
-### P3 — Ingesta
-- Gzip del cuerpo (CompressionStream) antes del webhook.
-- Modo webhook que envíe chunks con idempotencia por `contentHash`.
-- Re-lectura de cookies tras `Set-Cookie` por request.
-
-### P4 — UX / Accesibilidad
-- Panel de ajustes más completo para perfil/webhook/dominios.
-- `prefers-reduced-motion` en el banner de grabación de la página auditada.
-- Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
-- `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.
-
----
-
-## v2.5.6 — Race condition en Repetición, contexto del asistente completo, Reproducir/Detener en su módulo
-
-### 1. Repetición quedaba vacía tras importar y reproducir (bug crítico)
-
-**Causa raíz: condición de carrera real.** Durante un replay, `content.js` envía
-dos mensajes independientes por cada paso — `replayProgress` (avance) y
-`replayTrace` (telemetría) — cada uno como `sendMessage` sin esperar
-respuesta (fire-and-forget). En el service worker, cada acción hacía su
-propio ciclo `get(K.replayJob) → modificar → set(K.replayJob)` de forma
-independiente. Con cientos de pasos en rápida sucesión, dos de estos ciclos
-podían solaparse: si A lee, B lee (antes de que A escriba), A escribe, B
-escribe — el `set` de B **pisa por completo** el objeto que dejó A,
-descartando su cambio en silencio (*lost update* clásico). Con 291 pasos
-esto perdía casi toda la telemetría de `trace`, mientras que `index` (el
-progreso) sobrevivía con más frecuencia por la casualidad del orden — lo que
-explica exactamente el síntoma reportado: el banner avanzaba ("5/291") pero
-Repetición mostraba "0 pasos, 0 inconsistencias".
-
-**Fix:** nueva cola de escritura serializada `replayJobChain` (mismo patrón
-ya probado que usa `writeChain` para los eventos del timeline). Todas las
-mutaciones de `K.replayJob` — `replayProgress`, `replayTrace`, `startReplay`,
-`stopReplay`, `clearImported` — pasan ahora por `mutateReplayJob()`, que
-garantiza que cada ciclo get→modificar→set se complete antes de que empiece
-el siguiente, sin importar cuántos mensajes lleguen casi al mismo tiempo.
-
-**Validado:** simulación determinística del race (interleaving forzado)
-confirma la pérdida con el patrón viejo y su ausencia con la cola nueva;
-prueba de estrés con 291 pasos concurrentes **contra el código real del
-service worker** (cargado con `chrome.*` simulado) — resultado exacto:
-291/291 progreso, 291/291 traza, sin pérdidas.
-
-### 2. Contexto del asistente desactualizado e incompleto
-
-**2.1 — Selector de fuente (Temporal / Importado).** El asistente solo podía
-leer el reporte temporal (`getReport` del SW); no había forma de analizar un
-reporte importado. Se agregó:
-- `ContextBridge.getReport(source)` acepta `"live"` o `"imported"`.
-- Selector visual "Temporal / Importado" en la pestaña Asistente (mismo
-  patrón que el de Auditoría). Si no hay reporte importado, avisa y no
-  cambia de fuente (sin romper nada).
-- La caché de contexto (`ctxCache`) incluye la fuente en su clave, para no
-  mezclar contexto de una sesión con el de otra al alternar.
-- El `systemPrompt` declara explícitamente qué fuente está analizando.
-
-**2.2 — Variables de contexto actualizadas y completas.** Se encontraron dos
-huecos reales:
-- `scopeCount()` (los números junto a cada chip) solo mapeaba 6 de los 12
-  ámbitos — **Variables, Estructura, Repetición, Performance y Seguridad
-  quedaban siempre en blanco**, aunque el ámbito sí tuviera datos y
-  funcionara al activarlo. Ahora los 12 ámbitos muestran su conteo real.
-- El ámbito **Resumen** (metadata) no incluía el entorno de grabación (CPU,
-  RAM, navegador), la identidad de la sesión (`recordingId`, `startUrl`) ni
-  los **KPIs agregados** (LCP/CLS/INP/TBT, red, seguridad por severidad,
-  fidelidad de replay) — información que el sistema ya recolectaba pero
-  nunca llegaba al asistente. Los KPIs se calculan **client-side** con la
-  misma función pura (`computeKpis`) que usa el service worker, aplicada al
-  reporte de la fuente activa — así nunca se mezclan KPIs del temporal con
-  los del importado.
-
-### 3. Reproducir/Detener migrados al módulo de Repetición
-
-Antes vivían en la barra de acciones persistente de Auditoría, visibles sin
-importar qué fuente (Temporal/Importado/Repetición) estuviera activa. Ahora
-viven **exclusivamente** dentro de `#replay-controls`, el bloque que ya solo
-se muestra con la fuente "Repetición" activa (agregado en v2.5.5 para la
-Velocidad). De paso se eliminó `#act-replay-info`, que duplicaba la misma
-información que `#replay-progress` (ahora justo al lado de los botones).
-
-### Validado
-Verificación cruzada de IDs (JS↔HTML) sin huérfanos; sintaxis de los 16 JS
-como módulo ES; los 12 chips de contexto muestran conteos correctos;
-selector de fuente cambia solo cuando hay datos disponibles; Reproducir/
-Detener ausentes de la barra persistente y presentes solo en Repetición,
-ocultos en Temporal/Importado — todo sin errores de página en Playwright.
-
-## Pendientes (por prioridad)
-
-### P2 — Fidelidad de evidencia
-- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
-- Assertions de negocio inferidas del baseline en los exports.
-- Persistir un resumen de *known-issues* de accesibilidad dentro de
-  `buildBundle` (hoy solo se calcula al renderizar en el panel).
-
-### P3 — Ingesta
-- Gzip del cuerpo (CompressionStream) antes del webhook.
-- Modo webhook que envíe chunks con idempotencia por `contentHash`.
-- Re-lectura de cookies tras `Set-Cookie` por request.
-
-### P4 — UX / Accesibilidad
-- Panel de ajustes más completo para perfil/webhook/dominios.
-- `prefers-reduced-motion` en el banner de grabación de la página auditada.
-- Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
-- `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.
-- **Nuevo:** el `digest()` (resumen en lenguaje natural del asistente) aún no
-  incorpora datos de KPIs/performance/seguridad en su texto — solo cuenta
-  eventos, duración, errores y red fallida. Podría enriquecerse ahora que
-  los KPIs ya viajan en el snapshot.
-
----
-
-## v2.5.7 — Repetición sin auto-refresco, KPIs y contexto del asistente de la fuente equivocada
-
-Se probó la v2.5.6 en un caso real (exportar, reimportar, reproducir) y el
-síntoma persistía en apariencia — pero el fix del race condition **sí
-funcionó** (los datos se guardaban correctamente, visibles al cambiar de
-pestaña y volver). El problema real de esta versión era distinto: **tres
-puntos de la UI nunca refrescaban solos, o leían la fuente de datos
-equivocada.**
-
-### 1. La vista de Repetición no se auto-actualizaba
-
-**Causa raíz:** el temporizador periódico de la pestaña Auditoría
-(`qaTimer`, cada 2.5s) tenía la condición `source === "live"` — es decir,
-**solo refrescaba cuando la fuente activa era "Temporal"**. Al ver
-"Repetición" (reproduciendo un reporte importado), ese temporizador
-simplemente no hacía nada, nunca. La única forma de ver los datos
-actualizados era forzar un `renderTimeline(true)` manual, que solo ocurre al
-entrar a la pestaña Auditoría (`switchTab`) — de ahí que cambiar a Asistente
-o Reporte y volver "arreglara" la vista: no era magia, era el único punto
-del código que disparaba un re-render.
-
-**Fix:** la condición pasó a `source !== "imported"` — así "Temporal" y
-"Repetición" se refrescan solos (ambos cambian con el tiempo: grabación en
-curso, o pasos de replay llegando), y "Importado" sigue sin refrescarse
-innecesariamente (es una foto estática del archivo cargado, no cambia sola).
-
-### 2. Los KPIs mostraban el reporte temporal, no el que se estaba reproduciendo
-
-**Causa raíz:** `renderKpis()` llamaba siempre a la acción `getKpis` del
-service worker, que internamente **siempre** calcula sobre el reporte
-temporal (`buildReport()`), sin importar qué fuente estuviera activa en la
-UI. Al reproducir un reporte importado, el panel de KPIs mostraba 0 eventos,
-0 errores, 0 red — los del temporal (vacío, porque el usuario no había
-grabado nada localmente, solo reimportado un archivo) — mezclados con la
-**fidelidad de replay correcta** (esa sí calculada a partir de la traza real,
-que no depende de qué reporte esté "activo" en la UI). Resultado: un panel
-con números contradictorios entre sí (0 en casi todo, pero 40% de fidelidad).
-
-**Fix:** `renderKpis()` ahora calcula client-side con `computeKpis` (la
-misma función pura que usa el SW) sobre el reporte y la traza que
-**realmente** corresponden a la fuente activa: Temporal usa el reporte vivo
-sin traza; Importado usa el reporte importado sin traza; Repetición usa el
-reporte importado **con** la traza del replay en curso. `updateSourceUI()`
-sincroniza la fuente activa a `state.auditSource` para que `renderKpis()`
-(que vive fuera del cierre de la pestaña Auditoría) pueda leerla.
-
-### 3. Los chips de contexto del asistente no reflejaban el selector Temporal/Importado
-
-**Causa raíz:** `refreshState()` —la función que llena `state.counts` y el
-contador "N eventos"— llamaba siempre a `getState()` del SW (temporal),
-**sin mirar `state.contextSource`**. El selector Temporal/Importado
-agregado en v2.5.6 sí cambiaba qué se enviaba a la IA al preguntar, pero los
-**chips visuales** (Errores, Red, Variables...) seguían mostrando los
-números del reporte temporal sin importar cuál estuviera seleccionado —
-exactamente el síntoma reportado ("el asistente no se actualiza sin
-importar si es la sesión temporal o importada").
-
-**Fix:** `refreshState()` ahora lee `report.metadata.counts`/`eventCount`
-del reporte importado cuando `state.contextSource === "imported"`. Los
-botones del selector llaman a `refreshState()` de inmediato al hacer clic,
-en vez de esperar al siguiente ciclo periódico.
-
-### Validado
-Escenario reproducido exactamente como lo reportaste: reporte temporal
-vacío + reporte importado con 399 eventos + traza de replay con 5 pasos y 3
-inconsistencias. Confirmado en Playwright, **sin cambiar de pestaña en
-ningún momento**: (1) la vista de Repetición se actualiza sola tras el ciclo
-del temporizador; (2) el panel de KPIs muestra "5 eventos" (el importado)
-en vez de "0" (el temporal); (3) el selector del asistente cambia
-"0 eventos" → "399 eventos" y actualiza los 12 chips al alternar la fuente.
-Cero errores de página; verificación cruzada de IDs sin huérfanos.
-
-## Pendientes (por prioridad)
-
-### P2 — Fidelidad de evidencia
-- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
-- Assertions de negocio inferidas del baseline en los exports.
-- Persistir un resumen de *known-issues* de accesibilidad dentro de
-  `buildBundle` (hoy solo se calcula al renderizar en el panel).
-
-### P3 — Ingesta
-- Gzip del cuerpo (CompressionStream) antes del webhook.
-- Modo webhook que envíe chunks con idempotencia por `contentHash`.
-- Re-lectura de cookies tras `Set-Cookie` por request.
-
-### P4 — UX / Accesibilidad
-- Panel de ajustes más completo para perfil/webhook/dominios.
-- `prefers-reduced-motion` en el banner de grabación de la página auditada.
-- Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
-- `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.
-- El `digest()` (resumen en lenguaje natural del asistente) aún no
-  incorpora datos de KPIs/performance/seguridad en su texto.
-- **Nuevo:** `ctx-src-imported` hace dos llamadas a `getReport("imported")`
-  en cascada (una para verificar disponibilidad, otra dentro de
-  `refreshState()`) — funciona correctamente pero es una ronda de más;
-  se podría cachear el resultado de la primera llamada.
+### v2.5.0 y anteriores
+
+Documentación exhaustiva por hallazgo empezó en v2.5.1. Las versiones
+anteriores solo cuentan con el resumen de la tabla al inicio de esta
+sección: `web_accessible_resources` para inyección on-demand y rebrand
+(2.5.0); asistente multi-proveedor con conversación multi-turno (2.4.1);
+Performance 100% real (2.4.0); UX y chunking/partitionKey (2.3.x); inyección
+on-demand y ancla semántica (2.2.x); replay fiel y exportadores (2.1.x);
+núcleo MV3 (2.0.x).
