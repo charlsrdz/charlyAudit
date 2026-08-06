@@ -46,6 +46,12 @@
             <span id="rec-state" class="context__rec">—</span>
           </span>
         </div>
+        <div class="tl-source" role="tablist" aria-label="Fuente del contexto" style="margin-bottom:8px">
+          <button id="ctx-src-live" class="is-on" type="button"
+                  role="tab" aria-selected="true">Temporal</button>
+          <button id="ctx-src-imported" type="button"
+                  role="tab" aria-selected="false">Importado</button>
+        </div>
         <div id="scopes" class="scopes"><!-- chips de ámbito (render JS) --></div>
       </section>
 
@@ -87,16 +93,10 @@
     <div id="tab-qa" class="tabpane" role="tabpanel"
          aria-labelledby="tab-btn-qa">
 
-      <!-- Controles de grabación / reproducción -->
+      <!-- Controles de grabación (Reproducir/Detener viven solo en Repeticion) -->
       <section class="actions" aria-label="Acciones de captura">
         <button id="act-record" class="act act--rec" type="button"
                 title="Grabar / Detener grabacion" aria-pressed="false">● Grabar</button>
-        <span class="act__sep"></span>
-        <button id="act-play" class="act" type="button"
-                title="Reproducir replay en la pestana"
-                aria-describedby="act-replay-info" disabled>Reproducir</button>
-        <button id="act-stop" class="act" type="button"
-                title="Detener reproduccion">Detener</button>
         <span class="act__sep"></span>
         <button id="act-cfg" class="act act--ghost" type="button"
                 title="Que capturar durante la grabacion" aria-expanded="false"
@@ -128,7 +128,6 @@
           </div>
           <div class="capture-cfg__row">
             <button id="cfg-capture-apply" class="act act--brand" type="button">Aplicar</button>
-            <span id="act-replay-info" class="cfg-msg">Sin replay cargado</span>
           </div>
         </div>
       </section>
@@ -224,8 +223,17 @@
                   title="Vaciar la fuente activa">Vaciar</button>
         </div>
 
-        <!-- Controles de repeticion (solo visibles con fuente "Repeticion") -->
+        <!-- Controles de repeticion: SOLO visibles con fuente "Repeticion" (2.5.6:
+             Reproducir/Detener antes vivian en la barra persistente de Auditoria,
+             visibles sin importar la fuente activa; ahora solo se puede acceder
+             a ellos desde aqui). -->
         <div id="replay-controls" class="tl-srcbar" hidden>
+          <button id="act-play" class="act act--brand" type="button"
+                  title="Reproducir replay en la pestana"
+                  aria-describedby="replay-progress" disabled>Reproducir</button>
+          <button id="act-stop" class="act" type="button"
+                  title="Detener reproduccion">Detener</button>
+          <span class="act__sep"></span>
           <label for="replay-speed" class="tl-genlabel">Velocidad</label>
           <select id="replay-speed" class="act" style="width:auto">
             <option value="0.5">0.5x</option>

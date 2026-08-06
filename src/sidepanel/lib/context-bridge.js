@@ -22,6 +22,8 @@
  * Seguridad: redaccion de claves sensibles y truncado de strings.
  */
 
+import { computeKpis } from "../../qa/bundle-schema.js";
+
 const SENSITIVE =
   /(pass|password|secret|token|apikey|api_key|authorization|auth|bearer|cookie|session|hash|firma|signature|privad|credential)/i;
 
@@ -134,16 +136,31 @@ function readSW(action) {
 // ---------------------------------------------------------------------------
 
 const builders = {
-  metadata: (_cap, _tl, report) => ({
-    resumen: sanitize({
-      url: report.metadata.url,
-      duracionMs: report.metadata.durationMs,
-      eventos: report.metadata.eventCount,
-      conteos: report.metadata.counts,
-      resolucion: report.metadata.resolution,
-      viewport: report.metadata.viewport,
-    }),
-  }),
+  metadata: (_cap, _tl, report) => {
+    const m = report.metadata || {};
+    const ent = m.entorno || {};
+    const rec = m.recording || {};
+    return {
+      resumen: sanitize({
+        url: m.url,
+        duracionMs: m.durationMs,
+        eventos: m.eventCount,
+        conteos: m.counts,
+        resolucion: m.resolution,
+        viewport: m.viewport,
+        // Entorno del equipo que grabo (sin PII: solo hardware/navegador).
+        sistema: ent.sistema ? { cpu: ent.sistema.cpu, ramGB: ent.sistema.ramGB, nucleos: ent.sistema.nucleos } : undefined,
+        navegador: ent.navegador ? { ua: ent.navegador.ua, plataforma: ent.navegador.plataforma } : undefined,
+        // Identidad de la grabacion (para correlacionar con otras sesiones).
+        recordingId: rec.recordingId,
+        startUrl: rec.startUrl,
+        // KPIs agregados de ESTE reporte (temporal o importado, nunca mezclados
+        // con el otro — se calculan aqui mismo con la misma funcion pura que usa
+        // el service worker, en vez de pedirlos al SW, que solo conoce el vivo).
+        kpis: computeKpis(report, { trace: [] }),
+      }),
+    };
+  },
 
   errors: (cap, tl) => {
     const errores = sanitize(
@@ -339,8 +356,16 @@ export class ContextBridge {
     return res || { isRecording: false, count: 0, counts: {}, meta: {} };
   }
 
-  /** Reporte completo (metadata + timeline con delays). */
-  async getReport() {
+  /** Reporte completo (metadata + timeline con delays).
+   *  @param {"live"|"imported"} source - "live" = grabacion temporal (SW
+   *  buildReport); "imported" = el reporte cargado en la pestana Reporte
+   *  (K.replay). Antes solo existia "live": el asistente no podia analizar
+   *  un reporte importado (2.1). */
+  async getReport(source = "live") {
+    if (source === "imported") {
+      const res = await readSW("getReplay");
+      return res && res.report ? res.report : null;
+    }
     const res = await readSW("getReport");
     return res ? res.report : null;
   }
@@ -352,9 +377,9 @@ export class ContextBridge {
    * @param {number} budgetChars
    * @returns {Promise<{snapshot, digest, chars, trimmed, scopes, meta}>}
    */
-  async buildContext(scopeIds, budgetChars = 12000) {
-    const report = await this.getReport();
-    if (!report) return { snapshot: null, digest: "", chars: 0, trimmed: false, scopes: [], meta: {} };
+  async buildContext(scopeIds, budgetChars = 12000, source = "live") {
+    const report = await this.getReport(source);
+    if (!report) return { snapshot: null, digest: "", chars: 0, trimmed: false, scopes: [], meta: {}, source };
     const tl = report.timeline || [];
     const want = new Set(scopeIds || []);
 
@@ -408,6 +433,7 @@ export class ContextBridge {
       trimmed,
       scopes: included,
       meta: { url: report.metadata.url },
+      source,
     };
   }
 
@@ -448,6 +474,8 @@ export class ContextBridge {
     L.push("Para seguridad: prioriza critica/alta y explica riesgo + mitigacion.");
     L.push("No ejecutas codigo ni controlas la grabacion: solo analizas.");
     if (build.meta && build.meta.url) L.push("", `Sesion analizada: ${build.meta.url}`);
+    if (build.source === "imported") L.push("Fuente del contexto: reporte IMPORTADO (no la grabacion en curso).");
+    else L.push("Fuente del contexto: grabacion TEMPORAL (sesion en curso o mas reciente).");
     if (build.digest) L.push(`Resumen de la sesion: ${build.digest}`);
     if (build.snapshot) {
       if (build.trimmed) L.push("(Aviso: el contexto se recorto; pide ambitos concretos para mas detalle.)");

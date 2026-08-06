@@ -456,3 +456,202 @@ en JS ausentes del HTML (y viceversa) en panel lateral y popup.
 - `prefers-reduced-motion` en el banner de grabación de la página auditada.
 - Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
 - `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.
+
+---
+
+## v2.5.6 — Race condition en Repetición, contexto del asistente completo, Reproducir/Detener en su módulo
+
+### 1. Repetición quedaba vacía tras importar y reproducir (bug crítico)
+
+**Causa raíz: condición de carrera real.** Durante un replay, `content.js` envía
+dos mensajes independientes por cada paso — `replayProgress` (avance) y
+`replayTrace` (telemetría) — cada uno como `sendMessage` sin esperar
+respuesta (fire-and-forget). En el service worker, cada acción hacía su
+propio ciclo `get(K.replayJob) → modificar → set(K.replayJob)` de forma
+independiente. Con cientos de pasos en rápida sucesión, dos de estos ciclos
+podían solaparse: si A lee, B lee (antes de que A escriba), A escribe, B
+escribe — el `set` de B **pisa por completo** el objeto que dejó A,
+descartando su cambio en silencio (*lost update* clásico). Con 291 pasos
+esto perdía casi toda la telemetría de `trace`, mientras que `index` (el
+progreso) sobrevivía con más frecuencia por la casualidad del orden — lo que
+explica exactamente el síntoma reportado: el banner avanzaba ("5/291") pero
+Repetición mostraba "0 pasos, 0 inconsistencias".
+
+**Fix:** nueva cola de escritura serializada `replayJobChain` (mismo patrón
+ya probado que usa `writeChain` para los eventos del timeline). Todas las
+mutaciones de `K.replayJob` — `replayProgress`, `replayTrace`, `startReplay`,
+`stopReplay`, `clearImported` — pasan ahora por `mutateReplayJob()`, que
+garantiza que cada ciclo get→modificar→set se complete antes de que empiece
+el siguiente, sin importar cuántos mensajes lleguen casi al mismo tiempo.
+
+**Validado:** simulación determinística del race (interleaving forzado)
+confirma la pérdida con el patrón viejo y su ausencia con la cola nueva;
+prueba de estrés con 291 pasos concurrentes **contra el código real del
+service worker** (cargado con `chrome.*` simulado) — resultado exacto:
+291/291 progreso, 291/291 traza, sin pérdidas.
+
+### 2. Contexto del asistente desactualizado e incompleto
+
+**2.1 — Selector de fuente (Temporal / Importado).** El asistente solo podía
+leer el reporte temporal (`getReport` del SW); no había forma de analizar un
+reporte importado. Se agregó:
+- `ContextBridge.getReport(source)` acepta `"live"` o `"imported"`.
+- Selector visual "Temporal / Importado" en la pestaña Asistente (mismo
+  patrón que el de Auditoría). Si no hay reporte importado, avisa y no
+  cambia de fuente (sin romper nada).
+- La caché de contexto (`ctxCache`) incluye la fuente en su clave, para no
+  mezclar contexto de una sesión con el de otra al alternar.
+- El `systemPrompt` declara explícitamente qué fuente está analizando.
+
+**2.2 — Variables de contexto actualizadas y completas.** Se encontraron dos
+huecos reales:
+- `scopeCount()` (los números junto a cada chip) solo mapeaba 6 de los 12
+  ámbitos — **Variables, Estructura, Repetición, Performance y Seguridad
+  quedaban siempre en blanco**, aunque el ámbito sí tuviera datos y
+  funcionara al activarlo. Ahora los 12 ámbitos muestran su conteo real.
+- El ámbito **Resumen** (metadata) no incluía el entorno de grabación (CPU,
+  RAM, navegador), la identidad de la sesión (`recordingId`, `startUrl`) ni
+  los **KPIs agregados** (LCP/CLS/INP/TBT, red, seguridad por severidad,
+  fidelidad de replay) — información que el sistema ya recolectaba pero
+  nunca llegaba al asistente. Los KPIs se calculan **client-side** con la
+  misma función pura (`computeKpis`) que usa el service worker, aplicada al
+  reporte de la fuente activa — así nunca se mezclan KPIs del temporal con
+  los del importado.
+
+### 3. Reproducir/Detener migrados al módulo de Repetición
+
+Antes vivían en la barra de acciones persistente de Auditoría, visibles sin
+importar qué fuente (Temporal/Importado/Repetición) estuviera activa. Ahora
+viven **exclusivamente** dentro de `#replay-controls`, el bloque que ya solo
+se muestra con la fuente "Repetición" activa (agregado en v2.5.5 para la
+Velocidad). De paso se eliminó `#act-replay-info`, que duplicaba la misma
+información que `#replay-progress` (ahora justo al lado de los botones).
+
+### Validado
+Verificación cruzada de IDs (JS↔HTML) sin huérfanos; sintaxis de los 16 JS
+como módulo ES; los 12 chips de contexto muestran conteos correctos;
+selector de fuente cambia solo cuando hay datos disponibles; Reproducir/
+Detener ausentes de la barra persistente y presentes solo en Repetición,
+ocultos en Temporal/Importado — todo sin errores de página en Playwright.
+
+## Pendientes (por prioridad)
+
+### P2 — Fidelidad de evidencia
+- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
+- Assertions de negocio inferidas del baseline en los exports.
+- Persistir un resumen de *known-issues* de accesibilidad dentro de
+  `buildBundle` (hoy solo se calcula al renderizar en el panel).
+
+### P3 — Ingesta
+- Gzip del cuerpo (CompressionStream) antes del webhook.
+- Modo webhook que envíe chunks con idempotencia por `contentHash`.
+- Re-lectura de cookies tras `Set-Cookie` por request.
+
+### P4 — UX / Accesibilidad
+- Panel de ajustes más completo para perfil/webhook/dominios.
+- `prefers-reduced-motion` en el banner de grabación de la página auditada.
+- Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
+- `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.
+- **Nuevo:** el `digest()` (resumen en lenguaje natural del asistente) aún no
+  incorpora datos de KPIs/performance/seguridad en su texto — solo cuenta
+  eventos, duración, errores y red fallida. Podría enriquecerse ahora que
+  los KPIs ya viajan en el snapshot.
+
+---
+
+## v2.5.7 — Repetición sin auto-refresco, KPIs y contexto del asistente de la fuente equivocada
+
+Se probó la v2.5.6 en un caso real (exportar, reimportar, reproducir) y el
+síntoma persistía en apariencia — pero el fix del race condition **sí
+funcionó** (los datos se guardaban correctamente, visibles al cambiar de
+pestaña y volver). El problema real de esta versión era distinto: **tres
+puntos de la UI nunca refrescaban solos, o leían la fuente de datos
+equivocada.**
+
+### 1. La vista de Repetición no se auto-actualizaba
+
+**Causa raíz:** el temporizador periódico de la pestaña Auditoría
+(`qaTimer`, cada 2.5s) tenía la condición `source === "live"` — es decir,
+**solo refrescaba cuando la fuente activa era "Temporal"**. Al ver
+"Repetición" (reproduciendo un reporte importado), ese temporizador
+simplemente no hacía nada, nunca. La única forma de ver los datos
+actualizados era forzar un `renderTimeline(true)` manual, que solo ocurre al
+entrar a la pestaña Auditoría (`switchTab`) — de ahí que cambiar a Asistente
+o Reporte y volver "arreglara" la vista: no era magia, era el único punto
+del código que disparaba un re-render.
+
+**Fix:** la condición pasó a `source !== "imported"` — así "Temporal" y
+"Repetición" se refrescan solos (ambos cambian con el tiempo: grabación en
+curso, o pasos de replay llegando), y "Importado" sigue sin refrescarse
+innecesariamente (es una foto estática del archivo cargado, no cambia sola).
+
+### 2. Los KPIs mostraban el reporte temporal, no el que se estaba reproduciendo
+
+**Causa raíz:** `renderKpis()` llamaba siempre a la acción `getKpis` del
+service worker, que internamente **siempre** calcula sobre el reporte
+temporal (`buildReport()`), sin importar qué fuente estuviera activa en la
+UI. Al reproducir un reporte importado, el panel de KPIs mostraba 0 eventos,
+0 errores, 0 red — los del temporal (vacío, porque el usuario no había
+grabado nada localmente, solo reimportado un archivo) — mezclados con la
+**fidelidad de replay correcta** (esa sí calculada a partir de la traza real,
+que no depende de qué reporte esté "activo" en la UI). Resultado: un panel
+con números contradictorios entre sí (0 en casi todo, pero 40% de fidelidad).
+
+**Fix:** `renderKpis()` ahora calcula client-side con `computeKpis` (la
+misma función pura que usa el SW) sobre el reporte y la traza que
+**realmente** corresponden a la fuente activa: Temporal usa el reporte vivo
+sin traza; Importado usa el reporte importado sin traza; Repetición usa el
+reporte importado **con** la traza del replay en curso. `updateSourceUI()`
+sincroniza la fuente activa a `state.auditSource` para que `renderKpis()`
+(que vive fuera del cierre de la pestaña Auditoría) pueda leerla.
+
+### 3. Los chips de contexto del asistente no reflejaban el selector Temporal/Importado
+
+**Causa raíz:** `refreshState()` —la función que llena `state.counts` y el
+contador "N eventos"— llamaba siempre a `getState()` del SW (temporal),
+**sin mirar `state.contextSource`**. El selector Temporal/Importado
+agregado en v2.5.6 sí cambiaba qué se enviaba a la IA al preguntar, pero los
+**chips visuales** (Errores, Red, Variables...) seguían mostrando los
+números del reporte temporal sin importar cuál estuviera seleccionado —
+exactamente el síntoma reportado ("el asistente no se actualiza sin
+importar si es la sesión temporal o importada").
+
+**Fix:** `refreshState()` ahora lee `report.metadata.counts`/`eventCount`
+del reporte importado cuando `state.contextSource === "imported"`. Los
+botones del selector llaman a `refreshState()` de inmediato al hacer clic,
+en vez de esperar al siguiente ciclo periódico.
+
+### Validado
+Escenario reproducido exactamente como lo reportaste: reporte temporal
+vacío + reporte importado con 399 eventos + traza de replay con 5 pasos y 3
+inconsistencias. Confirmado en Playwright, **sin cambiar de pestaña en
+ningún momento**: (1) la vista de Repetición se actualiza sola tras el ciclo
+del temporizador; (2) el panel de KPIs muestra "5 eventos" (el importado)
+en vez de "0" (el temporal); (3) el selector del asistente cambia
+"0 eventos" → "399 eventos" y actualiza los 12 chips al alternar la fuente.
+Cero errores de página; verificación cruzada de IDs sin huérfanos.
+
+## Pendientes (por prioridad)
+
+### P2 — Fidelidad de evidencia
+- Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
+- Assertions de negocio inferidas del baseline en los exports.
+- Persistir un resumen de *known-issues* de accesibilidad dentro de
+  `buildBundle` (hoy solo se calcula al renderizar en el panel).
+
+### P3 — Ingesta
+- Gzip del cuerpo (CompressionStream) antes del webhook.
+- Modo webhook que envíe chunks con idempotencia por `contentHash`.
+- Re-lectura de cookies tras `Set-Cookie` por request.
+
+### P4 — UX / Accesibilidad
+- Panel de ajustes más completo para perfil/webhook/dominios.
+- `prefers-reduced-motion` en el banner de grabación de la página auditada.
+- Auditoría de contraste WCAG AA sobre el resto de combinaciones de paleta.
+- `--c-brand-dim` no se deriva automáticamente del `--c-brand` personalizado.
+- El `digest()` (resumen en lenguaje natural del asistente) aún no
+  incorpora datos de KPIs/performance/seguridad en su texto.
+- **Nuevo:** `ctx-src-imported` hace dos llamadas a `getReport("imported")`
+  en cascada (una para verificar disponibilidad, otra dentro de
+  `refreshState()`) — funciona correctamente pero es una ronda de más;
+  se podría cachear el resultado de la primera llamada.

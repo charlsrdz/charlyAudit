@@ -17,6 +17,7 @@ import { OpenWebUIClient, PROVIDERS } from "./lib/openwebui-client.js";
 import { renderMarkdown, Markdown } from "./lib/markdown.js";
 import { ContextBridge, SCOPES } from "./lib/context-bridge.js";
 import { ChatCache } from "./lib/chat-cache.js";
+import { computeKpis } from "../qa/bundle-schema.js";
 
 const AI_CONFIG_KEY = "charlyplugin:ai:config";
 const DEFAULT_AI = {
@@ -40,11 +41,14 @@ const state = {
   config: { ...DEFAULT_AI },
   history: [], // { role, content, scopes? }
   scopes: new Set(),
+  contextSource: "live", // "live" (temporal) | "imported" — que reporte analiza el asistente (2.1)
+  auditSource: "live", // "live" | "imported" | "replay" — fuente activa en la pestana Auditoria (para KPIs)
   busy: false,
   seq: 0,
   abort: null,
   lastSend: 0,
   counts: {},
+  replayPasos: "",
   ctxCache: { key: null, build: null }, // evita reconstruir el contexto en cada mensaje
 };
 
@@ -88,7 +92,12 @@ function scopeCount(id) {
     case "console": return c.console || 0;
     case "routes": return c.route || 0;
     case "functions": return c["function-call"] || 0;
-    case "interactions": return (c.click || 0) + (c.input || 0);
+    case "globals": return c["global-state"] || 0;
+    case "interactions": return (c.click || 0) + (c.input || 0) + (c.key || 0) + (c.dblclick || 0) + (c.dragdrop || 0);
+    case "audit": return c.focus || 0;
+    case "security": return c.security || 0;
+    case "performance": return (c["web-vitals"] || 0) + (c["interaction-timing"] || 0) + (c["resource-timing"] || 0);
+    case "replay": return state.replayPasos || "";
     default: return "";
   }
 }
@@ -114,12 +123,36 @@ function renderScopes() {
 }
 async function refreshState() {
   const st = await bridge.getState();
-  state.counts = st.counts || {};
-  state.eventCount = st.count || 0;
+  // Antes state.counts/eventCount SIEMPRE venian de getState() (temporal),
+  // sin importar la fuente elegida en el selector Temporal/Importado del
+  // asistente — por eso los chips (Errores, Red, Variables...) y el contador
+  // "N eventos" nunca reflejaban el reporte importado aunque estuviera
+  // seleccionado. Ahora, si la fuente activa es "imported", se leen los
+  // conteos del reporte importado (K.replay) en su lugar.
+  let counts = st.counts || {};
+  let eventCount = st.count || 0;
+  if (state.contextSource === "imported") {
+    const imp = await bridge.getReport("imported");
+    counts = (imp && imp.metadata && imp.metadata.counts) || {};
+    eventCount = (imp && imp.metadata && imp.metadata.eventCount) || 0;
+  }
+  state.counts = counts;
+  state.eventCount = eventCount;
   state.config = state.config || {};
   state.captureConfig = st.config || {};
+  // Conteo ligero para el chip "Repeticion" (no viene en getState: vive en
+  // K.replayJob, no en el timeline temporal; es global, no depende de la
+  // fuente seleccionada arriba).
+  try {
+    const tr = await qaControl("getReplayTrace");
+    state.replayPasos = tr && tr.resumen ? tr.resumen.pasos : "";
+  } catch {
+    state.replayPasos = "";
+  }
   const rec = $("rec-state");
-  rec.textContent = st.isRecording ? `● grabando · ${st.count} ev` : `${st.count} eventos`;
+  // La grabacion en curso es un hecho global (no depende de la fuente
+  // elegida para el contexto), pero el conteo mostrado si respeta la fuente.
+  rec.textContent = st.isRecording ? `● grabando · ${st.count} ev` : `${eventCount} eventos`;
   rec.className = "context__rec" + (st.isRecording ? " live" : "");
   // Refleja el estado en el boton de accion del panel.
   const recBtn = $("act-record");
@@ -156,12 +189,24 @@ function kpiCard(label, value, cls) {
 async function renderKpis() {
   const box = $("tl-kpis");
   if (!box || box.hidden) return;
-  const res = await qaControl("getKpis");
-  const k = res && res.ok ? res.kpis : null;
-  if (!k) {
+  // Antes esto SIEMPRE pedia getKpis (SW), que solo conoce el reporte
+  // temporal. Al ver "Repeticion" (reproduciendo un reporte importado), los
+  // KPIs mostraban 0 eventos/errores/red del temporal (vacio) mezclados con
+  // la fidelidad real del replay — confuso y erroneo. Ahora se calcula aqui
+  // mismo, con la misma funcion pura que usa el SW, sobre el reporte y la
+  // traza que realmente corresponden a la fuente activa.
+  const wantsImported = state.auditSource === "imported" || state.auditSource === "replay";
+  const report = await bridge.getReport(wantsImported ? "imported" : "live");
+  if (!report) {
     box.innerHTML = `<div class="tl-empty">Sin datos aun.</div>`;
     return;
   }
+  let trace = [];
+  if (state.auditSource === "replay") {
+    const tr = await qaControl("getReplayTrace");
+    trace = (tr && tr.trace) || [];
+  }
+  const k = computeKpis(report, { trace });
   const p = k.performance || {};
   const cards = [
     kpiCard("Eventos", k.eventos),
@@ -197,7 +242,6 @@ async function renderWebhookPending() {
 
 async function refreshReplayState() {
   const res = await qaControl("getReplay");
-  const info = $("act-replay-info");
   const play = $("act-play");
   const progress = $("replay-progress");
   if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
@@ -206,11 +250,9 @@ async function refreshReplayState() {
     const txt = active
       ? `reproduciendo ${res.job.index}/${res.report.timeline.length}`
       : `${res.report.timeline.length} eventos listos`;
-    if (info) info.textContent = txt;
     if (progress) progress.textContent = txt;
   } else {
     if (play) play.disabled = true;
-    if (info) info.textContent = "Sin replay cargado";
     if (progress) progress.textContent = "";
   }
 }
@@ -352,9 +394,9 @@ function wireActions() {
 // --- Contexto: construccion presupuestada + cache ---------------------------
 /** Devuelve el contexto (cacheado por ambitos + conteo de eventos). */
 async function getContext(scopes) {
-  const key = [...scopes].sort().join("|") + ":" + (state.eventCount || 0);
+  const key = state.contextSource + ":" + [...scopes].sort().join("|") + ":" + (state.eventCount || 0);
   if (state.ctxCache.key === key && state.ctxCache.build) return state.ctxCache.build;
-  const build = await bridge.buildContext(scopes, CONTEXT_BUDGET);
+  const build = await bridge.buildContext(scopes, CONTEXT_BUDGET, state.contextSource);
   state.ctxCache = { key, build };
   updateCtxIndicator(build);
   return build;
@@ -661,6 +703,33 @@ function wire() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!state.busy) send(); }
   });
 
+  // Fuente del contexto: temporal (grabacion) vs reporte importado (2.1).
+  // Cambiar la fuente invalida el cache de contexto (la clave incluye la
+  // fuente) para no mezclar datos de una sesion con la otra.
+  $("ctx-src-live").addEventListener("click", async () => {
+    state.contextSource = "live";
+    $("ctx-src-live").classList.add("is-on");
+    $("ctx-src-live").setAttribute("aria-selected", "true");
+    $("ctx-src-imported").classList.remove("is-on");
+    $("ctx-src-imported").setAttribute("aria-selected", "false");
+    await refreshState(); // refresca los chips YA (antes se veian las cuentas de la fuente anterior)
+    previewContextSize();
+  });
+  $("ctx-src-imported").addEventListener("click", async () => {
+    const report = await bridge.getReport("imported");
+    if (!report) {
+      toast("No hay ningun reporte importado. Ve a la pestana Reporte.");
+      return;
+    }
+    state.contextSource = "imported";
+    $("ctx-src-imported").classList.add("is-on");
+    $("ctx-src-imported").setAttribute("aria-selected", "true");
+    $("ctx-src-live").classList.remove("is-on");
+    $("ctx-src-live").setAttribute("aria-selected", "false");
+    await refreshState();
+    previewContextSize();
+  });
+
   // Cache
   const keepBtn = $("cache-keep");
   keepBtn.setAttribute("aria-pressed", String(ChatCache.getKeep()));
@@ -915,6 +984,12 @@ init();
     return source === "imported" ? importedReport : await bridge.getReport();
   }
   function updateSourceUI() {
+    // Sincroniza con el state compartido: renderKpis() (fuera de este closure)
+    // necesita saber que fuente esta activa para no calcular siempre sobre el
+    // reporte temporal — antes eso hacia que los KPIs de "Repeticion" mostraran
+    // 0 eventos/errores/red (los del temporal, casi siempre vacio al reproducir
+    // un reporte importado) con solo la fidelidad del replay correcta.
+    state.auditSource = source;
     G("src-live").classList.toggle("is-on", source === "live");
     G("src-imported").classList.toggle("is-on", source === "imported");
     G("src-replay").classList.toggle("is-on", source === "replay");
@@ -1066,7 +1141,13 @@ init();
       updateSourceUI();
       renderTimeline(true);
       clearInterval(qaTimer);
-      qaTimer = setInterval(() => { if (document.visibilityState === "visible" && source === "live") renderTimeline(); }, 2500);
+      // "Importado" es una foto estatica del archivo cargado (no cambia sola);
+      // "live" y "replay" SI cambian con el tiempo (grabacion en curso / pasos
+      // de repeticion llegando) y deben refrescarse solos. Antes este timer
+      // excluia todo lo que no fuera "live", asi que la vista de Repeticion
+      // nunca se auto-actualizaba: solo se veia al salir de Auditoria y volver
+      // (lo que fuerza un renderTimeline(true) manual via switchTab).
+      qaTimer = setInterval(() => { if (document.visibilityState === "visible" && source !== "imported") renderTimeline(); }, 2500);
     } else if (name === "report") {
       clearInterval(qaTimer);
       renderReportTab();
@@ -1081,9 +1162,9 @@ init();
   G("tl-filter").addEventListener("input", () => renderTimeline(true));
 
   // Fuente del reporte: temporal (grabacion) vs importado vs repeticion.
-  G("src-live").addEventListener("click", () => { source = "live"; activeType = null; updateSourceUI(); renderTimeline(true); });
-  G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; updateSourceUI(); renderTimeline(true); });
-  G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; updateSourceUI(); renderReplayTrace(); });
+  G("src-live").addEventListener("click", () => { source = "live"; activeType = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
+  G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
+  G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; updateSourceUI(); renderReplayTrace(); if (kpisOpen) renderKpis(); });
 
   // Importa un artefacto de auditoria: SOLO existe este flujo (pestana Reporte).
   // NO reemplaza la configuracion persistente: el bundle es solo metadata para
