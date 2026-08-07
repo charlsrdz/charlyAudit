@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.9**
+**Versión actual: 2.5.9a**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -36,7 +36,9 @@ src/qa/
   injected.js            MAIN world: perf/INP/waterfall, red, console, workers, globals
   report-engine.js       assembleReport, fingerprintEvent, attachInteractionLatency
   bundle-schema.js       validateBundle, stampIntegrity, redactBundle, chunkBundle,
-                        computeKpis, partitionKeyOf, hmacHex
+                        computeKpis, partitionKeyOf, hmacHex, INTERACTION_TYPES,
+                        ROUTE_TYPES (fuente única de qué tipos de evento cuentan
+                        como interacción/ruta — la usan SW, Auditoría y Asistente)
   exporters.js           toCypress, toPlaywright
 src/popup/               Popup de control rápido (grabar, exportar, atajo a Auditoría)
 src/sidepanel/
@@ -89,6 +91,7 @@ src/sidepanel/
 - Redacción canónica pre-embedding (email, JWT, Bearer, api-keys, tarjetas, hashes)
 - `chunkBundle`: unidades indexables por tipo con `partitionKey` por dominio/tenant
 - `computeKpis`: INP p98, TBT peor segmento, red, seguridad por severidad, fidelidad de replay — función **pura**, calculable client-side o server-side sobre cualquier reporte (temporal o importado)
+- Agrupaciones canónicas de tipos de evento (`INTERACTION_TYPES`, `ROUTE_TYPES` en `bundle-schema.js`): única fuente de verdad para "qué cuenta como interacción/ruta", compartida por el contador de Auditoría, el contexto del Asistente y `computeKpis` — un reporte temporal o importado se ve exactamente igual de completo desde cualquiera de las tres pantallas
 - HMAC-SHA256 del payload webhook (`X-CharlyAudit-Signature`)
 - Reintentos con backoff exponencial (2→4→8→16→30 min, máx. 5) vía `replayJobChain` serializado — elimina condiciones de carrera al escribir `K.replayJob` desde múltiples mensajes concurrentes (`replayProgress`, `replayTrace`, `startReplay`, `stopReplay`, `clearImported`)
 
@@ -160,7 +163,7 @@ El criterio que rige el desarrollo de CharlyAudit:
 
 2. **Sin pérdida de evidencia.** Un evento capturado siempre llega al timeline con `cid` canónico y `tRel` monotónico. Un bundle exportado siempre está validado (`validateBundle`), redactado (`redactBundle`) y sellado (`stampIntegrity`). El webhook tiene reintentos. Las escrituras concurrentes sobre una misma clave de storage (p. ej. `K.replayJob`) deben serializarse — nunca asumir que dos `get→modificar→set` independientes son seguros en paralelo.
 
-3. **Sin regresión de módulos puros.** `report-engine.js`, `bundle-schema.js` y `exporters.js` son funciones puras. Cualquier cambio en ellas debe pasar los tests unitarios antes de tocar el SW o la UI. Cuando una vista de la UI necesita KPIs o un reporte, debe quedar explícito **de qué fuente** (temporal vs. importada) — nunca asumir una por defecto sin verificarlo contra el selector activo.
+3. **Sin regresión de módulos puros.** `report-engine.js`, `bundle-schema.js` y `exporters.js` son funciones puras. Cualquier cambio en ellas debe pasar los tests unitarios antes de tocar el SW o la UI. Cuando una vista de la UI necesita KPIs o un reporte, debe quedar explícito **de qué fuente** (temporal vs. importada) — nunca asumir una por defecto sin verificarlo contra el selector activo. Cuando dos o más superficies (Auditoría, Asistente, KPIs, exportación) necesitan "qué tipos de evento cuentan como X", esa lista vive **una sola vez** en el módulo puro compartido (`bundle-schema.js`) — nunca se copia ni se redefine por separado en cada consumidor, porque copias independientes se desincronizan con el tiempo sin que ningún test lo detecte.
 
 ### Proceso de mejora
 
@@ -227,6 +230,8 @@ done
 - El drag&drop de la repetición usa únicamente la API nativa `DragEvent` (`dragstart`/`dragover`/`drop`/`dragend`). Muchas librerías modernas de listas ordenables (dnd-kit, react-beautiful-dnd y similares) no usan esa API — simulan arrastre con una secuencia de `pointerdown`/`pointermove`/`pointerup`, que hoy no se reproduce.
 - `perf._timer` (el snapshot periódico de KPIs cada 5s en `injected.js`) sigue corriendo indefinidamente después de detener una grabación — tiene una guarda que lo vuelve no-operativo (`if (!state.recording) return`), pero el propio `setInterval` nunca se cancela hasta que se navega o se cierra la pestaña. No es una fuga de memoria (no crece nada), pero es trabajo innecesario que podría evitarse limpiando el intervalo explícitamente al detener.
 - El buffer de escritura diferida del timeline (`pendingEvents`, ver Rendimiento y memoria) reduce drásticamente las escrituras a storage, pero introduce una ventana de riesgo real y acotada: si el service worker terminara de forma abrupta (no vía `onSuspend`, que sí se atiende) dentro de la ventana de 400ms, los eventos aún no volcados podrían perderse. Se mitigó con un intervalo corto y volcados forzados en los puntos de mayor riesgo (detener grabación, `onSuspend`), pero el riesgo teórico no es cero — vale la pena vigilarlo si en el futuro se reportan sesiones con eventos faltantes justo al final.
+- El detalle crudo de `response-headers` (URL, status, valor de cada cabecera de seguridad por request) no se expone al Asistente más allá de un resumen agregado en Resumen (`auditadas`/`conCsp`) — sus *hallazgos* sí llegan completos (se reflejan como eventos `security` independientes), pero no el registro técnico completo por petición. Igual con `worker`: el Asistente ve los últimos 10 detectados, no el listado completo si hubiera más.
+- Con la unificación de `INTERACTION_TYPES` (2.5.9a), la cifra de "Interacciones" en KPIs ahora incluye `scroll`/`resize`, que antes no contaba — es la definición correcta y consistente con Auditoría/Asistente, pero si algún reporte histórico se comparaba contra ese número, el valor absoluto puede diferir ligeramente de sesiones grabadas con versiones anteriores.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -244,6 +249,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.9a** | Consistencia total entre Auditoría/Asistente/KPIs: "Rutas" excluía navegaciones completas de página en el contexto del Asistente (mostraba 0 aunque Auditoría mostrara eventos reales) — causa raíz: tres listas independientes de "qué es una interacción/ruta" desincronizadas; se unifican en una sola fuente compartida |
 | **2.5.9** | Fix crítico de memoria/rendimiento: escritura del timeline en lote (antes O(n) por evento) · gestión del buffer nativo de Resource Timing · caché de ajustes en el SW · fix de la URL fija del asistente para proveedores con endpoint conocido (OpenAI/Gemini/Claude) |
 | **2.5.8c** | Corrección de rumbo: se elimina la importación de Playwright (imposible de ejecutar con alta fidelidad dentro de una extensión) a favor de pulir el motor de replay propio — eventos de puntero, doble click real, `beforeinput` en formularios |
 | **2.5.8b** | Fix crítico: Repetición perdía toda su traza en grabaciones con scroll · validación de foco en captura de formularios · importación e interpretación de Playwright · checkbox persistido para no recargar el sitio al reproducir |
@@ -265,6 +271,81 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.9a — Consistencia total entre Auditoría, Asistente y KPIs
+
+Parte de una comparación directa, imagen contra imagen, entre la pestaña
+Auditoría y la pestaña Asistente sobre el **mismo** reporte importado:
+Auditoría mostraba `4 nav` en sus chips de tipo, pero el Asistente mostraba
+`Rutas 0` para ese mismo reporte — el usuario nunca podía preguntarle al
+Asistente sobre las navegaciones de página que sí veía con sus propios ojos
+en Auditoría.
+
+**Hallazgo — "Rutas" excluía las navegaciones completas de página, no solo en el contador.**
+*Causa raíz:* existen dos tipos de evento relacionados con navegación —
+`route` (cambios de ruta dentro de una SPA, sin recargar) y `navigation`
+(cargas completas de página, capturadas por separado). El ámbito "Rutas"
+del Asistente (`context-bridge.js`) filtraba únicamente `e.type === "route"`
+— si una sesión no tenía enrutamiento SPA pero sí navegaciones completas
+(el caso exacto reportado), el Asistente recibía el ámbito Rutas
+**completamente vacío**, aunque los datos estuvieran íntegros en el
+timeline y visibles en Auditoría.
+
+Profundizando, esto no era un bug aislado: existían **tres listas
+independientes** de "qué tipos de evento cuentan como interacción/ruta",
+escritas en momentos distintos del proyecto y ya desincronizadas entre sí:
+1. `scopeCount()` en `sidepanel.js` (los números de los chips de Auditoría)
+   — ni siquiera sumaba `middleclick` bajo "Interacción".
+2. Los *builders* de contexto del Asistente en `context-bridge.js` —
+   excluían `navigation` de "Rutas".
+3. `computeKpis()` en `bundle-schema.js` (el panel de KPIs de Auditoría, y
+   lo que viaja en cada reporte exportado) — su propia lista, también sin
+   `navigation` en el cálculo de interacciones.
+
+Una cuarta lista (`INTERACTIVE_TYPES` en `report-engine.js`, usada para
+correlacionar la latencia real de INP con cada interacción puntual) se
+revisó y se dejó **intencionalmente distinta** — sirve un propósito más
+angosto y específico (no tiene sentido medir INP de un `dragdrop`), no es
+un caso de la misma inconsistencia.
+
+*Fix:* se movieron las agrupaciones canónicas (`INTERACTION_TYPES`,
+`ROUTE_TYPES`) al único módulo puro que de verdad comparten el service
+worker y el panel lateral (`bundle-schema.js`) — no `context-bridge.js`,
+que es exclusivo del panel y no puede ser importado desde el SW. Los tres
+consumidores (`scopeCount`, los *builders* de contexto, `computeKpis`) leen
+ahora de esa misma fuente; un cambio futuro se hace una sola vez y se
+refleja en Auditoría, Asistente y KPIs por igual, sea la sesión temporal o
+importada.
+
+**Hallazgo secundario — `scroll`/`resize`, *workers* y cabeceras auditadas sin representación en ningún ámbito.**
+Al auditar los 23 tipos de evento capturables contra los 12 ámbitos de
+contexto, se encontraron tres tipos que no aparecían en absoluto en ningún
+ámbito del Asistente pese a capturarse íntegramente: `scroll` y `resize`
+(ahora incluidos en "Interacción", con la misma lista canónica) y `worker`/
+`response-headers` (se añadió un resumen compacto — últimos *workers*
+detectados, cantidad de respuestas auditadas y cuántas traían CSP — al
+ámbito "Resumen"). Los *hallazgos* de seguridad derivados de las cabeceras
+ya llegaban completos al Asistente desde antes (se reflejan como eventos
+`security` propios), solo faltaba el registro técnico crudo por petición.
+
+**Validado:** prueba contra el código puro real (`computeKpis` +
+`ContextBridge.buildContext`, sin mocks de UI) reproduciendo el escenario
+exacto reportado (4 eventos `navigation`, 0 `route`) — confirmado que el
+Asistente ahora recibe las 4 navegaciones completas. Prueba en navegador
+real comparando Auditoría y Asistente sobre el mismo reporte: `4 nav` ↔
+`Rutas 4`, `13 click + 1 dblclick` ↔ `Interacción 14`, coincidencia exacta,
+sin errores de página. Verificación cruzada de IDs sin huérfanos; sintaxis
+de los 16 JS como módulo ES; arranque limpio del service worker con la
+nueva cadena de imports (`bundle-schema.js` → `context-bridge.js` →
+`sidepanel.js`).
+
+**Rendimiento (punto 6 del pedido):** el fix no añade trabajo nuevo por
+evento — son sumas sobre arreglos que ya se construían antes (`state.counts`,
+`report.timeline`), simplemente leyendo una lista compartida en vez de una
+hardcodeada en cada sitio. No hay impacto de memoria ni de latencia
+adicional; el cambio es puramente de correctitud.
 
 ---
 

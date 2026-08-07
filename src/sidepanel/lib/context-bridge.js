@@ -22,7 +22,7 @@
  * Seguridad: redaccion de claves sensibles y truncado de strings.
  */
 
-import { computeKpis } from "../../qa/bundle-schema.js";
+import { computeKpis, INTERACTION_TYPES, ROUTE_TYPES } from "../../qa/bundle-schema.js";
 
 const SENSITIVE =
   /(pass|password|secret|token|apikey|api_key|authorization|auth|bearer|cookie|session|hash|firma|signature|privad|credential)/i;
@@ -31,19 +31,45 @@ const MAX_STR = 300; // tope por string incrustado
 
 /** Catalogo de ambitos de contexto que el usuario puede adjuntar. */
 export const SCOPES = [
-  { id: "metadata", label: "Resumen", desc: "URL, duracion, conteos por tipo" },
+  { id: "metadata", label: "Resumen", desc: "URL, duracion, conteos por tipo, entorno, workers detectados" },
   { id: "errors", label: "Errores", desc: "Errores JS, origen (stack) y bloque de codigo" },
   { id: "network", label: "Red", desc: "Peticiones fallidas y mas lentas" },
   { id: "console", label: "Consola", desc: "console.warn / console.error" },
-  { id: "routes", label: "Rutas", desc: "Cambios de ruta SPA" },
+  { id: "routes", label: "Rutas", desc: "Cambios de ruta SPA y navegaciones completas de pagina" },
   { id: "functions", label: "Funciones", desc: "Llamadas interceptadas y su duracion" },
   { id: "globals", label: "Variables", desc: "Valores de variables globales vigiladas y mutaciones" },
-  { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop e inputs + arbol" },
+  { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop, inputs, scroll y resize" },
   { id: "audit", label: "Estructura", desc: "Atributos HTML/CSS de elementos enfocados" },
   { id: "replay", label: "Repeticion", desc: "Telemetria del ultimo replay e inconsistencias" },
   { id: "performance", label: "Performance", desc: "Web Vitals (LCP/CLS/INP/TBT), long tasks y recursos pesados" },
-  { id: "security", label: "Seguridad", desc: "Fugas PII/tokens, mixed content, cookies y CSP" },
+  { id: "security", label: "Seguridad", desc: "Fugas PII/tokens, mixed content, cookies, CSP y cabeceras de respuesta" },
 ];
+
+/**
+ * Mapa canonico: que tipos de evento del timeline pertenece a cada ambito.
+ * UNICA fuente de verdad — tanto los contadores de la pestana Auditoria
+ * (scopeCount en sidepanel.js) como los builders de contexto de aqui abajo
+ * leen de aqui, para que nunca puedan quedar desincronizados entre si. Antes
+ * cada lado tenia su propia lista hardcodeada por separado: "routes" solo
+ * contaba el tipo "route" (cambios de ruta SPA) y excluia "navigation"
+ * (cargas completas de pagina) en ambos lugares — pero cada lista se habia
+ * escrito en un momento distinto, asi que un fix en un lado no se reflejaba
+ * en el otro. No son necesariamente los mismos tipos que arma cada chip
+ * visual (metadata/replay no tienen una lista de tipos: metadata resume
+ * report.metadata directamente, replay lee la traza, no el timeline).
+ */
+export const SCOPE_TYPES = {
+  errors: ["error", "unhandledrejection"],
+  network: ["network"],
+  console: ["console"],
+  routes: ROUTE_TYPES,
+  functions: ["function-call"],
+  globals: ["global-state"],
+  interactions: INTERACTION_TYPES,
+  audit: ["focus"],
+  security: ["security"],
+  performance: ["web-vitals", "interaction-timing", "resource-timing"],
+};
 
 // Prioridad de inclusion cuando el contexto excede el presupuesto.
 const PRIORITY = ["metadata", "errors", "security", "network", "performance", "console", "routes", "functions", "globals", "interactions", "audit"];
@@ -128,10 +154,16 @@ function readSW(action) {
 // ---------------------------------------------------------------------------
 
 const builders = {
-  metadata: (_cap, _tl, report) => {
+  metadata: (_cap, tl, report) => {
     const m = report.metadata || {};
     const ent = m.entorno || {};
     const rec = m.recording || {};
+    // Workers/service workers detectados y cabeceras de respuesta auditadas:
+    // se capturan en el timeline (tipos "worker"/"response-headers") pero
+    // ningun otro scope los representa — sin esto, esa informacion nunca
+    // llegaba al asistente aunque estuviera completa en el reporte.
+    const workers = tl.filter((e) => e.type === "worker");
+    const headers = tl.filter((e) => e.type === "response-headers");
     return {
       resumen: sanitize({
         url: m.url,
@@ -150,6 +182,12 @@ const builders = {
         // con el otro — se calculan aqui mismo con la misma funcion pura que usa
         // el service worker, en vez de pedirlos al SW, que solo conoce el vivo).
         kpis: computeKpis(report, { trace: [] }),
+        workers: workers.length
+          ? workers.slice(-10).map((e) => ({ clase: e.data.clase, script: e.data.script, estado: e.data.estado || null }))
+          : undefined,
+        cabeceras: headers.length
+          ? { auditadas: headers.length, conCsp: headers.filter((e) => e.data.seguridad && e.data.seguridad.csp).length }
+          : undefined,
       }),
     };
   },
@@ -208,7 +246,14 @@ const builders = {
 
   routes: (cap, tl) => ({
     rutas: sanitize(
-      tl.filter((e) => e.type === "route").slice(-cap).map((e) => ({ via: e.data.method, de: e.data.from, a: e.data.to }))
+      tl
+        .filter((e) => SCOPE_TYPES.routes.includes(e.type))
+        .slice(-cap)
+        .map((e) =>
+          e.type === "navigation"
+            ? { via: "navigation", tipo: e.data.tipo || e.data.reason, a: e.data.url }
+            : { via: e.data.method, de: e.data.from, a: e.data.to }
+        )
     ),
   }),
 
@@ -295,7 +340,7 @@ const builders = {
   },
 
   interactions: (cap, tl) => {
-    const kinds = new Set(["click", "dblclick", "middleclick", "dragdrop", "key", "input"]);
+    const kinds = new Set(SCOPE_TYPES.interactions);
     return {
       interaccion: sanitize(
         tl
@@ -311,6 +356,10 @@ const builders = {
                 return { tipo: "key", el: shortSel(e.data.selector), key: e.data.masked ? "***" : (e.data.key || e.data.text) };
               case "dragdrop":
                 return { tipo: "dragdrop", de: shortSel(e.data.from), a: shortSel(e.data.to) };
+              case "scroll":
+                return { tipo: "scroll", x: e.data.x, y: e.data.y };
+              case "resize":
+                return { tipo: "resize", w: e.data.width, h: e.data.height };
               default:
                 return { tipo: e.type, el: shortSel(e.data.selector) };
             }

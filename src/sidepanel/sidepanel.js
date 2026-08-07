@@ -15,7 +15,7 @@
  */
 import { OpenWebUIClient, PROVIDERS } from "./lib/openwebui-client.js";
 import { renderMarkdown, Markdown } from "./lib/markdown.js";
-import { ContextBridge, SCOPES } from "./lib/context-bridge.js";
+import { ContextBridge, SCOPES, SCOPE_TYPES } from "./lib/context-bridge.js";
 import { ChatCache } from "./lib/chat-cache.js";
 import { computeKpis } from "../qa/bundle-schema.js";
 import { Store, Poller, captureOpenRows, restoreOpenRows } from "../lib/reactive-store.js";
@@ -86,21 +86,17 @@ async function refreshConnection() {
 // --- Contexto: chips de ambito ---------------------------------------------
 function scopeCount(id) {
   const c = state.counts || {};
-  switch (id) {
-    case "metadata": return "";
-    case "errors": return (c.error || 0) + (c.unhandledrejection || 0);
-    case "network": return c.network || 0;
-    case "console": return c.console || 0;
-    case "routes": return c.route || 0;
-    case "functions": return c["function-call"] || 0;
-    case "globals": return c["global-state"] || 0;
-    case "interactions": return (c.click || 0) + (c.input || 0) + (c.key || 0) + (c.dblclick || 0) + (c.dragdrop || 0);
-    case "audit": return c.focus || 0;
-    case "security": return c.security || 0;
-    case "performance": return (c["web-vitals"] || 0) + (c["interaction-timing"] || 0) + (c["resource-timing"] || 0);
-    case "replay": return state.replayPasos || "";
-    default: return "";
-  }
+  if (id === "metadata") return "";
+  if (id === "replay") return state.replayPasos || "";
+  // Fuente unica: los mismos tipos de evento que usa el Asistente para
+  // construir el contexto de este ambito (ver SCOPE_TYPES en
+  // context-bridge.js) — antes esta funcion mantenia su propia lista de
+  // tipos por separado, y ambas listas se desincronizaban con el tiempo
+  // (p.ej. "routes" no sumaba "navigation", "interactions" no sumaba
+  // "middleclick" aunque el Asistente si los contaba).
+  const types = SCOPE_TYPES[id];
+  if (!types) return "";
+  return types.reduce((sum, t) => sum + (c[t] || 0), 0);
 }
 function renderScopes() {
   const host = $("scopes");
