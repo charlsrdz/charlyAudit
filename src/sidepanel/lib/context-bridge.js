@@ -33,12 +33,12 @@ const MAX_STR = 300; // tope por string incrustado
 export const SCOPES = [
   { id: "metadata", label: "Resumen", desc: "URL, duracion, conteos por tipo, entorno, workers detectados" },
   { id: "errors", label: "Errores", desc: "Errores JS, origen (stack) y bloque de codigo" },
-  { id: "network", label: "Red", desc: "Peticiones fallidas y mas lentas" },
-  { id: "console", label: "Consola", desc: "console.warn / console.error" },
-  { id: "routes", label: "Rutas", desc: "Cambios de ruta SPA y navegaciones completas de pagina" },
+  { id: "network", label: "Red", desc: "Todas las peticiones con su waterfall completo (fases DNS/TCP/TTFB/descarga); fallidas y mas lentas destacadas aparte" },
+  { id: "console", label: "Consola", desc: "Todos los mensajes de consola (log/info/warn/error)" },
+  { id: "routes", label: "Rutas", desc: "Cambios de ruta SPA y navegaciones completas de pagina, con timing (TTFB, DOM listo, carga, TTI aproximado)" },
   { id: "functions", label: "Funciones", desc: "Llamadas interceptadas y su duracion" },
   { id: "globals", label: "Variables", desc: "Valores de variables globales vigiladas y mutaciones" },
-  { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop, inputs, scroll y resize" },
+  { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop, inputs, scroll y resize — con INP medido y aviso si el elemento no tiene nombre accesible" },
   { id: "audit", label: "Estructura", desc: "Atributos HTML/CSS de elementos enfocados" },
   { id: "replay", label: "Repeticion", desc: "Telemetria del ultimo replay e inconsistencias" },
   { id: "performance", label: "Performance", desc: "Web Vitals (LCP/CLS/INP/TBT), long tasks y recursos pesados" },
@@ -226,19 +226,40 @@ const builders = {
     const net = tl.filter((e) => e.type === "network");
     const fallidas = net.filter((e) => e.data.ok === false || (e.data.status || 0) >= 400);
     const lentas = [...net].sort((a, b) => (b.data.durationMs || 0) - (a.data.durationMs || 0)).slice(0, Math.min(8, cap));
+    // Detalle completo por peticion (waterfall), igual que ve un humano en el
+    // detalle de Auditoria — antes el Asistente solo recibia fallidas y las 8
+    // mas lentas, nunca la lista completa ni las fases DNS/TCP/TTFB/descarga.
+    const detalle = (e) => ({
+      m: e.data.method,
+      url: e.data.url,
+      status: e.data.status,
+      ms: e.data.durationMs,
+      kb: e.data.kb,
+      cache: e.data.cache || undefined,
+      protocolo: e.data.protocolo || undefined,
+      fases: e.data.fases,
+      disparo: e.data.trigger,
+    });
     return {
       red: sanitize({
         total: net.length,
-        fallidas: fallidas.slice(-cap).map((e) => ({ m: e.data.method, url: e.data.url, status: e.data.status, ms: e.data.durationMs, disparo: e.data.trigger })),
-        masLentas: lentas.map((e) => ({ m: e.data.method, url: e.data.url, status: e.data.status, ms: e.data.durationMs })),
+        // Lista completa (acotada por el mismo tope que el resto de ambitos):
+        // ninguna peticion queda fuera del alcance del Asistente por diseño.
+        todas: net.slice(-cap).map(detalle),
+        fallidas: fallidas.slice(-cap).map(detalle),
+        masLentas: lentas.map(detalle),
       }),
     };
   },
 
   console: (cap, tl) => ({
+    // Todos los niveles (antes solo warn/error): el contador de Auditoria
+    // cuenta console.log/info tambien, asi que excluirlos aqui rompia la
+    // consistencia entre lo que el chip anuncia y lo que el Asistente
+    // realmente puede leer.
     consola: sanitize(
       tl
-        .filter((e) => e.type === "console" && (e.data.level === "warn" || e.data.level === "error"))
+        .filter((e) => e.type === "console")
         .slice(-cap)
         .map((e) => ({ nivel: e.data.level, txt: (e.data.args || []).join(" "), ref: e.data.ref || null }))
     ),
@@ -251,7 +272,18 @@ const builders = {
         .slice(-cap)
         .map((e) =>
           e.type === "navigation"
-            ? { via: "navigation", tipo: e.data.tipo || e.data.reason, a: e.data.url }
+            ? {
+                via: "navigation",
+                tipo: e.data.tipo || e.data.reason,
+                a: e.data.url,
+                referrer: e.data.referrer || undefined,
+                redirects: e.data.redirects || undefined,
+                ttfbMs: e.data.ttfbMs,
+                domListoMs: e.data.domListoMs,
+                cargaMs: e.data.cargaMs,
+                ttiApproxMs: e.data.ttiApproxMs,
+                docKb: e.data.docKb,
+              }
             : { via: e.data.method, de: e.data.from, a: e.data.to }
         )
     ),
@@ -341,6 +373,11 @@ const builders = {
 
   interactions: (cap, tl) => {
     const kinds = new Set(SCOPE_TYPES.interactions);
+    // Mismo criterio de "known-issue" que resalta Auditoria visualmente: un
+    // elemento interactuado SIN nombre accesible (ni name/aria-label/texto/
+    // placeholder) — antes esta señal de QA solo la veia un humano mirando
+    // el detalle de la fila, nunca llegaba al Asistente.
+    const sinNombreAccesible = (a) => !!a && !a.name && !a.aria && !a.text && !a.ph;
     return {
       interaccion: sanitize(
         tl
@@ -349,11 +386,13 @@ const builders = {
           .map((e) => {
             // Solo el selector compacto (la cola identificativa); sin duplicar
             // arbol+sel, que inflaba el contexto con cadenas enormes.
+            const base = e.data.inpMs != null ? { inpMs: e.data.inpMs } : {};
+            if (e.data.anchor && sinNombreAccesible(e.data.anchor)) base.sinNombreAccesible = true;
             switch (e.type) {
               case "input":
-                return { tipo: "input", el: shortSel(e.data.selector), val: e.data.value };
+                return { tipo: "input", el: shortSel(e.data.selector), val: e.data.value, ...base };
               case "key":
-                return { tipo: "key", el: shortSel(e.data.selector), key: e.data.masked ? "***" : (e.data.key || e.data.text) };
+                return { tipo: "key", el: shortSel(e.data.selector), key: e.data.masked ? "***" : (e.data.key || e.data.text), ...base };
               case "dragdrop":
                 return { tipo: "dragdrop", de: shortSel(e.data.from), a: shortSel(e.data.to) };
               case "scroll":
@@ -361,7 +400,7 @@ const builders = {
               case "resize":
                 return { tipo: "resize", w: e.data.width, h: e.data.height };
               default:
-                return { tipo: e.type, el: shortSel(e.data.selector) };
+                return { tipo: e.type, el: shortSel(e.data.selector), ...base };
             }
           })
       ),

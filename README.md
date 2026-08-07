@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.9a**
+**Versión actual: 2.5.9b**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -119,7 +119,9 @@ src/sidepanel/
 - **Parámetros configurables**: temperatura, tokens máximos, turnos de historial
 - **Selector de fuente Temporal/Importado**: el asistente puede analizar la grabación en curso o un reporte importado, sin mezclar datos entre ambos (caché de contexto con clave por fuente)
 - **12 ámbitos de contexto**, todos con conteo visible y actualizado según la fuente activa: Resumen, Errores, Red, Consola, Rutas, Funciones, Variables, Interacción, Estructura, Repetición, Performance, Seguridad
-- El ámbito Resumen incluye entorno de grabación (CPU/RAM/navegador), identidad de sesión (`recordingId`/`startUrl`) y KPIs agregados completos
+- **Mismo nivel de detalle que Auditoría, no una versión resumida**: Red envía la lista completa de peticiones con su waterfall (DNS/TCP/TTFB/descarga), no solo las fallidas; Consola incluye todos los niveles (log/info/warn/error), no solo warn/error; Interacción incluye el INP medido por evento y marca si el elemento no tiene nombre accesible (el mismo *known-issue* que resalta Auditoría visualmente); Rutas incluye el timing completo de cada navegación (TTFB, DOM listo, carga total, TTI aproximado, referrer, redirects) — antes de v2.5.9b, cada uno de estos era una versión reducida de lo que el ojo humano podía ver en el timeline
+- El ámbito Resumen incluye entorno de grabación (CPU/RAM/navegador), identidad de sesión (`recordingId`/`startUrl`), KPIs agregados completos, *workers* detectados y resumen de cabeceras de seguridad auditadas
+- Si el contexto excede el presupuesto de tokens, el recorte automático reduce cuántos elementos se incluyen por ámbito — nunca el total real, que sigue visible (p. ej. "60 peticiones en total" aunque solo se listen 12 en detalle)
 
 ### ✅ Reporte (pestaña dedicada)
 - Único lugar del panel para **importar** un archivo (`.json` propio, nunca Cypress/Playwright)
@@ -232,6 +234,8 @@ done
 - El buffer de escritura diferida del timeline (`pendingEvents`, ver Rendimiento y memoria) reduce drásticamente las escrituras a storage, pero introduce una ventana de riesgo real y acotada: si el service worker terminara de forma abrupta (no vía `onSuspend`, que sí se atiende) dentro de la ventana de 400ms, los eventos aún no volcados podrían perderse. Se mitigó con un intervalo corto y volcados forzados en los puntos de mayor riesgo (detener grabación, `onSuspend`), pero el riesgo teórico no es cero — vale la pena vigilarlo si en el futuro se reportan sesiones con eventos faltantes justo al final.
 - El detalle crudo de `response-headers` (URL, status, valor de cada cabecera de seguridad por request) no se expone al Asistente más allá de un resumen agregado en Resumen (`auditadas`/`conCsp`) — sus *hallazgos* sí llegan completos (se reflejan como eventos `security` independientes), pero no el registro técnico completo por petición. Igual con `worker`: el Asistente ve los últimos 10 detectados, no el listado completo si hubiera más.
 - Con la unificación de `INTERACTION_TYPES` (2.5.9a), la cifra de "Interacciones" en KPIs ahora incluye `scroll`/`resize`, que antes no contaba — es la definición correcta y consistente con Auditoría/Asistente, pero si algún reporte histórico se comparaba contra ese número, el valor absoluto puede diferir ligeramente de sesiones grabadas con versiones anteriores.
+- El ámbito Interacción sigue sin el árbol de ancestros completo (`path`) de cada elemento — se excluyó deliberadamente por inflar demasiado el contexto (cadenas largas por cada evento). Sí incluye el selector compacto, el INP medido y el aviso de accesibilidad (2.5.9b), que cubren la señal de QA más accionable sin pagar el costo del árbol completo.
+- En sesiones muy intensas en red (cientos de peticiones), el sistema de presupuesto sigue recortando el **detalle por elemento** disponible para el Asistente, aunque el **total** (conteo agregado) nunca se pierde — es un límite de diseño consciente (tokens/costo de la conversación), no un descuido, pero vale la pena revisar si un resumen estadístico (percentiles de duración, top dominios) sería más útil que una lista truncada cuando el recorte es agresivo.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -249,6 +253,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.9b** | Corrección de alcance sobre 2.5.9a: la auditoría de consistencia se amplía a nivel de *detalle* (no solo conteos) en los 12 ámbitos — Red ahora envía la lista completa con waterfall (antes solo fallidas/lentas), Consola incluye todos los niveles (antes solo warn/error), Interacción incluye INP medido y aviso de accesibilidad por evento, Rutas incluye el timing completo de cada navegación |
 | **2.5.9a** | Consistencia total entre Auditoría/Asistente/KPIs: "Rutas" excluía navegaciones completas de página en el contexto del Asistente (mostraba 0 aunque Auditoría mostrara eventos reales) — causa raíz: tres listas independientes de "qué es una interacción/ruta" desincronizadas; se unifican en una sola fuente compartida |
 | **2.5.9** | Fix crítico de memoria/rendimiento: escritura del timeline en lote (antes O(n) por evento) · gestión del buffer nativo de Resource Timing · caché de ajustes en el SW · fix de la URL fija del asistente para proveedores con endpoint conocido (OpenAI/Gemini/Claude) |
 | **2.5.8c** | Corrección de rumbo: se elimina la importación de Playwright (imposible de ejecutar con alta fidelidad dentro de una extensión) a favor de pulir el motor de replay propio — eventos de puntero, doble click real, `beforeinput` en formularios |
@@ -271,6 +276,77 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.9b — Corrección de alcance: el mismo nivel de *detalle*, no solo el mismo *conteo*
+
+v2.5.9a corrigió que "Rutas" mostrara 0 cuando existían navegaciones reales
+— pero el pedido original era más amplio: garantizar el mismo nivel de
+**detalle** de la información en las tres áreas (Asistente, Auditoría,
+Reporte exportado) para **todos** los ámbitos, no solo arreglar el conteo
+de uno. v2.5.9a resolvió la causa estructural (una fuente única para "qué
+tipos de evento pertenecen a cada ámbito") pero se quedó corta en un nivel
+distinto del mismo problema: aunque el *conteo* ya coincidía en los 12
+ámbitos, el *contenido* real que recibía el Asistente seguía siendo, en
+varios casos, una versión reducida de lo que Auditoría muestra al detalle
+de cada fila. Esta versión completa esa auditoría, ámbito por ámbito,
+comparando explícitamente contra `tlDetail()` — la función que arma lo que
+un humano ve al expandir un evento en Auditoría — en vez de solo comparar
+números de chips.
+
+**Hallazgo — Red enviaba solo un subconjunto, nunca la lista completa.**
+El ámbito "Red" del Asistente devolvía únicamente las peticiones fallidas y
+las 8 más lentas — cualquier petición exitosa y de duración normal
+simplemente no existía para el Asistente, aunque Auditoría la mostrara con
+su *waterfall* completo (fases DNS/TCP/TTFB/descarga). *Fix:* se agregó
+`todas` con la lista completa de peticiones (acotada por el mismo sistema
+de presupuesto que ya protege el resto de ámbitos) y el desglose completo
+de fases en cada entrada; `fallidas`/`masLentas` se mantienen como vistas
+adicionales de conveniencia, no como el único contenido disponible.
+
+**Hallazgo — Consola excluía silenciosamente `log`/`info`.**
+El *builder* de contexto filtraba solo `warn`/`error`, pero el contador de
+Auditoría (el chip "Consola") cuenta **todos** los niveles — el número que
+el usuario ve nunca coincidía con lo que el Asistente realmente podía leer.
+*Fix:* se incluyen todos los niveles, igual que el conteo.
+
+**Hallazgo — Interacción no incluía la señal de accesibilidad ni el INP por evento.**
+Auditoría resalta visualmente cuando un elemento interactuado no tiene
+nombre accesible (ni `name`/`aria-label`/texto/`placeholder`) — un hallazgo
+de QA genuino — y muestra el INP medido de esa interacción específica.
+Ninguno de los dos llegaba al Asistente. *Fix:* se agregó `inpMs` y
+`sinNombreAccesible` a cada entrada de interacción (campos ligeros, sin
+reintroducir el árbol de ancestros completo, que se había excluido antes
+deliberadamente por inflar demasiado el contexto — ese trade-off se
+mantiene sin cambios).
+
+**Hallazgo — Rutas seguía incompleta incluso tras el fix de v2.5.9a.**
+El fix anterior hizo que las navegaciones completas de página **aparecieran**
+en el ámbito Rutas, pero solo con `tipo` y `url` — el resto de lo que
+`navInfo()` captura (referrer, redirects, TTFB, DOM listo, carga total, TTI
+aproximado, tamaño del documento) seguía sin representarse, aunque Auditoría
+lo muestra íntegro. *Fix:* se incluye el timing completo de cada navegación.
+
+**Validado contra el código real (no mocks de UI):** se construyó un
+timeline con datos que ejercitan cada campo nuevo — una navegación con
+timing completo, dos peticiones de red (una fallida, una normal), un
+mensaje de consola de nivel `log` y otro `error`, y un click sobre un
+elemento sin nombre accesible con INP medido — y se confirmó, aserción por
+aserción contra `ContextBridge.buildContext()` real, que los cuatro campos
+antes ausentes ahora llegan correctamente. Por separado, se confirmó que el
+sistema de recorte automático por presupuesto sigue funcionando sin
+degradarse: con 60 peticiones de red y un presupuesto reducido a propósito,
+el detalle se acota a 12 elementos pero el **total real (60) nunca se
+pierde** — sigue visible en `red.total` aunque el detalle completo no quepa.
+
+**Rendimiento y seguridad (punto 6 del pedido original):** el crecimiento
+de contexto que introduce este cambio está acotado por el mismo sistema de
+`CAPS`/presupuesto que ya existía — no se añadió ningún mecanismo nuevo de
+control de tamaño porque el existente ya cubre este caso correctamente
+(confirmado con la prueba de 60 peticiones). `sanitize()` sigue truncando
+strings largos y redactando claves sensibles en cada campo nuevo, igual que
+en los campos que ya existían.
 
 ---
 
