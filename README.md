@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.7**
+**Versión actual: 2.5.8**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -23,10 +23,9 @@ para QA, Performance y Security, con ingesta directa a bases vectoriales.
 ```
 manifest.json           MV3 · sin content_scripts declarativos · inyección on-demand
 src/background/         Service worker (orquestador)
-  service-worker.js     Importa CharlyAPI + qa/background
-src/lib/CharlyAPI.js    API de abstracción Chrome (storage, menús, screenshots...)
-src/content/            content-script.js — NO declarado en el manifest (código
-                        muerto, ver Pendientes P1)
+  service-worker.js     Ciclo de vida + menú contextual; importa qa/background
+src/lib/CharlyAPI.js    API de abstracción Chrome (storage, menús, tabs...);
+                        superficie amplia, solo un subconjunto en uso activo
 src/qa/
   background.js         Ciclo de grabación, lifecycle de pestaña, telemetría,
                         webhook, cola serializada de replayJob (replayJobChain)
@@ -94,6 +93,7 @@ src/sidepanel/
 - La vista de Repetición se auto-refresca sola (timer periódico, sin necesidad de cambiar de pestaña) mientras hay un replay en curso
 - KPIs de Repetición se calculan sobre el reporte **realmente en reproducción** (el importado + su traza), nunca mezclados con el temporal
 - Telemetría por paso: efecto esperado (grabación) vs. observado (replay), con diff estructural del DOM
+- Resolución de código bajo demanda: cada frame del stack de un error tiene un botón "Ver código" que resuelve el snippet real (con soporte de source maps) vía el canal `getSource` → `qa-source` → `get-source`
 
 ### ✅ Asistente IA
 - **Conversación multi-turno real**: `messages: [{role:"system",...},{role:"user",...},{role:"assistant",...},...,{role:"user"}]`; el historial viaja como roles nativos, no como texto incrustado
@@ -107,6 +107,7 @@ src/sidepanel/
 - Único lugar del panel para **importar** un archivo (`.json` propio, nunca Cypress/Playwright)
 - Único lugar para **descargar o enviar** el reporte: JSON completo (bundle canónico validado/redactado/sellado), Cypress o Playwright — siempre de la sesión temporal
 - Gestión del reporte importado: resumen (eventos, URL, versión del exportador) y vaciado independiente (`clearImported`, no afecta la grabación temporal)
+- El resumen de ambas sesiones (temporal e importada) se refresca solo mientras la pestaña está activa, sin necesidad de salir y volver a entrar
 
 ### ✅ UX y accesibilidad
 - Sistema de diseño con tokens (`--c-*`), jerarquía de 3 niveles de botón, mobile-first (breakpoints 340px/420px)
@@ -181,16 +182,6 @@ done
 
 ## Pendientes por prioridad
 
-> Lista única y consolidada — reemplaza las cinco listas parciales que
-> quedaron dispersas en versiones anteriores del README (v2.5.0, v2.5.5,
-> v2.5.6, v2.5.7), cada una una foto parcial del momento en que se escribió.
-> Los ítems ya resueltos (`web_accessible_resources`, migración de
-> Reproducir/Detener a Repetición, etc.) se retiraron; se recuperó la
-> sección **Backlog**, que se había perdido por completo desde v2.5.5.
-
-### P1 — Gaps de integración
-- **`src/content/content-script.js`** existe pero no está declarado en el manifest (sin efecto en producción). Evaluar si su lógica (`page:getMetrics`) debe fusionarse en `src/qa/content.js` o eliminarse directamente.
-
 ### P2 — Fidelidad de evidencia
 - Screenshot diff (pixel) vía `captureVisibleTab` por paso de replay.
 - Assertions de negocio inferidas del baseline en los exports (texto visible, conteos, estados).
@@ -198,16 +189,17 @@ done
 
 ### P3 — Ingesta / base vectorial
 - Gzip del cuerpo (CompressionStream) antes de enviar el webhook.
-- Modo webhook que envíe chunks con idempotencia por `contentHash`.
+- Modo webhook que envíe chunks con idempotencia por `contentHash` (la acción `exportChunks` ya produce el artefacto; falta el modo de envío automático).
 - Re-lectura de cookies tras `Set-Cookie` por request (correlación request↔cookie).
 
 ### P4 — UX / Accesibilidad / DX
 - Panel de ajustes más completo para perfil, webhook y dominios.
-- `prefers-reduced-motion` en el banner de grabación de la página auditada (ya aplicado al indicador "pensando" del asistente).
-- Auditoría sistemática de contraste WCAG AA sobre el resto de combinaciones posibles de la paleta personalizable (el caso conocido de "Importado" deshabilitado ya se corrigió en v2.5.3).
+- `prefers-reduced-motion` en el banner de grabación de la página auditada.
+- Auditoría sistemática de contraste WCAG AA sobre el resto de combinaciones posibles de la paleta personalizable.
 - `--c-brand-dim` (hovers, bordes sutiles) no se deriva automáticamente del `--c-brand` personalizado — sigue fijo al valor por defecto. Calcular un tono derivado, o añadirlo como sexto control en la paleta.
-- El `digest()` del asistente (resumen en lenguaje natural que encabeza el contexto) aún no incorpora KPIs de performance/seguridad en su texto — solo cuenta eventos, duración, errores y red fallida, aunque los KPIs ya viajan en el snapshot desde v2.5.6.
+- El `digest()` del asistente (resumen en lenguaje natural que encabeza el contexto) aún no incorpora KPIs de performance/seguridad en su texto — solo cuenta eventos, duración, errores y red fallida.
 - `ctx-src-imported` hace dos llamadas en cascada a `getReport("imported")` (una para verificar disponibilidad, otra dentro de `refreshState()`). Funciona correctamente pero es una ronda de red de más; se podría cachear el resultado de la primera.
+- `CharlyAPI.js` mantiene una superficie amplia de métodos (tabs, ventanas, bookmarks, historial, cookies, descargas, debugger) sin consumidor activo más allá de `storageGet/Set`, `clearContextMenus/createContextMenu` y `notify`. No son código muerto en el sentido de inalcanzable — son métodos correctos y documentados — pero antes de construir una función nueva sobre ellos conviene confirmar el beneficio concreto en vez de asumir que "ya está soportado".
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -225,6 +217,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.8** | Auditoría de huérfanos: subsistema de mensajería sin punto de entrada eliminado, resolución de código bajo demanda conectada a la UI, pestaña Reporte con auto-refresco |
 | **2.5.7** | Repetición sin auto-refresco, KPIs y contexto del asistente leyendo la fuente equivocada |
 | **2.5.6** | Race condition que vaciaba Repetición · contexto del asistente completo (12/12 ámbitos) · Reproducir/Detener migrados a Repetición |
 | **2.5.5** | Popup simplificado · pestaña Reporte nueva · Temporal/Importado gestionados de forma independiente |
@@ -241,6 +234,77 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.8 — Auditoría de huérfanos: mensajería sin punto de entrada, código bajo demanda conectado, Reporte con auto-refresco
+
+Este ciclo no partió de un reporte de bug, sino de una auditoría deliberada:
+recorrer el proyecto en busca de funcionalidad construida pero nunca
+utilizada, y de vistas que no se actualizan solas — el mismo tipo de defecto
+que en v2.5.7 dejaba "Repetición" congelada, buscado ahora de forma
+sistemática en el resto del panel.
+
+**Hallazgo 1 — `page:getMetrics` era la punta de un subsistema completo sin punto de entrada.**
+`src/content/content-script.js` no está declarado en el manifest (no se
+inyecta nunca). Al rastrear qué lo invocaba, el hallazgo se amplió: el
+router `ACTIONS` completo en `service-worker.js` (`ping`, `getActiveTab`,
+`getPageInfo`, `getPageText`, `getPageLinks`, `getSystemSummary`,
+`getDeviceProfile`, `getExtensionInfo`, `getTabs`, `captureScreenshot`,
+`notify`) tampoco tiene ningún llamador interno (ni `popup.js` ni
+`sidepanel.js` envían mensajes sin `channel`, que es lo único que ese router
+atiende) y el manifest no declara `externally_connectable`, así que tampoco
+es alcanzable desde fuera de la extensión.
+*Postura de beneficio:* fusionar `page:getMetrics` dentro de `qa/content.js`
+inyectaría capacidad sin consumidor en cada página, en contra del principio
+de inyección mínima necesaria. La idea de fondo — que el asistente pueda
+analizar la página actualmente abierta, no solo sesiones grabadas — es
+válida como *feature* futura, pero es una decisión de diseño propia (qué
+scope de contexto, qué redacción aplica, qué UI la dispara) y no algo para
+resolver de paso dentro de una limpieza de huérfanos.
+*Acción:* se eliminó `src/content/content-script.js` y el router `ACTIONS`
+completo de `service-worker.js` (entrada inalcanzable). Se mantiene intacto
+todo lo que sí tiene consumidor: `chrome.runtime.onInstalled`, el menú
+contextual y las llamadas puntuales de `CharlyAPI.storageGet/Set`,
+`clearContextMenus/createContextMenu` y `notify`.
+
+**Hallazgo 2 — Resolución de código bajo demanda construida pero nunca disparada.**
+El canal `getSource` (SW) → `qa-source` (content) → `get-source` (injected,
+con soporte de source maps) existía completo y probado, pero ningún punto de
+la UI lo invocaba — el usuario nunca podía pedir el código fuente de un
+frame del stack que no tuviera ya un snippet auto-capturado.
+*Acción:* cada frame del stack trace ahora se renderiza con un botón
+"Ver código"; al pulsarlo, dispara `getSource` sobre la pestaña activa y
+muestra el resultado inline. Validado en navegador: el botón resuelve y
+muestra el snippet correcto, incluida la línea marcada.
+
+**Hallazgo 3 — La pestaña Reporte no se auto-actualizaba.**
+Mismo patrón que el hallazgo de v2.5.7 en "Repetición": `renderReportTab()`
+solo se ejecutaba al entrar a la pestaña o tras una acción explícita
+(importar, vaciar), nunca por un temporizador. Si el usuario permanecía en
+Reporte mientras cambiaba el estado de la grabación en otra parte del panel,
+el resumen quedaba desactualizado hasta salir y volver a entrar.
+*Acción:* el ciclo de refresco periódico ya existente ahora también
+refresca Reporte cuando esa pestaña está activa. Validado sin cambiar de
+pestaña en ningún momento: el resumen se actualiza solo tras el ciclo.
+
+**Hallazgo 4 — Función privada sin ningún uso.**
+`joinPath()` en `context-bridge.js` estaba declarada, sin exportar y sin una
+sola invocación en su propio archivo. Eliminada.
+
+**Revisado y confirmado en uso (no huérfano, falso positivo del barrido inicial):**
+`getReplayJob`, `replayProgress`, `replayTrace` (invocados desde
+`content.js`, no desde la UI directamente); `getReport` (invocado vía el
+helper `readSW()` de `context-bridge.js`, con nombre de wrapper distinto);
+`exportChunks` (infraestructura para el modo de envío por webhook aún
+pendiente — deliberadamente no expuesto como descarga manual, ver
+Pendientes P3).
+
+**Validado:** verificación cruzada de IDs sin huérfanos; sintaxis de los 17
+JS como módulo ES; arranque limpio del service worker sin el router
+eliminado; flujo de "Ver código" probado en navegador con Playwright
+(resuelve y muestra el snippet correcto); auto-refresco de Reporte
+confirmado sin cambiar de pestaña.
 
 ---
 

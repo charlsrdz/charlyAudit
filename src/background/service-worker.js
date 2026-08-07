@@ -3,9 +3,10 @@
  *
  * Responsabilidades:
  *   - Ciclo de vida (onInstalled): configuracion por defecto + menu contextual.
- *   - Atajos de teclado (chrome.commands).
- *   - Router de mensajeria: traduce {action, payload} de content scripts / popup
- *     a metodos de CharlyAPI mediante una lista blanca.
+ *   - Menu contextual: notificacion de seleccion + atajo para abrir el panel.
+ *   - Importa el modulo de grabacion de QA (src/qa/background.js), que es
+ *     quien realmente atiende toda la mensajeria de la extension (canal
+ *     "qa-control", usado por el popup y el panel lateral).
  *
  * Se carga como modulo ES (manifest: "type": "module").
  */
@@ -61,40 +62,5 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 // --- Atajos de teclado: deshabilitados a proposito ----------------------------
 // El plugin se abre SOLO manualmente (icono o menu contextual). No se registran
 // atajos para no interferir con la captura/replay de teclas de la suite de QA.
-
-// --- Router de mensajeria -----------------------------------------------------
-/**
- * Lista blanca de acciones invocables por mensaje. Solo lo declarado aqui es
- * accesible para content scripts u otras paginas, evitando exponer toda la API.
- * @type {Object<string, (payload:*) => Promise<*>>}
- */
-const ACTIONS = {
-  ping: async () => ({ pong: true, at: Date.now() }),
-  getActiveTab: () => api.getActiveTab(),
-  getPageInfo: () => api.getPageInfo(),
-  getPageText: () => api.getPageText(),
-  getPageLinks: () => api.getPageLinks(),
-  getSystemSummary: () => api.getSystemSummary(),
-  getDeviceProfile: () => api.getDeviceProfile(),
-  getExtensionInfo: () => api.getExtensionInfo(),
-  getTabs: (payload) => api.getTabs(payload || {}),
-  captureScreenshot: () => api.captureScreenshot(),
-  notify: ({ title, message }) => api.notify(title, message),
-};
-
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-  // Los mensajes con "channel" pertenecen a otros modulos (p.ej. QA): ignorar.
-  if (request && request.channel) return false;
-
-  const handler = ACTIONS[request?.action];
-  if (!handler) {
-    sendResponse({ ok: false, error: `Accion desconocida: ${request?.action}` });
-    return false;
-  }
-  Promise.resolve(handler(request.payload))
-    .then((data) => sendResponse({ ok: true, data }))
-    .catch((err) => sendResponse({ ok: false, error: err.message }));
-  return true; // respuesta asincrona
-});
 
 console.info("[CharlyPlugin] Service worker activo.");
