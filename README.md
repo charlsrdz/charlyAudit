@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.8b**
+**Versión actual: 2.5.8c**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -38,11 +38,6 @@ src/qa/
   bundle-schema.js       validateBundle, stampIntegrity, redactBundle, chunkBundle,
                         computeKpis, partitionKeyOf, hmacHex
   exporters.js           toCypress, toPlaywright
-  playwright-import.js   Interprete de un subconjunto de Playwright
-                        (goto/click/fill/type/press/waitForTimeout) — NO
-                        ejecuta Node/Playwright real (imposible en una
-                        extension); traduce a pasos reproducibles por el
-                        motor de replay existente
 src/popup/               Popup de control rápido (grabar, exportar, atajo a Auditoría)
 src/sidepanel/
   sidepanel.html/js/css  Panel lateral: 3 pestañas — Asistente / Auditoría / Reporte
@@ -105,7 +100,7 @@ src/sidepanel/
 - El denominador de progreso ("reproduciendo X/Y") refleja los pasos reales reproducibles, no el total de eventos del timeline
 - Resolución de código bajo demanda: cada frame del stack de un error tiene un botón "Ver código" que resuelve el snippet real (con soporte de source maps) vía el canal `getSource` → `qa-source` → `get-source`
 - Checkbox persistido: recargar (o no) el sitio en la URL de inicio al reproducir — útil para conservar el estado actual de la sesión en vez de forzar una navegación
-- Reproducción de un Playwright importado (subconjunto interpretado de `goto/click/fill/type/press/waitForTimeout`) reutilizando el mismo motor de replay — ver `src/qa/playwright-import.js`
+- Fidelidad de reproducción: cada click dispara la secuencia real de eventos del navegador (`PointerEvent` + `MouseEvent`, no solo uno de los dos), el doble click reproduce dos ciclos completos down/up/click antes del `dblclick`, y el llenado de inputs dispara `beforeinput` antes del cambio de valor — la misma secuencia que produce una interacción humana real, no una síntesis parcial
 
 ### ✅ Asistente IA
 - **Conversación multi-turno real**: `messages: [{role:"system",...},{role:"user",...},{role:"assistant",...},...,{role:"user"}]`; el historial viaja como roles nativos, no como texto incrustado
@@ -220,9 +215,8 @@ done
 - `CharlyAPI.js` mantiene una superficie amplia de métodos (tabs, ventanas, bookmarks, historial, cookies, descargas, debugger) sin consumidor activo más allá de `storageGet/Set`, `clearContextMenus/createContextMenu` y `notify`. No son código muerto en el sentido de inalcanzable — son métodos correctos y documentados — pero antes de construir una función nueva sobre ellos conviene confirmar el beneficio concreto en vez de asumir que "ya está soportado".
 - El `Store` de `reactive-store.js` se usa hoy para centralizar el polling (`Poller`) y para la detección de cambios en las listas de Auditoría/Repetición; el resto del estado (grabación en curso, webhook pendiente, KPIs) sigue actualizándose por llamada directa dentro del callback del `Poller`, no por suscripción a `Store`. Migrar esos casos a `Store.subscribe()` sería más consistente con el estándar, aunque hoy no presentan el bug que sí tenía la lista de eventos.
 - La paginación por scroll de `tl-list` solo *agrega* filas al hacer scroll (nunca libera las que salen de vista). Para reportes de varios miles de eventos, una ventana verdaderamente virtualizada (renderizar solo lo visible) sería más robusta que el tope actual de 1000 eventos + páginas de 150.
-- El parser de Playwright (`playwright-import.js`) reconoce llamadas dentro de una sola línea; no soporta llamadas partidas en varias líneas, template literals con interpolación (`` `${variable}` ``), ni la API moderna de locators semánticos (`page.getByRole(...)`, `page.getByText(...)`, `page.getByLabel(...)`) — solo `page.locator(selectorCSS)` y las formas legadas (`page.click(selector)`, etc.). Es una limitación conocida y documentada en el propio módulo, no un intento fallido de cobertura total.
-- `press`/`type` sin selector (`page.keyboard.press(...)`, `page.keyboard.type(...)` — acciones de teclado globales, sin apuntar a un elemento) no se traducen a un paso: el motor de replay actual siempre necesita un selector destino.
-- El checkbox "Recargar el sitio al reproducir" vive físicamente en la pestaña Reporte, pero también controla el botón "▶ Playwright" de la barra de acciones y del popup — la relación no es obvia por la sola ubicación de los controles; un tooltip o nota cruzada ayudaría a descubrirla.
+- La secuencia de click ahora dispara `pointerdown`/`pointerup`, pero no `pointermove`/`pointerover`/`pointerenter` — UI dependiente de hover real (tooltips, menús que se abren al pasar el cursor) no se activa durante la repetición.
+- El drag&drop de la repetición usa únicamente la API nativa `DragEvent` (`dragstart`/`dragover`/`drop`/`dragend`). Muchas librerías modernas de listas ordenables (dnd-kit, react-beautiful-dnd y similares) no usan esa API — simulan arrastre con una secuencia de `pointerdown`/`pointermove`/`pointerup`, que hoy no se reproduce.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -240,6 +234,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.8c** | Corrección de rumbo: se elimina la importación de Playwright (imposible de ejecutar con alta fidelidad dentro de una extensión) a favor de pulir el motor de replay propio — eventos de puntero, doble click real, `beforeinput` en formularios |
 | **2.5.8b** | Fix crítico: Repetición perdía toda su traza en grabaciones con scroll · validación de foco en captura de formularios · importación e interpretación de Playwright · checkbox persistido para no recargar el sitio al reproducir |
 | **2.5.8a** | Estándar de UI reactiva (Store + Poller) en popup y panel lateral: corrige que un detalle expandido en Repetición se cerrara solo cada ciclo de refresco; paginación por scroll como límite visual |
 | **2.5.8** | Auditoría de huérfanos: subsistema de mensajería sin punto de entrada eliminado, resolución de código bajo demanda conectada a la UI, pestaña Reporte con auto-refresco |
@@ -259,6 +254,72 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.8c — Corrección de rumbo: fuera la importación de Playwright, foco total en la fidelidad del motor propio
+
+Esta versión revierte una decisión de producto tomada en v2.5.8b, a partir de
+una conversación explícita sobre el objetivo real: **99% de fidelidad al
+reproducir una sesión grabada**. La conclusión, documentada aquí para que
+quede como criterio de diseño y no se repita el mismo camino: interpretar un
+script Playwright externo tiene un techo bajo — Playwright depende de
+Node.js y de un protocolo de control externo al navegador (CDP), ninguno de
+los cuales existe dentro de una extensión. Pulir un intérprete de texto
+nunca iba a acercarse al 99% frente a scripts reales (que usan variables,
+locators semánticos `getByRole`/`getByText`, lógica de control) — a lo sumo
+mejora el reconocimiento de sintaxis, no la fidelidad de ejecución. El
+camino real hacia una alta fidelidad — sea sobre Playwright importado o
+sobre nuestras propias grabaciones — es el mismo: que el motor de replay
+que vive dentro de la extensión reproduzca eventos cada vez más parecidos a
+los que produce un usuario real. Ahí es donde se decidió invertir el
+esfuerzo.
+
+**Eliminado — importación de Playwright.** Se retiró por completo:
+`src/qa/playwright-import.js`, las acciones del service worker
+`loadPlaywright`/`getPlaywrightScript`/`clearPlaywright`/
+`startPlaywrightReplay`, la clave de storage `qa:playwright`, la sección
+"Playwright importado" de la pestaña Reporte, y el botón "▶ Playwright"
+tanto del panel lateral como del popup. Se conserva intacta la función de
+**exportar** a Playwright (`toPlaywright()`/`exportPlaywright`) — descargar
+un `.spec.js` ejecutable con `npx playwright test` sigue siendo una
+capacidad válida y distinta; lo que se elimina es únicamente la
+*importación* e interpretación de un script ajeno. El checkbox "Recargar
+el sitio al reproducir" (de v2.5.8b) se mantiene — aplica igual de bien a
+la repetición normal de un reporte propio, nunca fue exclusivo de
+Playwright.
+
+**Pulido — fidelidad del motor de replay propio.** Tres mejoras concretas
+y acotadas al motor existente (`content.js`), sin tocar su arquitectura:
+
+- *Eventos de puntero además de mouse.* `fireMouse()` disparaba únicamente
+  `MouseEvent` (`mousedown`/`mouseup`/`click`). Muchos componentes de UI
+  modernos (Radix, MUI, la mayoría de librerías de drag&drop) escuchan
+  específicamente `PointerEvent` y no reaccionan a un `MouseEvent`
+  sintético aislado. Ahora cada acción de mouse dispara primero el
+  `PointerEvent` correspondiente (`pointerdown`/`pointerup`) y luego el
+  `MouseEvent`, en el mismo orden que produce un navegador real.
+- *Doble click y click central con secuencia completa.* Antes se disparaba
+  un único evento `dblclick`/`auxclick` aislado. Ahora el doble click
+  reproduce los dos ciclos completos `down`/`up`/`click` antes del evento
+  `dblclick` final — muchas apps detectan el doble click contando clicks
+  individuales, no escuchando el evento sintético.
+- *`beforeinput` en la escritura de formularios.* Tanto `commitValue()`
+  (llenado directo) como `typeInto()` (tecleo carácter por carácter) ahora
+  disparan `beforeinput` antes de aplicar el cambio de valor, replicando
+  el orden real del navegador (`beforeinput` → cambio de valor → `input` →
+  `change`). Algunos validadores y máscaras de formulario estrictos
+  escuchan específicamente ese evento.
+
+**Validado:** la secuencia de eventos generada por el código real (copiada
+tal cual a una página HTML servida y ejecutada en Chromium vía Playwright,
+**no simulada**) se instrumentó para registrar cada evento recibido. Un
+click produjo exactamente `pointerdown → mousedown → pointerup → mouseup →
+click`; el llenado de un input produjo exactamente `beforeinput → input →
+change`, con el valor final correcto. Verificación cruzada de IDs sin
+huérfanos tras la eliminación; sintaxis de los 15 JS como módulo ES;
+búsqueda exhaustiva confirma cero referencias residuales a la
+funcionalidad retirada.
 
 ---
 

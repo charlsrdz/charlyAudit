@@ -1368,79 +1368,14 @@ init();
       impEl.textContent = "Sin reporte importado.";
       clearBtn.disabled = true;
     }
-    // Resumen del Playwright importado + visibilidad del boton "Reproducir
-    // Playwright" (solo aparece cuando hay un script cargado, en ambas UIs).
-    await refreshPlaywrightUI();
   }
 
-  // === Playwright importado (item 3): interpreta un subconjunto de pasos y
-  // los reproduce con nuestro propio motor de replay — nunca ejecuta
-  // Playwright/Node real (imposible dentro de una extension). ===============
-  async function refreshPlaywrightUI() {
-    const res = await qaControl("getPlaywrightScript");
-    const script = res && res.script;
-    const summaryEl = G("report-pw-summary");
-    const clearPwBtn = G("rep-clear-pw");
-    const playBtn = G("act-play-pw");
-    if (script && script.parsed && script.parsed.steps.length) {
-      const { steps, url, warnings } = script.parsed;
-      if (summaryEl) summaryEl.textContent = `${steps.length} pasos reconocidos${url ? " · " + url : ""}${warnings.length ? ` · ${warnings.length} aviso(s)` : ""}`;
-      if (clearPwBtn) clearPwBtn.disabled = false;
-      if (playBtn) playBtn.hidden = false;
-    } else {
-      if (summaryEl) summaryEl.textContent = "Sin Playwright importado.";
-      if (clearPwBtn) clearPwBtn.disabled = true;
-      if (playBtn) playBtn.hidden = true;
-    }
-  }
   // Lee la preferencia de recarga (item 4) definida a nivel de modulo.
   const reloadChk = G("rep-reload-on-replay");
   if (reloadChk) {
     reloadChk.checked = getReloadOnReplay();
     reloadChk.addEventListener("change", () => setReloadOnReplay(reloadChk.checked));
   }
-  G("rep-import-pw").addEventListener("click", () => G("rep-import-pw-file").click());
-  G("rep-import-pw-file").addEventListener("change", async (ev) => {
-    const file = ev.target.files[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const res = await qaControl("loadPlaywright", { text });
-      if (!res || !res.ok) throw new Error((res && res.error) || "invalido");
-      G("report-pw-msg").textContent = `Importado: ${res.steps} pasos reconocidos${res.warnings && res.warnings.length ? ` · ${res.warnings.length} aviso(s)` : ""}.`;
-      await refreshPlaywrightUI();
-      toast("Playwright importado.");
-    } catch (e) {
-      G("report-pw-msg").textContent = "Archivo invalido: " + (e && e.message ? e.message : "formato desconocido");
-      toast("No se pudo importar el Playwright.");
-    } finally {
-      ev.target.value = "";
-    }
-  });
-  G("rep-clear-pw").addEventListener("click", async () => {
-    await qaControl("clearPlaywright");
-    G("report-pw-msg").textContent = "";
-    await refreshPlaywrightUI();
-    toast("Playwright importado vaciado.");
-  });
-  G("act-play-pw").addEventListener("click", async () => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || tab.id == null) return toast("Sin pestana activa.");
-    const speedEl = G("replay-speed");
-    const speed = speedEl ? Number(speedEl.value) || 1 : 1;
-    const res = await qaControl("startPlaywrightReplay", {
-      tabId: tab.id,
-      options: { speed },
-      reloadOnReplay: getReloadOnReplay(),
-    });
-    if (res && res.ok) {
-      toast(`Reproduciendo Playwright (${res.steps} pasos)…`);
-      switchTab("qa");
-      document.getElementById("src-replay")?.click();
-    } else {
-      toast("No se pudo reproducir: " + ((res && res.error) || "error desconocido"));
-    }
-  });
   // Hook de coordinacion minimo (no reestructura el closure): permite que el
   // ciclo de refresco periodico de init() (fuera de este IIFE) mantenga viva
   // la pestana Reporte aunque el usuario no la abandone y regrese — el mismo
@@ -1493,14 +1428,11 @@ init();
   });
 
   // Al terminar de hidratar desde storage, refleja el resumen si el usuario
-  // ya esta viendo la pestana Reporte (o la abre despues). El boton
-  // "Reproducir Playwright" debe reflejar su visibilidad desde el arranque,
-  // no solo al visitar Reporte (vive en la barra de acciones, siempre visible).
+  // ya esta viendo la pestana Reporte (o la abre despues).
   hydrateImported().then(() => {
     updateSourceUI();
     if (G("tab-report").classList.contains("is-on")) renderReportTab();
   });
-  refreshPlaywrightUI();
 })();
 
 // ===========================================================================

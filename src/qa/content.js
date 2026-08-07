@@ -727,17 +727,26 @@
     }
     return findResilient(sel, false, anchor); // ultimo intento (variantes + ancla)
   }
+  // Mapa mouse->pointer: un click real del navegador dispara AMBAS familias de
+  // eventos, en este orden. Muchos componentes modernos (Radix, MUI, libs de
+  // drag&drop) escuchan especificamente PointerEvent y no reaccionan a un
+  // MouseEvent sintetico aislado — omitirlos es un gap de fidelidad real, no
+  // cosmetico, en cualquier UI construida con esas librerias.
+  const POINTER_FOR = { mousedown: "pointerdown", mouseup: "pointerup" };
   function fireMouse(el, type, button = 0) {
     const r = el.getBoundingClientRect();
-    const opts = {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      button,
-      clientX: Math.round(r.x + r.width / 2),
-      clientY: Math.round(r.y + r.height / 2),
-    };
-    el.dispatchEvent(new MouseEvent(type, opts));
+    const cx = Math.round(r.x + r.width / 2);
+    const cy = Math.round(r.y + r.height / 2);
+    const base = { bubbles: true, cancelable: true, view: window, button, clientX: cx, clientY: cy };
+    const pointerType = POINTER_FOR[type];
+    if (pointerType) {
+      try {
+        el.dispatchEvent(new PointerEvent(pointerType, { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+      } catch {
+        /* PointerEvent no disponible en este contexto: se sigue con el MouseEvent */
+      }
+    }
+    el.dispatchEvent(new MouseEvent(type, base));
   }
 
   // === Escritura fiel en inputs (1.1) ========================================
@@ -767,6 +776,7 @@
     let acc = editable ? el.textContent || "" : el.value || "";
     for (const ch of text) {
       el.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
+      el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: ch }));
       acc += ch;
       if (editable) el.textContent = acc;
       else setNativeValue(el, acc);
@@ -778,6 +788,10 @@
   /** Fija el valor final del input y notifica input+change (frameworks incluidos). */
   function commitValue(el, value) {
     el.focus();
+    // Orden real del navegador: beforeinput (cancelable, antes del cambio) ->
+    // se aplica el valor -> input -> change. Saltarse beforeinput es un gap
+    // fino pero real para validadores/mascaras de input que lo escuchan.
+    el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertReplacementText", data: value }));
     if (el.isContentEditable) el.textContent = value;
     else setNativeValue(el, value);
     el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: value }));
@@ -943,9 +957,18 @@
             }
             if (!isVisible(el)) status = "no-visible";
             el.scrollIntoView({ block: "center", behavior: "instant" });
-            if (e.type === "dblclick") fireMouse(el, "dblclick");
-            else if (e.type === "middleclick") fireMouse(el, "auxclick", 1);
-            else {
+            if (e.type === "dblclick") {
+              // Secuencia real de un doble clic: dos ciclos completos down/up/
+              // click, y solo entonces el evento dblclick — no un dblclick
+              // aislado, que muchas apps no detectan porque cuentan clicks.
+              fireMouse(el, "mousedown"); fireMouse(el, "mouseup"); fireMouse(el, "click");
+              fireMouse(el, "mousedown"); fireMouse(el, "mouseup"); fireMouse(el, "click");
+              fireMouse(el, "dblclick");
+            } else if (e.type === "middleclick") {
+              fireMouse(el, "mousedown", 1);
+              fireMouse(el, "mouseup", 1);
+              fireMouse(el, "auxclick", 1);
+            } else {
               fireMouse(el, "mousedown");
               fireMouse(el, "mouseup");
               fireMouse(el, "click");

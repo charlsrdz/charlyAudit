@@ -18,7 +18,6 @@
 import { assembleReport } from "./report-engine.js";
 import { toCypress, toPlaywright } from "./exporters.js";
 import { SCHEMA_CURRENT, validateBundle, stampIntegrity, redactBundle, chunkBundle, computeKpis, redactText, fnv1a } from "./bundle-schema.js";
-import { parsePlaywrightScript, playwrightStepsToReport } from "./playwright-import.js";
 
 const K = {
   recording: "qa:isRecording",
@@ -29,7 +28,6 @@ const K = {
   replayJob: "qa:replayJob", // { active, index, options, tabId } para reanudar
   settings: "qa:settings", // dominios permitidos, perfil, webhook, auto-inicio
   webhookPending: "qa:webhookPending", // estado de reintentos pendientes del webhook
-  playwright: "qa:playwright", // script Playwright importado (raw + pasos parseados)
 };
 
 const MAX_EVENTS = 5000;
@@ -883,72 +881,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         // --- Replay persistente (sobrevive al cierre del popup y a navegar) ---
-        case "loadPlaywright": {
-          // Interpreta un subconjunto de Playwright (goto/click/fill/type/
-          // press/waitForTimeout) — no ejecuta Node/Playwright real, eso es
-          // imposible dentro de una extension. Ver playwright-import.js.
-          const text = String(message.text || "");
-          if (!text.trim()) {
-            sendResponse({ ok: false, error: "Archivo vacio" });
-            break;
-          }
-          const parsed = parsePlaywrightScript(text);
-          await chrome.storage.local.set({
-            [K.playwright]: { raw: text.slice(0, 200000), parsed, importedAt: new Date().toISOString() },
-          });
-          sendResponse({ ok: true, url: parsed.url, steps: parsed.steps.length, warnings: parsed.warnings, totalCalls: parsed.totalCalls });
-          break;
-        }
-        case "getPlaywrightScript": {
-          const data = (await chrome.storage.local.get(K.playwright))[K.playwright] || null;
-          sendResponse({ ok: true, script: data });
-          break;
-        }
-        case "clearPlaywright": {
-          await chrome.storage.local.set({ [K.playwright]: null });
-          sendResponse({ ok: true });
-          break;
-        }
-        case "startPlaywrightReplay": {
-          // Reproduce el Playwright importado: lo convierte a un "reporte"
-          // con la misma forma que ya sabe reproducir el motor de replay
-          // (misma infraestructura probada: waitForEl, typeInto, etc.), lo
-          // carga como reporte importado y arranca la repeticion normal.
-          const data = (await chrome.storage.local.get(K.playwright))[K.playwright] || null;
-          if (!data || !data.parsed || !data.parsed.steps.length) {
-            sendResponse({ ok: false, error: "Sin Playwright importado o sin pasos reconocidos" });
-            break;
-          }
-          const recordingId = "pw-" + Date.now().toString(36);
-          const synthReport = playwrightStepsToReport(data.parsed, recordingId);
-          const check = validateBundle({ schema: SCHEMA_CURRENT, report: synthReport });
-          if (!check.ok) {
-            sendResponse({ ok: false, error: "No se pudo preparar la repeticion: " + check.errors.join("; ") });
-            break;
-          }
-          await chrome.storage.local.set({ [K.replay]: check.bundle.report });
-          const tabId = message.tabId;
-          if (tabId == null) {
-            sendResponse({ ok: false, error: "Sin pestana activa" });
-            break;
-          }
-          const job = { active: true, index: 0, options: message.options || {}, tabId, trace: [], startedAt: Date.now() };
-          replayJobChain = replayJobChain.then(() => chrome.storage.local.set({ [K.replayJob]: job }));
-          await replayJobChain;
-          const startUrl = synthReport.metadata.url;
-          const reloadOnReplay = message.reloadOnReplay !== false; // respeta el checkbox (4)
-          if (startUrl && reloadOnReplay) {
-            chrome.tabs.update(tabId, { url: startUrl }).catch(async () => {
-              const t = await chrome.tabs.get(tabId).catch(() => null);
-              if (t) await ensureInjected(t);
-            });
-          } else {
-            const t = await chrome.tabs.get(tabId).catch(() => null);
-            if (t) await ensureInjected(t);
-          }
-          sendResponse({ ok: true, steps: synthReport.timeline.length, url: startUrl, navegando: !!(startUrl && reloadOnReplay) });
-          break;
-        }
         case "loadReplay": {
           // Validacion estricta: un reporte mal formado no debe cargarse.
           const rep = message.report || null;
