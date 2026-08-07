@@ -18,6 +18,7 @@ import { renderMarkdown, Markdown } from "./lib/markdown.js";
 import { ContextBridge, SCOPES } from "./lib/context-bridge.js";
 import { ChatCache } from "./lib/chat-cache.js";
 import { computeKpis } from "../qa/bundle-schema.js";
+import { Store, Poller, captureOpenRows, restoreOpenRows } from "../lib/reactive-store.js";
 
 const AI_CONFIG_KEY = "charlyplugin:ai:config";
 const DEFAULT_AI = {
@@ -247,14 +248,31 @@ async function refreshReplayState() {
   if (res && res.ok && res.report && Array.isArray(res.report.timeline)) {
     if (play) play.disabled = false;
     const active = res.job && res.job.active;
+    // job.total = pasos reales reproducibles (click/input/key/scroll/...),
+    // no el total de eventos del timeline (que incluye red, consola, etc.)
+    // Antes se usaba timeline.length como denominador y no coincidia con el
+    // banner de la propia pagina, que siempre mostro el numero correcto.
+    const total = (res.job && res.job.total) || res.report.timeline.length;
     const txt = active
-      ? `reproduciendo ${res.job.index}/${res.report.timeline.length}`
+      ? `reproduciendo ${res.job.index}/${total}`
       : `${res.report.timeline.length} eventos listos`;
     if (progress) progress.textContent = txt;
   } else {
     if (play) play.disabled = true;
     if (progress) progress.textContent = "";
   }
+}
+
+// Preferencia (item 4): recargar el sitio en la URL de inicio al reproducir.
+// Vive en localStorage (mismo origen de extension: compartido entre el panel
+// y el popup) para que ambas superficies respeten la misma eleccion del
+// usuario sin duplicar UI. Por defecto: SI recargar (comportamiento previo).
+const RELOAD_KEY = "charlyaudit:reloadOnReplay";
+function getReloadOnReplay() {
+  return localStorage.getItem(RELOAD_KEY) !== "false";
+}
+function setReloadOnReplay(v) {
+  localStorage.setItem(RELOAD_KEY, v ? "true" : "false");
 }
 
 function wireActions() {
@@ -270,9 +288,9 @@ function wireActions() {
     if (!tab || tab.id == null) return toast("Sin pestana activa.");
     const speedEl = $("replay-speed");
     const speed = speedEl ? Number(speedEl.value) || 1 : 1;
-    const res = await qaControl("startReplay", { tabId: tab.id, options: { speed } });
+    const res = await qaControl("startReplay", { tabId: tab.id, options: { speed }, reloadOnReplay: getReloadOnReplay() });
     if (res && res.ok) {
-      toast("Reproduciendo en la pestana…");
+      toast(res.navegando ? "Reproduciendo (recargando la pagina de inicio)…" : "Reproduciendo en la pestana actual (sin recargar)…");
       // Lleva la vista a "Repeticion" para ver el avance en vivo (2.3).
       document.getElementById("src-replay")?.click();
     } else {
@@ -858,14 +876,19 @@ async function init() {
   }
   renderWebhookPending();
   // Refresco ligero de conteos/grabacion/replay mientras el panel este visible.
-  setInterval(() => {
-    if (document.visibilityState === "visible") {
-      refreshState();
-      refreshReplayState();
-      renderWebhookPending();
-      if (kpisOpen) renderKpis();
+  new Poller(() => {
+    refreshState();
+    refreshReplayState();
+    renderWebhookPending();
+    if (kpisOpen) renderKpis();
+    // Reporte muestra resumenes de sesion (temporal/importada) que cambian
+    // con el tiempo (grabacion en curso); sin esto quedaba congelado hasta
+    // salir de la pestana y volver — mismo patron de bug que Repeticion.
+    const reportTab = document.getElementById("tab-report");
+    if (reportTab && reportTab.classList.contains("is-on") && window.__charlyRenderReportTab) {
+      window.__charlyRenderReportTab();
     }
-  }, 4000);
+  }, 4000).start();
 }
 init();
 
@@ -944,8 +967,23 @@ init();
     if (d.message || d.reason) add("mensaje", esc(d.message || d.reason));
     if (d.ref) add("origen", esc(d.ref));
     if (d.trigger) add("disparo", esc(d.trigger));
-    if (Array.isArray(d.frames) && d.frames.length)
-      add("stack", esc(d.frames.slice(0, 4).map((f) => `${f.fn || "?"} @ ${f.url}:${f.line}`).join("  ·  ")));
+    if (Array.isArray(d.frames) && d.frames.length) {
+      const framesHtml = d.frames
+        .slice(0, 4)
+        .map((f, i) => {
+          const label = esc(`${f.fn || "?"} @ ${f.url}:${f.line}`);
+          // Boton "Ver codigo" bajo demanda: dispara getSource (SW -> content ->
+          // injected, resuelve via source map si existe) solo si el frame no
+          // trae ya un snippet auto-capturado — evita pedir dos veces lo mismo.
+          if (!f.url || !f.line) return `<div class="tl-frame">${label}</div>`;
+          return `<div class="tl-frame">${label}
+            <button type="button" class="tl-frame-src" data-url="${esc(f.url)}" data-line="${f.line}">Ver código</button>
+            <div class="tl-frame-slot" data-idx="${i}"></div>
+          </div>`;
+        })
+        .join("");
+      add("stack", framesHtml);
+    }
     if (Array.isArray(d.changed) && d.changed.length) add("mutaciones", esc(d.changed.join(", ")));
     if (d.values) add("valores", `<pre class="tl-code">${esc(JSON.stringify(d.values, null, 1))}</pre>`);
     if (Array.isArray(d.snippet))
@@ -1012,6 +1050,12 @@ init();
     G("replay-controls").hidden = source !== "replay";
   }
 
+  const RENDER_PAGE = 150; // limite visual inicial; crece al hacer scroll cerca del final
+  let renderLimit = RENDER_PAGE;
+  let lastTlSignature = null;
+  /** Clave estable de fila: prioriza cid canonico, luego seq, luego indice. */
+  const rowKey = (e) => String(e.cid != null ? e.cid : e.seq != null ? e.seq : e.index);
+
   async function renderTimeline(force) {
     if (source === "replay") return renderReplayTrace();
     const report = await getActiveReport();
@@ -1032,34 +1076,54 @@ init();
       c.addEventListener("click", () => {
         const t = c.getAttribute("data-type");
         activeType = activeType === t ? null : t;
+        renderLimit = RENDER_PAGE; // nuevo filtro: reinicia la paginacion
         renderTimeline(true);
       })
     );
     // Lista (mas reciente arriba), con filtro por texto y por tipo activo.
     const filter = (G("tl-filter").value || "").toLowerCase().trim();
-    const rows = tl
+    const allRows = tl
       .filter((e) => !activeType || e.type === activeType)
       .filter((e) => !filter || e.type.includes(filter) || JSON.stringify(e.data || {}).toLowerCase().includes(filter))
-      .slice(-400).reverse();
-    if (!rows.length) {
+      .slice(-1000).reverse(); // tope duro de seguridad independiente del paginador visual
+    const rows = allRows.slice(0, renderLimit);
+    if (!allRows.length) {
       list.innerHTML = `<div class="tl-empty">Sin eventos${filter || activeType ? " para el filtro" : ""}.</div>`;
+      lastTlSignature = null;
       return;
     }
+    // Reactividad real: si la pagina visible es exactamente la misma que la
+    // ultima vez (mismos eventos, mismo orden), no se toca el DOM — evita
+    // cerrar de golpe un detalle que el usuario tiene abierto sin motivo.
+    const signature = rows.map((e) => rowKey(e)).join(",") + `|${renderLimit}|${allRows.length}`;
+    if (!force && signature === lastTlSignature) return;
+    lastTlSignature = signature;
+    const openRows = captureOpenRows(list);
     list.innerHTML = rows
       .map((e) => {
         const m = meta(e.type);
         const a = e.data && e.data.anchor;
         const issue = a && ["click", "dblclick", "middleclick", "input", "key"].includes(e.type) && !a.name && !a.aria && !a.text && !a.ph;
-        return `<div class="tl-row${issue ? " bad" : ""}"><div class="tl-row__head">
+        const rk = esc(rowKey(e));
+        return `<div class="tl-row${issue ? " bad" : ""}" data-rk="${rk}"><div class="tl-row__head">
           <span class="tl-badge" style="background:${m.c}">${esc(m.l)}</span>
           <span class="tl-desc">${issue ? "⚠ " : ""}${esc(tlDesc(e))}</span>
           <span class="tl-delay">+${e.delay || 0}ms</span>
         </div><div class="tl-detail">${tlDetail(e)}</div></div>`;
       })
       .join("");
+    restoreOpenRows(list, openRows);
     list.querySelectorAll(".tl-row__head").forEach((h) =>
       h.addEventListener("click", () => h.parentElement.classList.toggle("is-open"))
     );
+    // Paginador por scroll: crece la pagina visible al acercarse al final,
+    // en vez de renderizar de una vez cientos/miles de filas al DOM.
+    if (allRows.length > renderLimit) {
+      const more = document.createElement("div");
+      more.className = "tl-more";
+      more.textContent = `Mostrando ${rows.length} de ${allRows.length} · desplázate para ver más`;
+      list.appendChild(more);
+    }
   }
 
   // Vista de la telemetria del ultimo replay: pasos, estado e inconsistencias.
@@ -1071,6 +1135,7 @@ init();
     enmascarado: { c: "#64748b", l: "enmascarado" },
   };
   const estMeta = (e) => EST_META[e] || { c: "#64748b", l: e || "?" };
+  let lastTraceSignature = null;
   async function renderReplayTrace() {
     const res = await qaControl("getReplayTrace");
     const list = G("tl-list");
@@ -1088,15 +1153,26 @@ init();
       chips.push(`<span class="tl-chip"><span class="tl-dot" style="background:${estMeta(e).c}"></span><b>${n}</b> ${esc(estMeta(e).l)}</span>`);
     G("tl-chips").innerHTML = chips.join("");
     if (!trace.length) {
-      list.innerHTML = `<div class="tl-empty">Aun no hay repeticion. Importa o graba un flujo y pulsa <strong>Reproducir</strong>.</div>`;
+      // Solo pisa el mensaje vacio si aun no habia contenido (evita parpadeo).
+      if (lastTraceSignature !== "empty") list.innerHTML = `<div class="tl-empty">Aun no hay repeticion. Importa o graba un flujo y pulsa <strong>Reproducir</strong>.</div>`;
+      lastTraceSignature = "empty";
       return;
     }
     // Filtro por texto reutilizado; por defecto muestra primero las inconsistencias.
     const filter = (G("tl-filter").value || "").toLowerCase().trim();
-    const rows = trace
+    const allRows = trace
       .filter((t) => !filter || (t.sel || "").toLowerCase().includes(filter) || (t.tipo || "").includes(filter) || (t.inconsistencias || []).join(" ").toLowerCase().includes(filter))
       .slice()
       .sort((a, b) => (b.inconsistencias?.length || 0) - (a.inconsistencias?.length || 0) || a.i - b.i);
+    const rows = allRows.slice(0, renderLimit);
+    // Reactividad real: si esta pagina es identica a la ultima renderizada
+    // (mismos pasos, mismos estados), NO se toca el DOM. Esto es lo que
+    // impedia que abrir el detalle de un paso sobreviviera al siguiente ciclo
+    // del temporizador — se reconstruia sin condicion cada 2.5s.
+    const signature = rows.map((t) => `${t.i}:${t.estado}:${(t.inconsistencias || []).length}`).join(",") + `|${renderLimit}`;
+    if (signature === lastTraceSignature) return;
+    lastTraceSignature = signature;
+    const openRows = captureOpenRows(list);
     list.innerHTML = rows
       .map((t) => {
         const m = estMeta(t.estado);
@@ -1112,14 +1188,21 @@ init();
           (t.diff ? `<dt>diff DOM</dt><dd>nodos ${esc(t.diff.nodos)}${t.diff.tituloCambio ? " · titulo cambio" : ""}</dd>` : "") +
           (bad ? `<dt>problemas</dt><dd style="color:var(--live)">${esc(t.inconsistencias.join(" · "))}</dd>` : "") +
           `</dl>`;
-        return `<div class="tl-row${bad ? " bad" : ""}"><div class="tl-row__head">
+        return `<div class="tl-row${bad ? " bad" : ""}" data-rk="${esc(String(t.i))}"><div class="tl-row__head">
           <span class="tl-badge" style="background:${m.c}">#${t.i} ${esc(m.l)}</span>
           <span class="tl-desc">${esc(t.sel || t.tipo)}${bad ? " · " + esc(t.inconsistencias[0]) : ""}</span>
           <span class="tl-delay">${bad ? "\u26a0" : "\u2713"}</span>
         </div><div class="tl-detail">${detail}</div></div>`;
       })
       .join("");
+    restoreOpenRows(list, openRows);
     list.querySelectorAll(".tl-row__head").forEach((h) => h.addEventListener("click", () => h.parentElement.classList.toggle("is-open")));
+    if (allRows.length > renderLimit) {
+      const more = document.createElement("div");
+      more.className = "tl-more";
+      more.textContent = `Mostrando ${rows.length} de ${allRows.length} · desplázate para ver más`;
+      list.appendChild(more);
+    }
   }
 
   function dl(name, text, mime) {
@@ -1130,7 +1213,7 @@ init();
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
 
-  let qaTimer = null;
+  const qaPoller = new Poller(() => { if (source !== "imported") renderTimeline(); }, 2500);
   function switchTab(name) {
     for (const t of ["assistant", "qa", "report"]) {
       G("tab-" + t).classList.toggle("is-on", t === name);
@@ -1140,31 +1223,67 @@ init();
     if (name === "qa") {
       updateSourceUI();
       renderTimeline(true);
-      clearInterval(qaTimer);
       // "Importado" es una foto estatica del archivo cargado (no cambia sola);
       // "live" y "replay" SI cambian con el tiempo (grabacion en curso / pasos
-      // de repeticion llegando) y deben refrescarse solos. Antes este timer
-      // excluia todo lo que no fuera "live", asi que la vista de Repeticion
-      // nunca se auto-actualizaba: solo se veia al salir de Auditoria y volver
-      // (lo que fuerza un renderTimeline(true) manual via switchTab).
-      qaTimer = setInterval(() => { if (document.visibilityState === "visible" && source !== "imported") renderTimeline(); }, 2500);
+      // de repeticion llegando) y deben refrescarse solos — pero solo cuando
+      // hay algo NUEVO (la firma de cambio dentro de renderTimeline/
+      // renderReplayTrace se encarga de eso; el Poller solo dispara el intento).
+      qaPoller.start();
     } else if (name === "report") {
-      clearInterval(qaTimer);
+      qaPoller.stop();
       renderReportTab();
     } else {
-      clearInterval(qaTimer);
+      qaPoller.stop();
     }
   }
   G("tab-btn-assistant").addEventListener("click", () => switchTab("assistant"));
   G("tab-btn-qa").addEventListener("click", () => switchTab("qa"));
   G("tab-btn-report").addEventListener("click", () => switchTab("report"));
-  G("tl-refresh").addEventListener("click", () => renderTimeline(true));
-  G("tl-filter").addEventListener("input", () => renderTimeline(true));
+  G("tl-refresh").addEventListener("click", () => { renderLimit = RENDER_PAGE; lastTlSignature = null; lastTraceSignature = null; renderTimeline(true); });
+  // Conecta el mecanismo de resolucion de codigo bajo demanda (getSource):
+  // existia end-to-end (SW -> content -> injected, con soporte de source maps)
+  // pero ningun punto de la UI lo disparaba. Delegado en el contenedor para
+  // cubrir filas re-renderizadas sin re-enganchar listeners.
+  G("tl-list").addEventListener("click", async (ev) => {
+    const btn = ev.target.closest(".tl-frame-src");
+    if (!btn) return;
+    const url = btn.dataset.url;
+    const line = Number(btn.dataset.line);
+    const slot = btn.nextElementSibling;
+    btn.disabled = true;
+    btn.textContent = "Resolviendo…";
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const res = tab ? await qaControl("getSource", { tabId: tab.id, url, line, ctx: 6 }) : null;
+      if (res && res.ok && res.block && Array.isArray(res.block.snippet)) {
+        const code = res.block.snippet
+          .map((s) => `<span class="${s.hit ? "hit" : ""}">${esc((s.hit ? "\u203a " : "  ") + s.n + ": " + s.code)}</span>`)
+          .join("\n");
+        if (slot) slot.innerHTML = `<pre class="tl-code">${code}</pre>`;
+        btn.remove();
+      } else {
+        btn.textContent = "Sin código disponible";
+      }
+    } catch {
+      btn.textContent = "Error al resolver";
+    }
+  });
+  G("tl-filter").addEventListener("input", () => { renderLimit = RENDER_PAGE; renderTimeline(true); });
 
   // Fuente del reporte: temporal (grabacion) vs importado vs repeticion.
-  G("src-live").addEventListener("click", () => { source = "live"; activeType = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
-  G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
-  G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; updateSourceUI(); renderReplayTrace(); if (kpisOpen) renderKpis(); });
+  G("src-live").addEventListener("click", () => { source = "live"; activeType = null; renderLimit = RENDER_PAGE; lastTlSignature = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
+  G("src-imported").addEventListener("click", () => { if (!importedReport) return; source = "imported"; activeType = null; renderLimit = RENDER_PAGE; lastTlSignature = null; updateSourceUI(); renderTimeline(true); if (kpisOpen) renderKpis(); });
+  G("src-replay").addEventListener("click", () => { source = "replay"; activeType = null; renderLimit = RENDER_PAGE; lastTraceSignature = null; updateSourceUI(); renderReplayTrace(); if (kpisOpen) renderKpis(); });
+  // Paginador por scroll (2): crece la ventana visible al acercarse al final
+  // de la lista, en vez de renderizar cientos/miles de filas de una vez.
+  G("tl-list").addEventListener("scroll", () => {
+    const list = G("tl-list");
+    const nearBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 80;
+    if (!nearBottom) return;
+    renderLimit += RENDER_PAGE;
+    if (source === "replay") { lastTraceSignature = null; renderReplayTrace(); }
+    else { lastTlSignature = null; renderTimeline(true); }
+  });
 
   // Importa un artefacto de auditoria: SOLO existe este flujo (pestana Reporte).
   // NO reemplaza la configuracion persistente: el bundle es solo metadata para
@@ -1183,6 +1302,7 @@ init();
     importedBundle = bundle;
     importedReport = report;
     source = "imported";
+    renderLimit = RENDER_PAGE;
     updateSourceUI();
     renderTimeline(true);
     await refreshReplayState(); // habilita el boton Reproducir de la barra de acciones
@@ -1200,6 +1320,7 @@ init();
     importedBundle = null;
     if (source !== "live") source = "live";
     lastCount = -1;
+    renderLimit = RENDER_PAGE;
     updateSourceUI();
     renderTimeline(true);
     await refreshReplayState();
@@ -1209,6 +1330,7 @@ init();
     if (source === "live") {
       await qaControl("clear");
       lastCount = -1;
+      renderLimit = RENDER_PAGE;
       renderTimeline(true);
       toast("Grabacion temporal vaciada.");
     } else {
@@ -1246,7 +1368,84 @@ init();
       impEl.textContent = "Sin reporte importado.";
       clearBtn.disabled = true;
     }
+    // Resumen del Playwright importado + visibilidad del boton "Reproducir
+    // Playwright" (solo aparece cuando hay un script cargado, en ambas UIs).
+    await refreshPlaywrightUI();
   }
+
+  // === Playwright importado (item 3): interpreta un subconjunto de pasos y
+  // los reproduce con nuestro propio motor de replay — nunca ejecuta
+  // Playwright/Node real (imposible dentro de una extension). ===============
+  async function refreshPlaywrightUI() {
+    const res = await qaControl("getPlaywrightScript");
+    const script = res && res.script;
+    const summaryEl = G("report-pw-summary");
+    const clearPwBtn = G("rep-clear-pw");
+    const playBtn = G("act-play-pw");
+    if (script && script.parsed && script.parsed.steps.length) {
+      const { steps, url, warnings } = script.parsed;
+      if (summaryEl) summaryEl.textContent = `${steps.length} pasos reconocidos${url ? " · " + url : ""}${warnings.length ? ` · ${warnings.length} aviso(s)` : ""}`;
+      if (clearPwBtn) clearPwBtn.disabled = false;
+      if (playBtn) playBtn.hidden = false;
+    } else {
+      if (summaryEl) summaryEl.textContent = "Sin Playwright importado.";
+      if (clearPwBtn) clearPwBtn.disabled = true;
+      if (playBtn) playBtn.hidden = true;
+    }
+  }
+  // Lee la preferencia de recarga (item 4) definida a nivel de modulo.
+  const reloadChk = G("rep-reload-on-replay");
+  if (reloadChk) {
+    reloadChk.checked = getReloadOnReplay();
+    reloadChk.addEventListener("change", () => setReloadOnReplay(reloadChk.checked));
+  }
+  G("rep-import-pw").addEventListener("click", () => G("rep-import-pw-file").click());
+  G("rep-import-pw-file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const res = await qaControl("loadPlaywright", { text });
+      if (!res || !res.ok) throw new Error((res && res.error) || "invalido");
+      G("report-pw-msg").textContent = `Importado: ${res.steps} pasos reconocidos${res.warnings && res.warnings.length ? ` · ${res.warnings.length} aviso(s)` : ""}.`;
+      await refreshPlaywrightUI();
+      toast("Playwright importado.");
+    } catch (e) {
+      G("report-pw-msg").textContent = "Archivo invalido: " + (e && e.message ? e.message : "formato desconocido");
+      toast("No se pudo importar el Playwright.");
+    } finally {
+      ev.target.value = "";
+    }
+  });
+  G("rep-clear-pw").addEventListener("click", async () => {
+    await qaControl("clearPlaywright");
+    G("report-pw-msg").textContent = "";
+    await refreshPlaywrightUI();
+    toast("Playwright importado vaciado.");
+  });
+  G("act-play-pw").addEventListener("click", async () => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || tab.id == null) return toast("Sin pestana activa.");
+    const speedEl = G("replay-speed");
+    const speed = speedEl ? Number(speedEl.value) || 1 : 1;
+    const res = await qaControl("startPlaywrightReplay", {
+      tabId: tab.id,
+      options: { speed },
+      reloadOnReplay: getReloadOnReplay(),
+    });
+    if (res && res.ok) {
+      toast(`Reproduciendo Playwright (${res.steps} pasos)…`);
+      switchTab("qa");
+      document.getElementById("src-replay")?.click();
+    } else {
+      toast("No se pudo reproducir: " + ((res && res.error) || "error desconocido"));
+    }
+  });
+  // Hook de coordinacion minimo (no reestructura el closure): permite que el
+  // ciclo de refresco periodico de init() (fuera de este IIFE) mantenga viva
+  // la pestana Reporte aunque el usuario no la abandone y regrese — el mismo
+  // patron de bug que en v2.5.7 dejaba "Repeticion" congelada.
+  window.__charlyRenderReportTab = renderReportTab;
 
   // Descargas de la sesion TEMPORAL (unico lugar permitido, 2.1.5/2.1.6).
   G("rep-dl-json").addEventListener("click", async () => {
@@ -1294,11 +1493,14 @@ init();
   });
 
   // Al terminar de hidratar desde storage, refleja el resumen si el usuario
-  // ya esta viendo la pestana Reporte (o la abre despues).
+  // ya esta viendo la pestana Reporte (o la abre despues). El boton
+  // "Reproducir Playwright" debe reflejar su visibilidad desde el arranque,
+  // no solo al visitar Reporte (vive en la barra de acciones, siempre visible).
   hydrateImported().then(() => {
     updateSourceUI();
     if (G("tab-report").classList.contains("is-on")) renderReportTab();
   });
+  refreshPlaywrightUI();
 })();
 
 // ===========================================================================

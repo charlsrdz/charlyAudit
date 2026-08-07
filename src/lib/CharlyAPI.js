@@ -8,7 +8,17 @@
  * Contextos validos: service worker (background) y paginas de extension
  * (popup, options). NO esta pensada para inyectarse como content script:
  * los content scripts tienen acceso limitado a chrome.* y deben comunicarse
- * por mensajeria (ver src/content/content-script.js).
+ * por mensajeria.
+ *
+ * Uso actual: `service-worker.js` solo consume `storageGet/Set`,
+ * `clearContextMenus/createContextMenu` y `notify` (ciclo de vida + menu
+ * contextual). El resto de la clase (tabs, ventanas, paginas, bookmarks,
+ * historial, cookies, descargas, debugger...) es una libreria de utilidad
+ * general sin consumidor activo hoy — no se elimino porque no es codigo
+ * muerto en el mismo sentido que un router inalcanzable (son metodos
+ * correctos, documentados, listos para usarse), pero antes de construir
+ * sobre ella conviene confirmar el beneficio concreto de la funcionalidad
+ * a agregar en vez de asumir que "ya esta soportado".
  *
  * Convenciones:
  *   - Todos los metodos publicos devuelven una Promise.

@@ -1201,3 +1201,24 @@ select:focus-visible,
   flex-direction: column;
   gap: var(--s-2);
 }
+
+/* Frames del stack con boton "Ver codigo" (resolucion bajo demanda). */
+.tl-frame { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-1); }
+.tl-frame-src {
+  font-size: var(--t-xs); font-family: var(--f-mono); color: var(--c-brand);
+  background: transparent; border: 1px solid var(--c-brand-dim); border-radius: var(--r-sm);
+  padding: 1px var(--s-2); cursor: pointer;
+}
+.tl-frame-src:hover { background: rgba(91,108,255,.12); }
+.tl-frame-src:disabled { opacity: .6; cursor: wait; }
+.tl-frame-slot:empty { display: none; }
+.tl-frame-slot { flex-basis: 100%; }
+
+/* Aviso de paginacion por scroll (v2.5.8a): distinto del estado "vacio". */
+.tl-more {
+  color: var(--c-muted);
+  font-size: var(--t-xs);
+  font-family: var(--f-mono);
+  text-align: center;
+  padding: var(--s-3) 0;
+}

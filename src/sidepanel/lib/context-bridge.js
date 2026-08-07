@@ -82,14 +82,6 @@ function sanitize(value, depth = 4, seen = new WeakSet()) {
   return out;
 }
 
-/** Arbol de origen como cadena compacta. Acepta cadena (ya compactada) o array. */
-function joinPath(arr) {
-  if (!arr) return null;
-  const s = Array.isArray(arr) ? arr.join(" > ") : String(arr);
-  if (!s) return null;
-  return s.length > 160 ? s.slice(0, 160) + "\u2026" : s;
-}
-
 /** CSS compacto: descarta valores vacios o triviales. */
 function compactCss(css) {
   if (!css || typeof css !== "object") return null;

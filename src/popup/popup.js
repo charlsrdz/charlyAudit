@@ -3,6 +3,7 @@
  * Controla la grabacion, refleja el estado del service worker y exporta el
  * reporte. Toda la verdad vive en el SW; el popup solo consulta y ordena.
  */
+import { Poller } from "../lib/reactive-store.js";
 
 // Color y etiqueta por tipo de evento (coherente con el resto de la suite).
 const TYPE_META = {
@@ -32,7 +33,7 @@ const $ = (id) => document.getElementById(id);
 const control = (action, extra = {}) =>
   chrome.runtime.sendMessage({ channel: "qa-control", action, ...extra });
 
-let pollTimer = null;
+const popupPoller = new Poller(() => refresh(), 1200);
 
 // --- Descripcion legible por tipo ------------------------------------------
 function describe(e) {
@@ -145,16 +146,25 @@ function renderRibbon(timeline) {
   }
 }
 
+let lastLogSignature = null;
 function renderLog(timeline) {
   const host = $("log");
   const items = timeline.filter((e) => e.type !== "meta");
   if (!items.length) {
-    host.innerHTML =
-      '<div class="log__empty">Sin eventos todavia.<br />Pulsa <strong>Grabar</strong> e interactua con la pagina.</div>';
+    if (lastLogSignature !== "empty") {
+      host.innerHTML =
+        '<div class="log__empty">Sin eventos todavia.<br />Pulsa <strong>Grabar</strong> e interactua con la pagina.</div>';
+    }
+    lastLogSignature = "empty";
     return;
   }
-  // Calcula delays y muestra los mas recientes primero (max 50).
+  // Calcula delays y muestra los mas recientes primero (limite visual: 50).
   const recent = items.slice(-50).reverse();
+  // Estandar reactivo: si la lista visible es identica a la ultima
+  // renderizada, no se toca el DOM (evita trabajo y parpadeo innecesarios).
+  const signature = recent.map((e) => e.id || e.ts).join(",");
+  if (signature === lastLogSignature) return;
+  lastLogSignature = signature;
   host.innerHTML = "";
   recent.forEach((e, i) => {
     const m = metaFor(e.type);
@@ -191,6 +201,31 @@ async function refresh() {
     /* el SW puede estar despertando */
   }
 }
+
+// Item 3: boton "Reproducir Playwright" — visible solo si hay un script
+// importado (desde la pestana Reporte del panel lateral; el popup no
+// importa, solo reproduce). Se refresca por cambio real de storage, no en
+// cada poll — mismo estandar reactivo del panel lateral (v2.5.8a).
+async function refreshPlaywrightButton() {
+  try {
+    const res = await control("getPlaywrightScript");
+    const script = res && res.script;
+    const has = !!(script && script.parsed && script.parsed.steps.length);
+    $("play-pw").hidden = !has;
+  } catch {
+    /* sin cambios visibles si falla */
+  }
+}
+$("play-pw").addEventListener("click", async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || tab.id == null) return toast("Sin pestana activa.");
+  // Preferencia de recarga (item 4): comparte localStorage con el panel
+  // lateral (mismo origen de extension) — se configura desde Reporte.
+  const reloadOnReplay = localStorage.getItem("charlyaudit:reloadOnReplay") !== "false";
+  const res = await control("startPlaywrightReplay", { tabId: tab.id, options: { speed: 1 }, reloadOnReplay });
+  if (res && res.ok) toast(`Reproduciendo Playwright (${res.steps} pasos)…`);
+  else toast("No se pudo reproducir: " + ((res && res.error) || "error desconocido"));
+});
 
 let configFilled = false;
 function fillConfig(config) {
@@ -306,7 +341,7 @@ function toast(msg) {
 }
 
 // --- Arranque ---------------------------------------------------------------
-$("version").textContent = `CharlyAudit v${chrome.runtime.getManifest().version}`;
+$("version").textContent = `CharlyAudit v${chrome.runtime.getManifest().version_name || chrome.runtime.getManifest().version}`;
 async function renderWebhookPending() {
   const el = $("wh-pending");
   if (!el) return;
@@ -323,7 +358,8 @@ async function renderWebhookPending() {
 }
 refresh();
 renderWebhookPending();
-pollTimer = setInterval(refresh, 1200);
+refreshPlaywrightButton();
+popupPoller.start();
 // Sincronia popup<->panel<->SW: reacciona al estado compartido para que grabar/
 // detener desde el panel lateral (o el SW) se refleje aqui, y viceversa.
 try {
@@ -331,8 +367,9 @@ try {
     if (area !== "local") return;
     if (changes["qa:isRecording"] || changes["qa:timeline"] || changes["qa:meta"]) refresh();
     if (changes["qa:webhookPending"]) renderWebhookPending();
+    if (changes["qa:playwright"]) refreshPlaywrightButton();
   });
 } catch {
   /* sin storage */
 }
-window.addEventListener("pagehide", () => clearInterval(pollTimer));
+window.addEventListener("pagehide", () => popupPoller.stop());
