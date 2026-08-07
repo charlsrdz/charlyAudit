@@ -39,10 +39,13 @@ export const SCOPES = [
   { id: "functions", label: "Funciones", desc: "Llamadas interceptadas y su duracion" },
   { id: "globals", label: "Variables", desc: "Valores de variables globales vigiladas y mutaciones" },
   { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop, inputs, scroll y resize — con INP medido y aviso si el elemento no tiene nombre accesible" },
-  { id: "audit", label: "Estructura", desc: "Atributos HTML/CSS de elementos enfocados" },
+  { id: "audit", label: "Estructura", desc: "Atributos HTML/CSS de elementos enfocados (foco)" },
   { id: "replay", label: "Repeticion", desc: "Telemetria del ultimo replay e inconsistencias" },
-  { id: "performance", label: "Performance", desc: "Web Vitals (LCP/CLS/INP/TBT), long tasks y recursos pesados" },
-  { id: "security", label: "Seguridad", desc: "Fugas PII/tokens, mixed content, cookies, CSP y cabeceras de respuesta" },
+  { id: "performance", label: "Performance", desc: "Web Vitals (LCP/CLS/TBT/long tasks) y el listado completo de mediciones INP por interaccion" },
+  { id: "security", label: "Seguridad", desc: "Fugas PII/tokens, mixed content, cookies y CSP" },
+  { id: "resources", label: "Recursos", desc: "Listado completo de recursos cargados (tiles, imagenes, scripts, fuentes) con tamano y tiempos" },
+  { id: "codeblocks", label: "Codigo", desc: "Todos los bloques de codigo fuente resueltos, no solo los de errores mostrados" },
+  { id: "headers", label: "Cabeceras", desc: "Cabeceras de respuesta auditadas por peticion (CSP/HSTS/X-Frame-Options/etc.)" },
 ];
 
 /**
@@ -57,6 +60,13 @@ export const SCOPES = [
  * en el otro. No son necesariamente los mismos tipos que arma cada chip
  * visual (metadata/replay no tienen una lista de tipos: metadata resume
  * report.metadata directamente, replay lee la traza, no el timeline).
+ *
+ * v2.5.9c: TODOS los tipos de evento que Auditoria puede mostrar como chip
+ * (23 en TL_META) tienen ahora un ambito que los hace elegibles como
+ * contexto — antes "resource-timing", "code-block" y "response-headers"
+ * solo aparecian recortados dentro de otros ambitos (los recursos mas
+ * pesados, el codigo de errores ya mostrados, un resumen agregado), nunca
+ * como su propio listado completo y navegable.
  */
 export const SCOPE_TYPES = {
   errors: ["error", "unhandledrejection"],
@@ -69,13 +79,17 @@ export const SCOPE_TYPES = {
   audit: ["focus"],
   security: ["security"],
   performance: ["web-vitals", "interaction-timing", "resource-timing"],
+  resources: ["resource-timing"],
+  codeblocks: ["code-block"],
+  headers: ["response-headers"],
 };
 
 // Prioridad de inclusion cuando el contexto excede el presupuesto.
-const PRIORITY = ["metadata", "errors", "security", "network", "performance", "console", "routes", "functions", "globals", "interactions", "audit"];
+const PRIORITY = ["metadata", "errors", "security", "network", "performance", "console", "routes", "functions", "globals", "interactions", "audit", "resources", "headers", "codeblocks"];
 // Tope de elementos por ambito (se reduce a la mitad si no entra en el budget).
 const CAPS = {
   metadata: 1, errors: 25, security: 20, network: 25, performance: 8, console: 25, routes: 25, functions: 20, globals: 12, interactions: 35, audit: 20,
+  resources: 25, codeblocks: 15, headers: 20,
 };
 
 // ---------------------------------------------------------------------------
@@ -321,6 +335,12 @@ const builders = {
     const inpP98 = inpLatencies.length
       ? inpLatencies[Math.min(inpLatencies.length - 1, Math.floor(inpLatencies.length * 0.98))]
       : null;
+    // Lista cruda de mediciones INP individuales (antes solo se usaban para
+    // calcular el p98 agregado arriba, nunca se exponia el listado — el chip
+    // "inp" de Auditoria muestra cada medicion, no solo el resumen). El
+    // conteo TOTAL se preserva aunque el detalle se acote por presupuesto.
+    const inpTodos = tl.filter((e) => e.type === "interaction-timing" && e.data && e.data.inpMs != null);
+    const inpEventos = inpTodos.slice(-cap).map((e) => ({ tipo: e.data.tipo, inpMs: e.data.inpMs }));
     // TBT por navegacion: el segmento con mas bloqueo (ruta con peor TBT).
     const peorSegmento = [...tl.filter((e) => e.type === "route" || e.type === "navigation")]
       .sort((a, b) => ((b.data && b.data.tbtSegmentMs) || 0) - ((a.data && a.data.tbtSegmentMs) || 0))[0];
@@ -355,6 +375,7 @@ const builders = {
           longTasks: peorSegmento.data.longTasksSegment,
         } : null,
         recursosPesados: recursos,
+        medicionesInp: inpTodos.length ? { total: inpTodos.length, items: inpEventos } : undefined,
       }),
     };
   },
@@ -422,6 +443,69 @@ const builders = {
       });
     }
     return { estructura: sanitize([...porSelector.values()].slice(-cap)) };
+  },
+
+  // v2.5.9c: antes "resource-timing" solo aparecia recortado a los N mas
+  // pesados dentro de "performance" — aqui va el listado COMPLETO (acotado
+  // por el mismo sistema de presupuesto que protege a los demas ambitos),
+  // igual que el chip "recurso" que ya se ve entero en Auditoria.
+  resources: (cap, tl) => {
+    const recursos = tl.filter((e) => e.type === "resource-timing");
+    if (!recursos.length) return {};
+    return {
+      recursos: sanitize({
+        total: recursos.length,
+        items: recursos.slice(-cap).map((e) => ({
+          url: shortSel(e.data.url),
+          tipo: e.data.tipo,
+          kb: e.data.kb,
+          ms: e.data.ms,
+          cache: e.data.cache || false,
+          protocolo: e.data.protocolo || undefined,
+          fases: e.data.fases,
+        })),
+      }),
+    };
+  },
+
+  // v2.5.9c: antes un bloque de codigo solo llegaba al Asistente si su `ref`
+  // coincidia con un error YA incluido en el ambito Errores (p.ej. quedaba
+  // fuera si el usuario lo resolvio bajo demanda con "Ver codigo" sobre un
+  // frame que no era un error, o si el error se recorto por el tope de cap).
+  // Aqui van TODOS los bloques resueltos durante la sesion.
+  codeblocks: (cap, tl) => {
+    const bloques = tl.filter((e) => e.type === "code-block");
+    if (!bloques.length) return {};
+    return {
+      codigo: sanitize(
+        bloques.slice(-cap).map((e) => ({
+          ref: e.data.ref,
+          fn: e.data.fn,
+          codigo: (e.data.snippet || []).map((s) => `${s.hit ? "\u203a" : " "} ${s.n}: ${s.code}`).join("\n"),
+        }))
+      ),
+    };
+  },
+
+  // v2.5.9c: antes las cabeceras de respuesta solo se resumian de forma
+  // agregada dentro de Resumen (cuantas se auditaron, cuantas con CSP). Aqui
+  // va el detalle completo por peticion — sus HALLAZGOS de seguridad ya
+  // llegaban completos via el ambito Seguridad (se reflejan como eventos
+  // "security" propios), esto agrega el registro tecnico crudo.
+  headers: (cap, tl) => {
+    const headers = tl.filter((e) => e.type === "response-headers");
+    if (!headers.length) return {};
+    return {
+      cabeceras: sanitize({
+        total: headers.length,
+        items: headers.slice(-cap).map((e) => ({
+          url: shortSel(e.data.url),
+          status: e.data.status,
+          seguridad: e.data.seguridad,
+          servidor: e.data.servidor || undefined,
+        })),
+      }),
+    };
   },
 };
 

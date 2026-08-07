@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.9b**
+**Versión actual: 2.5.9c**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -45,7 +45,7 @@ src/sidepanel/
   sidepanel.html/js/css  Panel lateral: 3 pestañas — Asistente / Auditoría / Reporte
   lib/
     openwebui-client.js  Cliente multi-proveedor (OpenWebUI/OpenAI/Gemini/Claude/custom)
-    context-bridge.js    Puente de contexto QA→IA (12 scopes, budget, digest,
+    context-bridge.js    Puente de contexto QA→IA (15 scopes, budget, digest,
                         fuente Temporal/Importado)
     chat-cache.js        Caché de conversación en localStorage
     markdown.js          Render Markdown seguro (sin eval)
@@ -54,7 +54,7 @@ src/sidepanel/
 **Las tres pestañas del panel lateral:**
 | Pestaña | Función |
 |---|---|
-| **Asistente** | Chat con IA sobre la sesión; selector de fuente Temporal/Importado; 12 ámbitos de contexto |
+| **Asistente** | Chat con IA sobre la sesión; selector de fuente Temporal/Importado; 15 ámbitos de contexto (uno por cada tipo de evento visible en Auditoría) |
 | **Auditoría** | Grabar, ver el timeline evento a evento, y reproducir (Temporal / Importado / Repetición) |
 | **Reporte** | Único lugar para importar un archivo, descargar la sesión temporal (JSON/Cypress/Playwright) y gestionar el reporte importado |
 
@@ -118,10 +118,12 @@ src/sidepanel/
 - **Multi-proveedor**: OpenWebUI (propio), OpenAI/ChatGPT, Google Gemini, Anthropic Claude, endpoint personalizado. Claude separa `system` en su campo propio; Gemini usa el endpoint OpenAI-compatible. Los proveedores con URL fija (OpenAI/Gemini/Claude) **siempre** usan esa URL, sin importar qué haya quedado guardado en el campo de un proveedor previo (p. ej. OpenWebUI) — el campo Base URL solo aplica, y solo se muestra, para OpenWebUI y endpoint personalizado
 - **Parámetros configurables**: temperatura, tokens máximos, turnos de historial
 - **Selector de fuente Temporal/Importado**: el asistente puede analizar la grabación en curso o un reporte importado, sin mezclar datos entre ambos (caché de contexto con clave por fuente)
-- **12 ámbitos de contexto**, todos con conteo visible y actualizado según la fuente activa: Resumen, Errores, Red, Consola, Rutas, Funciones, Variables, Interacción, Estructura, Repetición, Performance, Seguridad
-- **Mismo nivel de detalle que Auditoría, no una versión resumida**: Red envía la lista completa de peticiones con su waterfall (DNS/TCP/TTFB/descarga), no solo las fallidas; Consola incluye todos los niveles (log/info/warn/error), no solo warn/error; Interacción incluye el INP medido por evento y marca si el elemento no tiene nombre accesible (el mismo *known-issue* que resalta Auditoría visualmente); Rutas incluye el timing completo de cada navegación (TTFB, DOM listo, carga total, TTI aproximado, referrer, redirects) — antes de v2.5.9b, cada uno de estos era una versión reducida de lo que el ojo humano podía ver en el timeline
+- **15 ámbitos de contexto**, todos con conteo visible y actualizado según la fuente activa, uno por cada tipo de evento que Auditoría puede mostrar como chip: Resumen, Errores, Red, Consola, Rutas, Funciones, Variables, Interacción, Estructura, Repetición, Performance, Seguridad, **Recursos, Código, Cabeceras**
+- **Todo lo que se ve en Auditoría es elegible como contexto — sin excepción**: Recursos expone el listado completo de recursos cargados (no solo los más pesados, que siguen disponibles agregados en Performance); Código expone todos los bloques de código fuente resueltos, no solo los correlacionados a errores actualmente mostrados; Cabeceras expone el detalle técnico completo por petición auditada (sus hallazgos de seguridad ya llegaban antes vía el ámbito Seguridad); Performance incluye ahora el listado completo de mediciones INP individuales, no solo el percentil 98 agregado
+- **Mismo nivel de detalle que Auditoría, no una versión resumida**: Red envía la lista completa de peticiones con su waterfall (DNS/TCP/TTFB/descarga), no solo las fallidas; Consola incluye todos los niveles (log/info/warn/error), no solo warn/error; Interacción incluye el INP medido por evento y marca si el elemento no tiene nombre accesible (el mismo *known-issue* que resalta Auditoría visualmente); Rutas incluye el timing completo de cada navegación (TTFB, DOM listo, carga total, TTI aproximado, referrer, redirects)
 - El ámbito Resumen incluye entorno de grabación (CPU/RAM/navegador), identidad de sesión (`recordingId`/`startUrl`), KPIs agregados completos, *workers* detectados y resumen de cabeceras de seguridad auditadas
-- Si el contexto excede el presupuesto de tokens, el recorte automático reduce cuántos elementos se incluyen por ámbito — nunca el total real, que sigue visible (p. ej. "60 peticiones en total" aunque solo se listen 12 en detalle)
+- Si el contexto excede el presupuesto de tokens, el recorte automático reduce cuántos elementos se **listan en detalle** por ámbito — el **total real nunca se pierde ni se oculta**, sigue visible aunque el detalle completo no quepa (p. ej. "213 recursos en total" aunque solo se listen 25)
+- El reporte exportado (JSON completo) siempre fue, y sigue siendo, más completo que cualquier ámbito de contexto: incluye el `timeline` íntegro sin filtrar por tipo — los ámbitos del Asistente son un recorte pensado para caber en una conversación con presupuesto de tokens, no el límite real de lo que se captura
 
 ### ✅ Reporte (pestaña dedicada)
 - Único lugar del panel para **importar** un archivo (`.json` propio, nunca Cypress/Playwright)
@@ -232,10 +234,11 @@ done
 - El drag&drop de la repetición usa únicamente la API nativa `DragEvent` (`dragstart`/`dragover`/`drop`/`dragend`). Muchas librerías modernas de listas ordenables (dnd-kit, react-beautiful-dnd y similares) no usan esa API — simulan arrastre con una secuencia de `pointerdown`/`pointermove`/`pointerup`, que hoy no se reproduce.
 - `perf._timer` (el snapshot periódico de KPIs cada 5s en `injected.js`) sigue corriendo indefinidamente después de detener una grabación — tiene una guarda que lo vuelve no-operativo (`if (!state.recording) return`), pero el propio `setInterval` nunca se cancela hasta que se navega o se cierra la pestaña. No es una fuga de memoria (no crece nada), pero es trabajo innecesario que podría evitarse limpiando el intervalo explícitamente al detener.
 - El buffer de escritura diferida del timeline (`pendingEvents`, ver Rendimiento y memoria) reduce drásticamente las escrituras a storage, pero introduce una ventana de riesgo real y acotada: si el service worker terminara de forma abrupta (no vía `onSuspend`, que sí se atiende) dentro de la ventana de 400ms, los eventos aún no volcados podrían perderse. Se mitigó con un intervalo corto y volcados forzados en los puntos de mayor riesgo (detener grabación, `onSuspend`), pero el riesgo teórico no es cero — vale la pena vigilarlo si en el futuro se reportan sesiones con eventos faltantes justo al final.
-- El detalle crudo de `response-headers` (URL, status, valor de cada cabecera de seguridad por request) no se expone al Asistente más allá de un resumen agregado en Resumen (`auditadas`/`conCsp`) — sus *hallazgos* sí llegan completos (se reflejan como eventos `security` independientes), pero no el registro técnico completo por petición. Igual con `worker`: el Asistente ve los últimos 10 detectados, no el listado completo si hubiera más.
+- `worker`: el Asistente ve los últimos 10 *workers*/service workers detectados (en el ámbito Resumen), no el listado completo si hubiera más — a diferencia de `resource-timing`/`code-block`/`response-headers` (2.5.9c), que ya tienen su propio ámbito con listado completo, `worker` sigue siendo un resumen recortado dentro de Resumen.
 - Con la unificación de `INTERACTION_TYPES` (2.5.9a), la cifra de "Interacciones" en KPIs ahora incluye `scroll`/`resize`, que antes no contaba — es la definición correcta y consistente con Auditoría/Asistente, pero si algún reporte histórico se comparaba contra ese número, el valor absoluto puede diferir ligeramente de sesiones grabadas con versiones anteriores.
 - El ámbito Interacción sigue sin el árbol de ancestros completo (`path`) de cada elemento — se excluyó deliberadamente por inflar demasiado el contexto (cadenas largas por cada evento). Sí incluye el selector compacto, el INP medido y el aviso de accesibilidad (2.5.9b), que cubren la señal de QA más accionable sin pagar el costo del árbol completo.
-- En sesiones muy intensas en red (cientos de peticiones), el sistema de presupuesto sigue recortando el **detalle por elemento** disponible para el Asistente, aunque el **total** (conteo agregado) nunca se pierde — es un límite de diseño consciente (tokens/costo de la conversación), no un descuido, pero vale la pena revisar si un resumen estadístico (percentiles de duración, top dominios) sería más útil que una lista truncada cuando el recorte es agresivo.
+- En sesiones muy intensas en red o en recursos (cientos de peticiones/tiles), el sistema de presupuesto sigue recortando el **detalle por elemento** disponible para el Asistente, aunque el **total** (conteo agregado) nunca se pierde — es un límite de diseño consciente (tokens/costo de la conversación), no un descuido, pero vale la pena revisar si un resumen estadístico (percentiles de duración, top dominios) sería más útil que una lista truncada cuando el recorte es agresivo.
+- Los ámbitos "Recursos" y "Performance → recursosPesados" ambos leen de `resource-timing` con vistas distintas (listado completo vs. los más pesados) — es una duplicación intencional (cada uno responde una pregunta distinta: "qué cargó" vs. "qué pesa más"), pero vale la pena revisar si conviene fusionarlas en una sola vista con ambos criterios de orden disponibles, para no hacer que el Asistente reciba el mismo dato dos veces si ambos ámbitos están activos a la vez.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -253,6 +256,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.9c** | Tres tipos de evento (Recursos, Código, Cabeceras) nunca tuvieron un ámbito propio en el Asistente — solo aparecían recortados dentro de otros. Se agregan como ámbitos dedicados (12→15), llevando el total a un ámbito por cada tipo de evento visible en Auditoría; se confirma que el reporte exportado ya era completo desde antes |
 | **2.5.9b** | Corrección de alcance sobre 2.5.9a: la auditoría de consistencia se amplía a nivel de *detalle* (no solo conteos) en los 12 ámbitos — Red ahora envía la lista completa con waterfall (antes solo fallidas/lentas), Consola incluye todos los niveles (antes solo warn/error), Interacción incluye INP medido y aviso de accesibilidad por evento, Rutas incluye el timing completo de cada navegación |
 | **2.5.9a** | Consistencia total entre Auditoría/Asistente/KPIs: "Rutas" excluía navegaciones completas de página en el contexto del Asistente (mostraba 0 aunque Auditoría mostrara eventos reales) — causa raíz: tres listas independientes de "qué es una interacción/ruta" desincronizadas; se unifican en una sola fuente compartida |
 | **2.5.9** | Fix crítico de memoria/rendimiento: escritura del timeline en lote (antes O(n) por evento) · gestión del buffer nativo de Resource Timing · caché de ajustes en el SW · fix de la URL fija del asistente para proveedores con endpoint conocido (OpenAI/Gemini/Claude) |
@@ -276,6 +280,71 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.9c — Tres tipos de evento sin ámbito propio: Recursos, Código, Cabeceras
+
+Tras entregar v2.5.9b, la observación directa fue: la corrección seguía
+enfocada en ajustar el *contenido* de ámbitos que ya existían, pero no
+verificaba que **todos** los tipos de evento visibles como chip en
+Auditoría tuvieran, cada uno, una forma de llegar al Asistente. Esta
+versión hace esa verificación de manera literal y exhaustiva: se listaron
+los 23 tipos de evento que `TL_META` (la fuente de verdad de los chips de
+Auditoría) puede mostrar, y se confirmó, tipo por tipo, si tenían un ámbito
+de contexto que los expusiera.
+
+**Resultado de la verificación:** 20 de los 23 tipos ya tenían representación
+adecuada (directa o agrupada dentro de un ámbito existente: `click`/`key`/
+`input`/etc. en Interacción, `route`/`navigation` en Rutas, `security` en
+Seguridad, etc.). Tres no la tenían — aparecían **recortados** dentro de
+otro ámbito, nunca como su propio listado completo y navegable:
+
+- **`resource-timing`** ("Recursos" en Auditoría, 213 eventos en el caso
+  reportado) — solo aparecía como los N recursos más pesados dentro de
+  Performance. El resto, la inmensa mayoría, era invisible para el
+  Asistente.
+- **`code-block`** ("Código") — solo llegaba si su `ref` coincidía con un
+  error actualmente incluido en el ámbito Errores. Un bloque resuelto bajo
+  demanda (botón "Ver código" sobre un frame que no es un error) o
+  correlacionado a un error recortado por el tope de cap era invisible.
+- **`response-headers`** ("Cabeceras") — solo se resumía de forma agregada
+  dentro de Resumen (cuántas cabeceras se auditaron, cuántas con CSP). Sus
+  *hallazgos* de seguridad ya llegaban completos por otra vía (se reflejan
+  como eventos `security` propios), pero el registro técnico crudo por
+  petición nunca se exponía.
+
+**Fix:** se agregaron tres ámbitos nuevos — Recursos, Código, Cabeceras —
+con nombres que coinciden literalmente con la etiqueta del chip
+correspondiente en Auditoría, para que la correspondencia sea obvia sin
+tener que adivinar a qué ámbito pertenece cada tipo. Cada uno sigue el
+mismo patrón `{total, items}` que ya se usaba en Red (2.5.9b): el listado
+completo se acota por el mismo sistema de presupuesto que protege a los
+demás ámbitos, pero el conteo **total** nunca se pierde ni se oculta,
+aunque el detalle completo no quepa. De paso, Performance ganó el listado
+completo de mediciones INP individuales (antes solo se usaban para calcular
+el percentil 98 agregado, nunca se exponía la lista).
+
+**Se confirmó, sin necesidad de cambios, que el reporte exportado ya era
+completo.** `buildBundle()` incluye el `report.timeline` íntegro sin
+filtrar por tipo; `redactBundle()` solo sanea texto sensible en cuatro
+campos específicos (`message`/`reason`/`detalle`/`text`) cuando existen,
+nunca elimina un evento ni un tipo completo. El límite de detalle que se
+corrigió en esta versión existía únicamente en los ámbitos de contexto del
+Asistente (un recorte deliberado para caber en el presupuesto de tokens de
+una conversación) — nunca en la exportación, que no tiene esa restricción.
+
+**Validado contra el código real:** se replicaron las cifras exactas
+reportadas (213 recursos, 22 mediciones INP, 4 bloques de código, 1
+cabecera auditada, entre otros tipos) y se confirmó, aserción por
+aserción contra `ContextBridge.buildContext()`, que los tres ámbitos
+nuevos devuelven los totales correctos y que Performance expone el total
+real de mediciones INP (22) aunque el detalle liste menos por el tope de
+presupuesto. Prueba adicional en navegador real: los chips "Recursos 213",
+"Código 4" y "Cabeceras 1" aparecen correctamente en la UI del Asistente,
+sin errores de página. Verificación cruzada de IDs sin huérfanos (los
+chips se generan dinámicamente desde la configuración, sin tocar HTML);
+sintaxis de los 16 JS como módulo ES.
 
 ---
 
