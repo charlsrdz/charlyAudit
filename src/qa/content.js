@@ -298,7 +298,18 @@
   );
 
   // === Inputs: change + blur (Herramienta 1) =================================
+  // Rastrea el elemento REALMENTE enfocado (no solo el event.target de blur/
+  // change, que en widgets personalizados — comboboxes, selects estilizados,
+  // date-pickers — puede diferir del campo con el que el usuario interactuo).
+  local.lastFocusedEl = null;
   function captureInput(el) {
+    // Validacion de foco actual: si el elemento del evento no es un campo de
+    // formulario valido pero SI tenemos un campo recien enfocado (y sigue en
+    // el DOM), usamos ese como fuente de verdad — evita perder o mal-atribuir
+    // la captura cuando blur/change llega desde un nodo intermedio.
+    if ((!el || !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) && local.lastFocusedEl?.isConnected) {
+      el = local.lastFocusedEl;
+    }
     if (!el || !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
     const masked = shouldMask(el);
     const value = masked ? "***" : String(el.value ?? "");
@@ -469,7 +480,13 @@
       path: ancestorTree(el),
     });
   }
-  document.addEventListener("focusin", (e) => auditElement(closestElement(e.target)), true);
+  document.addEventListener("focusin", (e) => {
+    const el = closestElement(e.target);
+    // Validacion de foco actual (1): fuente de verdad para captureInput cuando
+    // el evento de blur/change llega desde un nodo distinto al campo real.
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) local.lastFocusedEl = el;
+    auditElement(el);
+  }, true);
   // Cierra el run de teclado al salir del campo para no perder texto.
   document.addEventListener("focusout", flushKeyRun, true);
 
@@ -843,9 +860,9 @@
     if (el) el.remove();
   }
 
-  function reportProgress(index, done) {
+  function reportProgress(index, done, total) {
     try {
-      chrome.runtime.sendMessage({ channel: "qa-control", action: "replayProgress", index, done }).catch(() => {});
+      chrome.runtime.sendMessage({ channel: "qa-control", action: "replayProgress", index, done, total }).catch(() => {});
     } catch {
       /* contexto invalidado */
     }
@@ -1002,52 +1019,59 @@
       }
 
       // Reporta el avance ANTES de observar/navegar, para reanudar sin repetir.
-      reportProgress(i + 1, i + 1 >= steps.length);
+      reportProgress(i + 1, i + 1 >= steps.length, steps.length);
       replayBanner(`Reproduciendo ${i + 1}/${steps.length}${inconsist ? ` · ${inconsist}\u26a0` : ""}…`, stop);
 
-      // 1.3 — observa las consecuencias y contrasta con lo esperado (telemetria).
+      // 1.3 — observa las consecuencias (se omite en scroll, donde no aporta
+      // señal util) y SIEMPRE reporta la traza del paso. Antes reportTrace()
+      // vivia DENTRO del "if (e.type !== 'scroll')", asi que una grabacion
+      // mayormente de scroll (p.ej. una pagina larga de documentacion) hacia
+      // avanzar el progreso (reportProgress, sin esa guarda) pero dejaba la
+      // traza completamente vacia — "Repeticion" mostraba 0 pasos aunque el
+      // replay corriera de principio a fin.
+      let obs = { mutations: 0, urlChanged: false };
       if (e.type !== "scroll") {
-        const obs = await observeConsequences(Math.min(Math.max(400, recordedDelay / 4), 1200));
-        const incons = [];
-        if (status === "no-encontrado") incons.push("elemento no encontrado");
-        else if (status === "no-visible") incons.push("elemento no visible al actuar");
-        else if (status === "error") incons.push("error al reproducir el paso");
-        if (exp.nav && !obs.urlChanged) incons.push("no ocurrio la navegacion esperada");
-        if (status === "ok" && !exp.nav && exp.net > 0 && obs.mutations === 0)
-          incons.push("sin cambios en el DOM pese a actividad esperada");
-        // Diff estructural: firma grabada (baseline) vs la observada ahora.
-        let diff = null;
-        if (d.baseline) {
-          const now = domSignature();
-          const dNodes = now.nodes - d.baseline.nodes;
-          const tituloCambio = now.title !== d.baseline.title;
-          // Umbral: variacion de nodos > 15% o cambio de titulo = divergencia.
-          const relevante = Math.abs(dNodes) > Math.max(20, d.baseline.nodes * 0.15) || tituloCambio;
-          if (relevante) {
-            diff = { nodos: `${d.baseline.nodes}\u2192${now.nodes}`, tituloCambio };
-            incons.push(`estructura divergente (${dNodes >= 0 ? "+" : ""}${dNodes} nodos${tituloCambio ? ", titulo cambio" : ""})`);
-          }
-        }
-        if (incons.length) inconsist++;
-        reportTrace({
-          i,
-          cid: e.cid || null, // id canonico del evento grabado: correlacion 1-a-1
-          seq: e.seq,
-          tipo: e.type,
-          sel: d.selector || d.from || null,
-          estado: status,
-          mutaciones: obs.mutations,
-          navego: obs.urlChanged,
-          esperado: exp,
-          diff,
-          inconsistencias: incons,
-        });
+        obs = await observeConsequences(Math.min(Math.max(400, recordedDelay / 4), 1200));
       }
+      const incons = [];
+      if (status === "no-encontrado") incons.push("elemento no encontrado");
+      else if (status === "no-visible") incons.push("elemento no visible al actuar");
+      else if (status === "error") incons.push("error al reproducir el paso");
+      if (e.type !== "scroll" && exp.nav && !obs.urlChanged) incons.push("no ocurrio la navegacion esperada");
+      if (e.type !== "scroll" && status === "ok" && !exp.nav && exp.net > 0 && obs.mutations === 0)
+        incons.push("sin cambios en el DOM pese a actividad esperada");
+      // Diff estructural: firma grabada (baseline) vs la observada ahora.
+      let diff = null;
+      if (d.baseline) {
+        const now = domSignature();
+        const dNodes = now.nodes - d.baseline.nodes;
+        const tituloCambio = now.title !== d.baseline.title;
+        // Umbral: variacion de nodos > 15% o cambio de titulo = divergencia.
+        const relevante = Math.abs(dNodes) > Math.max(20, d.baseline.nodes * 0.15) || tituloCambio;
+        if (relevante) {
+          diff = { nodos: `${d.baseline.nodes}\u2192${now.nodes}`, tituloCambio };
+          incons.push(`estructura divergente (${dNodes >= 0 ? "+" : ""}${dNodes} nodos${tituloCambio ? ", titulo cambio" : ""})`);
+        }
+      }
+      if (incons.length) inconsist++;
+      reportTrace({
+        i,
+        cid: e.cid || null, // id canonico del evento grabado: correlacion 1-a-1
+        seq: e.seq,
+        tipo: e.type,
+        sel: d.selector || d.from || null,
+        estado: status,
+        mutaciones: obs.mutations,
+        navego: obs.urlChanged,
+        esperado: exp,
+        diff,
+        inconsistencias: incons,
+      });
     }
 
     if (local.replaying) {
       local.replaying = false;
-      reportProgress(steps.length, true);
+      reportProgress(steps.length, true, steps.length);
       const applied = steps.length - misses;
       // Estandar de calidad del replay: fidelidad = pasos sin inconsistencia.
       const fidelidad = Math.round(((steps.length - inconsist) / steps.length) * 100);

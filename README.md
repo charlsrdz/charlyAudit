@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.8**
+**Versión actual: 2.5.8b**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -26,6 +26,9 @@ src/background/         Service worker (orquestador)
   service-worker.js     Ciclo de vida + menú contextual; importa qa/background
 src/lib/CharlyAPI.js    API de abstracción Chrome (storage, menús, tabs...);
                         superficie amplia, solo un subconjunto en uso activo
+src/lib/reactive-store.js  Estándar de UI reactiva compartido por popup y
+                        panel lateral: Store (pub/sub), Poller (polling
+                        centralizado), captura/restauro de filas expandidas
 src/qa/
   background.js         Ciclo de grabación, lifecycle de pestaña, telemetría,
                         webhook, cola serializada de replayJob (replayJobChain)
@@ -35,6 +38,11 @@ src/qa/
   bundle-schema.js       validateBundle, stampIntegrity, redactBundle, chunkBundle,
                         computeKpis, partitionKeyOf, hmacHex
   exporters.js           toCypress, toPlaywright
+  playwright-import.js   Interprete de un subconjunto de Playwright
+                        (goto/click/fill/type/press/waitForTimeout) — NO
+                        ejecuta Node/Playwright real (imposible en una
+                        extension); traduce a pasos reproducibles por el
+                        motor de replay existente
 src/popup/               Popup de control rápido (grabar, exportar, atajo a Auditoría)
 src/sidepanel/
   sidepanel.html/js/css  Panel lateral: 3 pestañas — Asistente / Auditoría / Reporte
@@ -67,6 +75,7 @@ src/sidepanel/
 - Metadata de entorno al iniciar: CPU, RAM, OS, navegador, ventana, cookies (solo flags)
 - Re-muestreo periódico (1/min) + dirigido por navegación (debounce 2s)
 - `recState` rehidratado tras reinicio del SW (robustez MV3)
+- Clicks, doble click, click central, drag&drop, tecleo coalescido (con atajos y modificadores), scroll, inputs vía `change`+`blur` con **validación de foco real**: si el evento llega desde un nodo distinto al campo enfocado (widgets personalizados como comboboxes o date-pickers), se usa el elemento realmente enfocado (rastreado por `focusin`) como fuente de verdad
 
 ### ✅ Performance (100% real, no aproximado)
 - INP real por interacción: `PerformanceObserver("event")` → `interaction-timing` con `tsEvent` (reloj epoch) → correlación 1-a-1 con el click/input exacto vía `attachInteractionLatency`
@@ -92,8 +101,11 @@ src/sidepanel/
 - Reproducir/Detener/Velocidad viven **exclusivamente** dentro del bloque de Repetición (Auditoría), visibles solo con esa fuente activa
 - La vista de Repetición se auto-refresca sola (timer periódico, sin necesidad de cambiar de pestaña) mientras hay un replay en curso
 - KPIs de Repetición se calculan sobre el reporte **realmente en reproducción** (el importado + su traza), nunca mezclados con el temporal
-- Telemetría por paso: efecto esperado (grabación) vs. observado (replay), con diff estructural del DOM
+- Telemetría por paso: efecto esperado (grabación) vs. observado (replay), con diff estructural del DOM, capturada para **todo tipo de paso, incluido scroll**
+- El denominador de progreso ("reproduciendo X/Y") refleja los pasos reales reproducibles, no el total de eventos del timeline
 - Resolución de código bajo demanda: cada frame del stack de un error tiene un botón "Ver código" que resuelve el snippet real (con soporte de source maps) vía el canal `getSource` → `qa-source` → `get-source`
+- Checkbox persistido: recargar (o no) el sitio en la URL de inicio al reproducir — útil para conservar el estado actual de la sesión en vez de forzar una navegación
+- Reproducción de un Playwright importado (subconjunto interpretado de `goto/click/fill/type/press/waitForTimeout`) reutilizando el mismo motor de replay — ver `src/qa/playwright-import.js`
 
 ### ✅ Asistente IA
 - **Conversación multi-turno real**: `messages: [{role:"system",...},{role:"user",...},{role:"assistant",...},...,{role:"user"}]`; el historial viaja como roles nativos, no como texto incrustado
@@ -108,6 +120,12 @@ src/sidepanel/
 - Único lugar para **descargar o enviar** el reporte: JSON completo (bundle canónico validado/redactado/sellado), Cypress o Playwright — siempre de la sesión temporal
 - Gestión del reporte importado: resumen (eventos, URL, versión del exportador) y vaciado independiente (`clearImported`, no afecta la grabación temporal)
 - El resumen de ambas sesiones (temporal e importada) se refresca solo mientras la pestaña está activa, sin necesidad de salir y volver a entrar
+
+### ✅ UI reactiva (`src/lib/reactive-store.js`)
+- Estándar único para toda la UI (popup y panel lateral, sin excepción): `Store` (estado observable con no-op si el valor no cambió) y `Poller` (temporizador centralizado, pausa sola cuando la pestaña no es visible)
+- Ningún render toca el DOM sin que el dato subyacente haya cambiado realmente — se compara una firma ligera de la página visible antes de reconstruir
+- Las filas expandibles (`.tl-row.is-open`) sobreviven a un re-render mediante clave estable (`cid`/`seq`/índice), incluso cuando llegan datos nuevos en el mismo ciclo
+- Límite visual con paginación por scroll: 150 filas iniciales, crecen de 150 en 150 al acercarse al final de la lista, en vez de renderizar cientos o miles de filas de una vez
 
 ### ✅ UX y accesibilidad
 - Sistema de diseño con tokens (`--c-*`), jerarquía de 3 niveles de botón, mobile-first (breakpoints 340px/420px)
@@ -200,6 +218,11 @@ done
 - El `digest()` del asistente (resumen en lenguaje natural que encabeza el contexto) aún no incorpora KPIs de performance/seguridad en su texto — solo cuenta eventos, duración, errores y red fallida.
 - `ctx-src-imported` hace dos llamadas en cascada a `getReport("imported")` (una para verificar disponibilidad, otra dentro de `refreshState()`). Funciona correctamente pero es una ronda de red de más; se podría cachear el resultado de la primera.
 - `CharlyAPI.js` mantiene una superficie amplia de métodos (tabs, ventanas, bookmarks, historial, cookies, descargas, debugger) sin consumidor activo más allá de `storageGet/Set`, `clearContextMenus/createContextMenu` y `notify`. No son código muerto en el sentido de inalcanzable — son métodos correctos y documentados — pero antes de construir una función nueva sobre ellos conviene confirmar el beneficio concreto en vez de asumir que "ya está soportado".
+- El `Store` de `reactive-store.js` se usa hoy para centralizar el polling (`Poller`) y para la detección de cambios en las listas de Auditoría/Repetición; el resto del estado (grabación en curso, webhook pendiente, KPIs) sigue actualizándose por llamada directa dentro del callback del `Poller`, no por suscripción a `Store`. Migrar esos casos a `Store.subscribe()` sería más consistente con el estándar, aunque hoy no presentan el bug que sí tenía la lista de eventos.
+- La paginación por scroll de `tl-list` solo *agrega* filas al hacer scroll (nunca libera las que salen de vista). Para reportes de varios miles de eventos, una ventana verdaderamente virtualizada (renderizar solo lo visible) sería más robusta que el tope actual de 1000 eventos + páginas de 150.
+- El parser de Playwright (`playwright-import.js`) reconoce llamadas dentro de una sola línea; no soporta llamadas partidas en varias líneas, template literals con interpolación (`` `${variable}` ``), ni la API moderna de locators semánticos (`page.getByRole(...)`, `page.getByText(...)`, `page.getByLabel(...)`) — solo `page.locator(selectorCSS)` y las formas legadas (`page.click(selector)`, etc.). Es una limitación conocida y documentada en el propio módulo, no un intento fallido de cobertura total.
+- `press`/`type` sin selector (`page.keyboard.press(...)`, `page.keyboard.type(...)` — acciones de teclado globales, sin apuntar a un elemento) no se traducen a un paso: el motor de replay actual siempre necesita un selector destino.
+- El checkbox "Recargar el sitio al reproducir" vive físicamente en la pestaña Reporte, pero también controla el botón "▶ Playwright" de la barra de acciones y del popup — la relación no es obvia por la sola ubicación de los controles; un tooltip o nota cruzada ayudaría a descubrirla.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -217,6 +240,8 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.8b** | Fix crítico: Repetición perdía toda su traza en grabaciones con scroll · validación de foco en captura de formularios · importación e interpretación de Playwright · checkbox persistido para no recargar el sitio al reproducir |
+| **2.5.8a** | Estándar de UI reactiva (Store + Poller) en popup y panel lateral: corrige que un detalle expandido en Repetición se cerrara solo cada ciclo de refresco; paginación por scroll como límite visual |
 | **2.5.8** | Auditoría de huérfanos: subsistema de mensajería sin punto de entrada eliminado, resolución de código bajo demanda conectada a la UI, pestaña Reporte con auto-refresco |
 | **2.5.7** | Repetición sin auto-refresco, KPIs y contexto del asistente leyendo la fuente equivocada |
 | **2.5.6** | Race condition que vaciaba Repetición · contexto del asistente completo (12/12 ámbitos) · Reproducir/Detener migrados a Repetición |
@@ -234,6 +259,156 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.8b — Repetición perdía la traza en grabaciones con scroll, validación de foco, importación de Playwright, checkbox de recarga
+
+Cinco puntos marcados como críticos de prioridad alta, a partir de un reporte
+real: se cargó un reporte importado (246 eventos, página de documentación
+larga) y al reproducirlo la navegación avanzaba pero el panel de Repetición
+quedaba vacío — "0 pasos, 0 inconsistencias" pese al banner de la página
+mostrando progreso real.
+
+**Hallazgo crítico — `reportTrace()` se omitía por completo en pasos de scroll.**
+*Causa raíz:* en el bucle de reproducción de `content.js`, `reportProgress()`
+(que informa el avance) se ejecutaba sin condición para cada paso, pero
+`reportTrace()` (que llena la telemetría que ve "Repetición") vivía DENTRO
+de un `if (e.type !== "scroll")`. Una grabación mayormente de scroll — muy
+común en páginas de documentación largas — hacía avanzar el índice
+correctamente mientras la traza se quedaba permanentemente vacía. Coincide
+exactamente con el síntoma reportado.
+*Fix:* `reportTrace()` ahora se ejecuta para **todo** tipo de paso; solo se
+omite la costosa observación de consecuencias (`observeConsequences`, que no
+aporta señal útil en scroll) para ese tipo específico, con valores neutros
+por defecto. De paso se corrigió una inconsistencia relacionada: el panel
+mostraba `índice/total-de-eventos-del-timeline` (p. ej. "4/246") mientras el
+banner de la propia página siempre mostró correctamente `índice/pasos-
+reales` (p. ej. "4/8") — ahora ambos coinciden, vía un nuevo campo
+`job.total` comunicado desde `content.js`.
+*Validado:* traza simulada mayormente-scroll contra el código real de render
+— pasó de "0 pasos" a "4 pasos" con las filas visibles, y el denominador de
+"4/246" a "4/8".
+
+**Fidelidad de captura — validación de foco real en formularios.**
+Se auditó exhaustivamente la captura existente (clicks, doble click, click
+central, drag&drop, tecleo coalescido con atajos, scroll, navegación,
+intercepción de funciones/callbacks vía `patchedFunctions`) y se confirmó
+sólida en su mayoría. El gap real encontrado: `captureInput()` (disparado
+por `change`/`blur`) confiaba ciegamente en `event.target`, que en widgets
+personalizados (comboboxes, date-pickers estilizados) puede no coincidir
+con el campo que el usuario realmente enfocó. Ahora se rastrea el elemento
+enfocado vía `focusin` (`local.lastFocusedEl`) y se usa como fuente de
+verdad cuando el evento llega desde un nodo distinto.
+
+**Importación de Playwright (con límite técnico honesto).** Ejecutar un
+script Playwright real es imposible dentro de una extensión de Chrome —
+Playwright depende de APIs de Node.js (`chromium.launch()`, etc.) que no
+existen en un navegador. En su lugar, `src/qa/playwright-import.js` (módulo
+puro, con tests) interpreta un subconjunto reconocible del script —
+`page.goto/click/dblclick/fill/type/press/waitForTimeout/waitForSelector` —
+vía un parser ligero basado en patrones, y traduce la secuencia a la misma
+forma de "reporte" que ya sabe reproducir el motor de replay existente,
+reutilizando toda su infraestructura probada en vez de duplicarla. Nuevas
+acciones del SW: `loadPlaywright`, `getPlaywrightScript`, `clearPlaywright`,
+`startPlaywrightReplay`. Nueva sección en la pestaña Reporte para importar;
+botón **"▶ Playwright"** junto a Grabar — en el panel lateral y en el popup
+— visible únicamente cuando hay un script cargado (se oculta solo al
+vaciarlo). El popup no importa (eso solo vive en Reporte); solo reproduce,
+leyendo el mismo estado compartido.
+*Validado:* parser probado con aserciones (goto/click/fill/press
+reconocidos correctamente, `waitForTimeout` absorbido como delay del
+siguiente paso); ciclo completo importar→consultar→reproducir→vaciar
+probado contra el código real del service worker; visibilidad del botón
+probada en ambas superficies (aparece tras importar, desaparece tras
+vaciar), incluida la reacción a `chrome.storage.onChanged` en el popup.
+Durante la validación se encontró que `toPlaywright()` (nuestro propio
+exportador) genera clicks con el estilo moderno de locator-chain
+(`page.locator(sel).click()`), que el parser inicial no reconocía —
+únicamente el estilo legado `page.click(sel)`. Se extendió el parser para
+reconocer ambos estilos, además de `dragAndDrop()` y `selectOption()`
+(también generados por `toPlaywright()`), y se confirmó el *round-trip*
+completo: un reporte exportado con nuestra propia herramienta y
+reimportado con este parser reconoce el 100% de sus pasos.
+
+**Checkbox persistido: recargar el sitio al reproducir.** Antes, reproducir
+una repetición siempre navegaba la pestaña a la URL de inicio de la
+grabación — incluso si el usuario ya estaba en la página correcta y quería
+conservar su estado actual. Nuevo checkbox en Reporte ("Recargar el sitio
+en la URL de inicio al reproducir"), persistido en `localStorage` (origen
+compartido entre panel lateral y popup) y respetado tanto por la
+repetición normal (`startReplay`) como por la de Playwright
+(`startPlaywrightReplay`) vía un flag `reloadOnReplay`.
+*Validado:* con el checkbox desactivado, `startPlaywrightReplay` recibe
+`reloadOnReplay: false` y el SW confirma `navegando: false` en su
+respuesta — no se llama a `chrome.tabs.update`, solo se asegura la
+inyección del content script en la página actual.
+
+**Validado (general):** sintaxis de los 16 JS como módulo ES, verificación
+cruzada de IDs sin huérfanos en panel lateral y popup, arranque limpio del
+service worker con las 4 acciones nuevas.
+
+---
+
+### v2.5.8a — Estándar de UI reactiva: Store + Poller en toda la interfaz
+
+Mejora de mantenimiento, sin cambios en el modelo de datos. Nace de un
+reporte concreto: en "Repetición", abrir el detalle de un paso lo cerraba
+solo tras unos segundos — el temporizador periódico reconstruía la lista
+completa sin condición, sin importar si había algo nuevo que mostrar.
+
+**Hallazgo — Cada superficie reimplementaba su propio polling ad-hoc, sin ningún control de cambios real.**
+El panel lateral tenía tres temporizadores independientes (`qaTimer` de
+Auditoría/Repetición, el general de `init()`, y el propio ciclo de
+`refreshReplayState`), cada uno reconstruyendo `innerHTML` sin comparar si
+el contenido había cambiado. `renderReplayTrace()` en particular no tenía
+ninguna guarda: se ejecutaba cada 2.5s durante una repetición activa y
+reemplazaba la lista entera, arrastrando consigo cualquier fila que el
+usuario hubiera expandido. El popup tenía su propio `setInterval` separado,
+con el mismo patrón sin comparación de cambios (aunque ahí no había filas
+expandibles que se vieran afectadas).
+
+*Fix — nuevo módulo `src/lib/reactive-store.js`, estándar único para ambas superficies:*
+- **`Store`** — estado observable minimalista: `set()` es un no-op si el
+  valor no cambió (comparación estructural), así que ningún suscriptor se
+  entera y ningún render ocurre sin motivo.
+- **`Poller`** — temporizador centralizado con pausa automática cuando
+  `document.visibilityState` no es `"visible"`, sustituyendo los
+  `setInterval` repetidos de forma casi idéntica en cada superficie.
+- **`captureOpenRows`/`restoreOpenRows`** — capturan qué filas (por clave
+  estable: `cid`, `seq` o índice de paso) estaban expandidas antes de
+  reemplazar el `innerHTML`, y las reabren después.
+
+`renderTimeline()` y `renderReplayTrace()` ahora calculan una firma ligera
+de la página visible (las claves de fila + el límite de paginación) antes
+de tocar el DOM: si es idéntica a la última renderizada, la función retorna
+sin hacer nada. Cuando sí hay cambios reales, el reemplazo de `innerHTML`
+va acompañado de capturar y restaurar las filas abiertas. El popup adoptó
+el mismo patrón en `renderLog()` (firma de cambio) aunque no tiene filas
+expandibles hoy, para mantener el estándar sin excepción.
+
+**Límite visual (paginación por scroll).** Antes, la lista de eventos
+renderizaba hasta 400 filas de una sola vez en el DOM. Ahora arranca en 150
+(`RENDER_PAGE`) y crece de 150 en 150 al acercarse el usuario al final de
+la lista (`scroll` cerca del límite inferior), con un tope duro de
+seguridad de 1000 eventos considerados independientemente de cuántos se
+rendericen. Se aplica igual a la vista de Repetición.
+
+**Validado:** simulación con datos reales — se abre una fila con
+inconsistencia, llegan datos nuevos (un paso adicional) antes del siguiente
+ciclo del `Poller`, y tras el ciclo automático la fila **sigue abierta** y
+la lista **sí** incluye el paso nuevo. Por separado, con datos sin cambios
+durante dos ciclos completos, se confirmó por marcador de DOM que el
+`innerHTML` no se tocó en absoluto. Paginación probada con 500 eventos
+simulados: 150 renderizados inicialmente, 300 tras hacer scroll al final.
+Sintaxis de los 15 JS como módulo ES, verificación cruzada de IDs sin
+huérfanos, arranque limpio del service worker.
+
+**Nota de version.** El campo `version` del manifest de Chrome exige un
+formato estrictamente numérico (hasta 4 enteros separados por punto); no
+admite sufijos como `"2.5.8a"`. Se mantuvo `version: "2.5.8"` (válido para
+Chrome) y se añadió `version_name: "2.5.8a"` (campo opcional de MV3 para la
+etiqueta legible), que es lo que ahora muestra el popup.
 
 ---
 
