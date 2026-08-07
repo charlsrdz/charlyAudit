@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.8c**
+**Versión actual: 2.5.9**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -92,6 +92,14 @@ src/sidepanel/
 - HMAC-SHA256 del payload webhook (`X-CharlyAudit-Signature`)
 - Reintentos con backoff exponencial (2→4→8→16→30 min, máx. 5) vía `replayJobChain` serializado — elimina condiciones de carrera al escribir `K.replayJob` desde múltiples mensajes concurrentes (`replayProgress`, `replayTrace`, `startReplay`, `stopReplay`, `clearImported`)
 
+### ✅ Rendimiento y memoria durante la grabación
+- Escritura del timeline en **lote** (no por evento): los eventos capturados se acumulan en memoria y se persisten cada 400ms o cada 40 eventos, lo que ocurra primero — evita el patrón O(n) por evento / O(n²) por sesión que antes hacía releer y reescribir el timeline completo en cada captura
+- Ninguna lectura (KPIs, exportar, conteos en vivo, webhook) pierde visibilidad de eventos aún no persistidos — `getTimeline()` fusiona el buffer en memoria con lo ya guardado
+- Volcado forzado del buffer pendiente en los puntos de durabilidad crítica: al detener una grabación y como red de seguridad en `chrome.runtime.onSuspend`
+- Gestión activa del buffer nativo de Resource Timing del navegador (`clearResourceTimings()` cada 30s + tamaño ampliado) — antes crecía sin límite durante toda la sesión, a nivel de memoria de proceso, no solo del heap de JS de la extensión
+- Deduplicación de recursos de red acotada por tiempo (se limpia junto al buffer nativo) y por tamaño (límite de seguridad ante ráfagas extremas)
+- Configuración del asistente cacheada en memoria del service worker (se invalida solo ante un cambio real, no en cada evento capturado)
+
 ### ✅ Replay y Repetición
 - Reproducir/Detener/Velocidad viven **exclusivamente** dentro del bloque de Repetición (Auditoría), visibles solo con esa fuente activa
 - La vista de Repetición se auto-refresca sola (timer periódico, sin necesidad de cambiar de pestaña) mientras hay un replay en curso
@@ -104,7 +112,7 @@ src/sidepanel/
 
 ### ✅ Asistente IA
 - **Conversación multi-turno real**: `messages: [{role:"system",...},{role:"user",...},{role:"assistant",...},...,{role:"user"}]`; el historial viaja como roles nativos, no como texto incrustado
-- **Multi-proveedor**: OpenWebUI (propio), OpenAI/ChatGPT, Google Gemini, Anthropic Claude, endpoint personalizado. Claude separa `system` en su campo propio; Gemini usa el endpoint OpenAI-compatible
+- **Multi-proveedor**: OpenWebUI (propio), OpenAI/ChatGPT, Google Gemini, Anthropic Claude, endpoint personalizado. Claude separa `system` en su campo propio; Gemini usa el endpoint OpenAI-compatible. Los proveedores con URL fija (OpenAI/Gemini/Claude) **siempre** usan esa URL, sin importar qué haya quedado guardado en el campo de un proveedor previo (p. ej. OpenWebUI) — el campo Base URL solo aplica, y solo se muestra, para OpenWebUI y endpoint personalizado
 - **Parámetros configurables**: temperatura, tokens máximos, turnos de historial
 - **Selector de fuente Temporal/Importado**: el asistente puede analizar la grabación en curso o un reporte importado, sin mezclar datos entre ambos (caché de contexto con clave por fuente)
 - **12 ámbitos de contexto**, todos con conteo visible y actualizado según la fuente activa: Resumen, Errores, Red, Consola, Rutas, Funciones, Variables, Interacción, Estructura, Repetición, Performance, Seguridad
@@ -217,6 +225,8 @@ done
 - La paginación por scroll de `tl-list` solo *agrega* filas al hacer scroll (nunca libera las que salen de vista). Para reportes de varios miles de eventos, una ventana verdaderamente virtualizada (renderizar solo lo visible) sería más robusta que el tope actual de 1000 eventos + páginas de 150.
 - La secuencia de click ahora dispara `pointerdown`/`pointerup`, pero no `pointermove`/`pointerover`/`pointerenter` — UI dependiente de hover real (tooltips, menús que se abren al pasar el cursor) no se activa durante la repetición.
 - El drag&drop de la repetición usa únicamente la API nativa `DragEvent` (`dragstart`/`dragover`/`drop`/`dragend`). Muchas librerías modernas de listas ordenables (dnd-kit, react-beautiful-dnd y similares) no usan esa API — simulan arrastre con una secuencia de `pointerdown`/`pointermove`/`pointerup`, que hoy no se reproduce.
+- `perf._timer` (el snapshot periódico de KPIs cada 5s en `injected.js`) sigue corriendo indefinidamente después de detener una grabación — tiene una guarda que lo vuelve no-operativo (`if (!state.recording) return`), pero el propio `setInterval` nunca se cancela hasta que se navega o se cierra la pestaña. No es una fuga de memoria (no crece nada), pero es trabajo innecesario que podría evitarse limpiando el intervalo explícitamente al detener.
+- El buffer de escritura diferida del timeline (`pendingEvents`, ver Rendimiento y memoria) reduce drásticamente las escrituras a storage, pero introduce una ventana de riesgo real y acotada: si el service worker terminara de forma abrupta (no vía `onSuspend`, que sí se atiende) dentro de la ventana de 400ms, los eventos aún no volcados podrían perderse. Se mitigó con un intervalo corto y volcados forzados en los puntos de mayor riesgo (detener grabación, `onSuspend`), pero el riesgo teórico no es cero — vale la pena vigilarlo si en el futuro se reportan sesiones con eventos faltantes justo al final.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -234,6 +244,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.5.9** | Fix crítico de memoria/rendimiento: escritura del timeline en lote (antes O(n) por evento) · gestión del buffer nativo de Resource Timing · caché de ajustes en el SW · fix de la URL fija del asistente para proveedores con endpoint conocido (OpenAI/Gemini/Claude) |
 | **2.5.8c** | Corrección de rumbo: se elimina la importación de Playwright (imposible de ejecutar con alta fidelidad dentro de una extensión) a favor de pulir el motor de replay propio — eventos de puntero, doble click real, `beforeinput` en formularios |
 | **2.5.8b** | Fix crítico: Repetición perdía toda su traza en grabaciones con scroll · validación de foco en captura de formularios · importación e interpretación de Playwright · checkbox persistido para no recargar el sitio al reproducir |
 | **2.5.8a** | Estándar de UI reactiva (Store + Poller) en popup y panel lateral: corrige que un detalle expandido en Repetición se cerrara solo cada ciclo de refresco; paginación por scroll como límite visual |
@@ -254,6 +265,102 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.5.9 — Fix crítico de memoria/rendimiento durante la grabación, y URL fija del asistente
+
+Esta versión parte de un reporte de diagnóstico dedicado (sin cambios de
+código, solo análisis) sobre un problema concreto: grabar una plataforma web
+con mapa en vivo hizo que el consumo de RAM del equipo pasara de 3GB a 11GB
+en aproximadamente 2 minutos. El análisis identificó la causa raíz exacta —
+no una fuga clásica, sino un patrón algorítmico incorrecto expuesto por una
+fuente de eventos de alta frecuencia — y esta versión implementa, en el
+orden de prioridad de ese reporte, las cuatro correcciones identificadas,
+más un bug adicional confirmado por pruebas directas del usuario.
+
+**Hallazgo crítico — cada evento capturado leía y reescribía el timeline completo.**
+*Causa raíz:* `appendEntry()` llamaba a `getTimeline()` (una lectura completa
+de `chrome.storage.local`) y luego reescribía el arreglo entero de vuelta,
+**por cada evento individual capturado** — sin ningún tipo de agrupación.
+Con `MAX_EVENTS` en 5000, el costo por evento crecía con el tamaño del
+timeline ya acumulado: O(n) por evento, O(n²) sobre toda la sesión. En una
+plataforma con actualización continua de un mapa en vivo (marcadores
+moviéndose, tiles cargando, polling de posiciones), la tasa de eventos por
+segundo es inusualmente alta — exactamente el peor caso de este patrón, y
+explica por qué el crecimiento de RAM se acelera con el tiempo en vez de
+subir de forma constante.
+*Fix:* nuevo buffer de escritura diferida (`pendingEvents`). Los eventos se
+acumulan en memoria y se persisten en **lote** — cada 400ms o cada 40
+eventos, lo que ocurra primero — reduciendo drásticamente el número de
+operaciones reales de storage. La asignación de `cid`/`seq`/`tRel` sigue
+siendo inmediata y por evento (ya usaba una caché en memoria, `recCtx`, que
+no necesitaba tocar el timeline). `getTimeline()` fusiona el buffer con lo
+ya persistido, así que **ninguna lectura** (KPIs, exportación, conteos en
+vivo, webhook) pierde visibilidad de eventos aún no volcados. Se agregó
+volcado forzado en los puntos de mayor riesgo de pérdida: al detener una
+grabación y como red de seguridad en `chrome.runtime.onSuspend`.
+*Validado contra el código real:* 200 eventos enviados en ráfaga rápida
+produjeron solo 5 escrituras reales a `storage.local.set` (98% menos
+operaciones), con **cero eventos perdidos** en el timeline final. Por
+separado, se confirmó que una lectura de estado 50ms después de enviar 3
+eventos (muy por debajo del intervalo de 400ms) ya los refleja
+correctamente, aunque el volcado a storage todavía no haya ocurrido.
+
+**Hallazgo alto — el buffer nativo de Resource Timing del navegador nunca se gestionaba.**
+*Causa raíz:* el proyecto nunca llamaba a `performance.clearResourceTimings()`
+ni a `performance.setResourceTimingBufferSize()`. El navegador acumulaba una
+entrada por cada recurso cargado durante **toda la sesión de grabación**, sin
+límite propio — memoria de proceso, no solo del heap de JS de la extensión
+(visible en el Administrador de Tareas, coherente con que el reporte
+describiera RAM del equipo, no de una pestaña de extensión).
+*Fix:* se amplía el buffer nativo al iniciar (`setResourceTimingBufferSize`)
+y se limpia cada 30 segundos, con margen amplio sobre la ventana de 60ms que
+usa `emitNetworkFull()`/`waterfallFor()` para correlacionar un fetch/XHR con
+su entrada de Resource Timing — nunca se limpia algo que todavía se necesita
+leer.
+
+**Hallazgo medio — el `Set` de deduplicación de recursos crecía sin límite.**
+*Causa raíz:* `_resSeen` (dedup de `resource-timing` por URL+inicio) vivía
+durante toda la sesión sin límite de tamaño ni expiración — en un mapa de
+tiles con URLs únicas por cada paneo/zoom, y polling con parámetros de
+caché en la URL, este `Set` podía crecer a miles de entradas en minutos,
+alimentando al problema principal a un ritmo alto.
+*Fix:* se vacía junto con el buffer nativo (cada 30s) y, además, tiene un
+límite de tamaño (2000 entradas) como red de seguridad ante ráfagas
+extremas que llenaran el buffer antes de que llegara el ciclo periódico.
+
+**Hallazgo bajo — `getSettings()` releía storage en cada evento.**
+*Fix:* se cachea en memoria del service worker; solo se invalida cuando el
+usuario cambia realmente la configuración (`setSettings`), que además
+actualiza la caché de inmediato en vez de forzar una relectura.
+
+**Bug adicional confirmado por el usuario — el asistente usaba la URL guardada, no la fija del proveedor.**
+*Causa raíz:* en `openwebui-client.js`, `this.baseUrl = cfg.baseUrl ||
+pDef.baseUrl || ""` priorizaba el valor guardado en la configuración sobre
+la URL fija del proveedor (`PROVIDERS[provider].baseUrl`). El campo Base URL
+se oculta en la UI para proveedores con URL fija (OpenAI/Gemini/Claude),
+pero el *valor* que hubiera quedado ahí de un proveedor anterior (p. ej.
+OpenWebUI) seguía persistido y ganaba la comparación — el propio docstring
+del archivo ya documentaba el comportamiento *correcto* que el código no
+cumplía. Se corrigió el orden de precedencia en el constructor del cliente
+y, por consistencia, en los dos puntos de la UI que construían la misma
+comparación (guardar configuración, probar conexión).
+*Validado:* se reprodujo el escenario exacto — configurar OpenWebUI con una
+URL propia, cambiar el proveedor a Gemini sin tocar el campo oculto — y se
+confirmó que el cliente ahora resuelve `https://generativelanguage.
+googleapis.com` (la fija) en vez de la URL vieja. Se confirmó por separado
+que OpenWebUI sigue usando la URL que el usuario escribe, sin regresión.
+También se validó la integración de Gemini end-to-end con credenciales
+reales: una petición HTTP directa al endpoint OpenAI-compatible de Gemini
+(mismo `baseUrl`, mismo `chatPath`, mismo header `Authorization: Bearer`
+que arma nuestro cliente) respondió HTTP 200 con el modelo
+`gemini-flash-lite-latest`.
+
+**Validado (general):** sintaxis de los 16 JS como módulo ES; verificación
+cruzada de IDs sin huérfanos en panel lateral y popup; prueba de humo
+integrada contra el service worker real (arrancar, iniciar grabación,
+capturar eventos, verificar conteo, detener) sin errores.
 
 ---
 

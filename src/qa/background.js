@@ -69,6 +69,70 @@ function mutateReplayJob(mutator) {
 }
 let seenIds = null; // Set perezoso, reconstruido tras reinicios del SW
 
+// ============================================================================
+// Buffer de escritura diferida del timeline (v2.5.9 — fix critico de rendimiento)
+// ============================================================================
+// ANTES: cada evento capturado disparaba un get()+set() del timeline COMPLETO
+// en chrome.storage.local (ver appendEntry mas abajo) — costo O(n) por evento,
+// O(n^2) sobre toda la sesion, con n creciendo hasta MAX_EVENTS. En paginas de
+// alta frecuencia de eventos (mapas en vivo con actualizacion continua, apps
+// con polling agresivo) esto es la causa confirmada de picos de RAM/CPU que
+// se agravan con el tiempo, no una fuga clasica sino un patron algoritmico
+// incorrecto expuesto por una fuente de eventos inusualmente alta.
+//
+// AHORA: los eventos se acumulan en memoria (pendingEvents) y se persisten en
+// LOTE, no uno por uno. La asignacion de cid/seq/tRel sigue siendo inmediata
+// y por evento (ensureRecCtx ya cachea en memoria desde antes, no re-lee el
+// timeline en cada llamada) — lo unico que se difiere es la escritura a
+// storage. Ninguna lectura pierde visibilidad de estos eventos: getTimeline()
+// los fusiona con lo ya persistido, asi que KPIs, exportaciones, conteos en
+// vivo y el webhook siempre ven el estado completo y actual (invariante:
+// nunca perder ni ocultar evidencia).
+let pendingEvents = [];
+let flushTimer = null;
+const FLUSH_INTERVAL_MS = 400; // ventana de riesgo si el SW se suspendiera: minima
+const FLUSH_MAX_BATCH = 40; // rafagas grandes se vuelcan antes de esperar el timer
+
+function scheduleFlush() {
+  if (pendingEvents.length >= FLUSH_MAX_BATCH) {
+    flushPending();
+    return;
+  }
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushPending();
+  }, FLUSH_INTERVAL_MS);
+}
+
+// Cola propia (igual patron que writeChain/replayJobChain): evita que dos
+// vuelcos se solapen si uno tarda mas que el intervalo del siguiente.
+let flushChain = Promise.resolve();
+function flushPending() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  flushChain = flushChain
+    .then(async () => {
+      if (!pendingEvents.length) return;
+      const batch = pendingEvents;
+      pendingEvents = [];
+      // UNA sola lectura y UNA sola escritura para todo el lote, en vez de
+      // una por evento — aqui es donde se recupera el O(1) amortizado.
+      const timeline = await getStoredTimeline();
+      for (const entry of batch) timeline.push(entry);
+      if (timeline.length > MAX_EVENTS) timeline.splice(0, timeline.length - MAX_EVENTS);
+      await chrome.storage.local.set({ [K.timeline]: timeline });
+      for (const entry of batch) {
+        telemetryOnEvent(entry);
+        maybeResampleOnNav(entry);
+      }
+    })
+    .catch((e) => console.warn("[CharlyQA] Error volcando eventos en lote:", e));
+  return flushChain;
+}
+
 // --- Helpers de estado ------------------------------------------------------
 
 async function isRecording() {
@@ -87,12 +151,20 @@ const DEFAULT_SETTINGS = {
   webhook: { url: "", token: "", enabled: false, mode: "manual" }, // manual|chunks|onclose
   autoStart: false, // iniciar grabacion automaticamente en dominios permitidos
 };
+// Cache en memoria (v2.5.9 — fix de baja prioridad): getSettings() se llama
+// una vez por evento capturado (telemetryOnEvent), asi que releer storage
+// cada vez es un costo innecesario y acumulativo. El unico punto de escritura
+// es "setSettings" (mas abajo), que actualiza esta misma cache al guardar —
+// nunca puede quedar desactualizada frente a un cambio hecho por esta extension.
+let settingsCache = null;
 async function getSettings() {
+  if (settingsCache) return settingsCache;
   const stored = (await chrome.storage.local.get(K.settings))[K.settings];
   const s = { ...DEFAULT_SETTINGS, ...(stored || {}) };
   s.profile = { ...DEFAULT_SETTINGS.profile, ...(s.profile || {}) };
   s.webhook = { ...DEFAULT_SETTINGS.webhook, ...(s.webhook || {}) };
   s.allowedDomains = Array.isArray(s.allowedDomains) ? s.allowedDomains : [];
+  settingsCache = s;
   return s;
 }
 /** Un dominio esta permitido si la lista esta vacia o si coincide (o es subdominio). */
@@ -257,8 +329,20 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   if (s.webhook.enabled && s.webhook.mode === "onclose") sendTelemetry("tab-close");
 });
 
-async function getTimeline() {
+/** Lectura cruda de storage, SIN fusionar el buffer pendiente — solo para uso
+ *  interno de flushPending() (que ya opera directamente sobre pendingEvents,
+ *  fusionar aqui seria circular). Cualquier otro consumidor debe usar
+ *  getTimeline(). */
+async function getStoredTimeline() {
   return (await chrome.storage.local.get(K.timeline))[K.timeline] || [];
+}
+
+async function getTimeline() {
+  const stored = await getStoredTimeline();
+  // Fusiona lo ya persistido con lo que aun esta en el buffer de escritura
+  // diferida: ninguna lectura (KPIs, exportar, conteos en vivo, webhook) debe
+  // ver un estado incompleto solo porque el volcado en lote todavia no corrio.
+  return pendingEvents.length ? stored.concat(pendingEvents) : stored;
 }
 
 async function getMeta() {
@@ -605,6 +689,10 @@ async function stopRecordingBound(reason) {
   recState = { recording: false, tabId: null };
   recCtx = null;
   chrome.alarms.clear("qa-resample");
+  // Punto de durabilidad garantizada (2.5.9): al terminar una grabacion la
+  // pestana puede cerrarse o el SW puede suspenderse en cualquier momento
+  // despues de esto — nunca debe quedar evidencia capturada solo en memoria.
+  await flushPending();
   if (wasRec && reason === "tab-close") {
     const s = await getSettings();
     if (s.webhook.enabled && s.webhook.mode === "onclose") await sendTelemetry("tab-close");
@@ -656,11 +744,12 @@ function appendEntry(entry) {
     .then(async () => {
       const ids = await ensureSeenIds();
       if (entry.id && ids.has(entry.id)) return; // dedupe (reenvios tras recarga)
-      const timeline = await getTimeline();
       // Id CANONICO determinista + reloj normalizado por sesion. Solo se asigna
       // a eventos nuevos (los reenvios ya traen su cid y se dedupean por id).
+      // ensureRecCtx cachea en memoria tras su primera llamada (no vuelve a
+      // leer el timeline), asi que esto es barato incluso a alta frecuencia.
       if (entry.cid == null) {
-        const ctx = await ensureRecCtx(timeline);
+        const ctx = await ensureRecCtx();
         entry.seq = ++ctx.seq;
         entry.cid = `${ctx.recordingId}#${entry.seq}`;
         // Reloj normalizado, estrictamente creciente (evita empates/desorden por
@@ -670,19 +759,24 @@ function appendEntry(entry) {
         ctx.lastT = tRel;
         entry.tRel = Math.round(tRel * 1000) / 1000;
       }
-      timeline.push(entry);
-      if (timeline.length > MAX_EVENTS) timeline.splice(0, timeline.length - MAX_EVENTS);
       if (entry.id) ids.add(entry.id);
-      await chrome.storage.local.set({ [K.timeline]: timeline });
+      // La persistencia real se difiere (ver flushPending): aqui solo se
+      // encola en memoria y se invalida el cache de reporte, que ya sabe
+      // leer el buffer via getTimeline().
+      pendingEvents.push(entry);
       reportCache.dirty = true; // invalida el reporte cacheado
-      telemetryOnEvent(entry); // envia por webhook si hay grabacion+webhook activos
-      maybeResampleOnNav(entry); // re-muestreo dirigido por evento (ruta/navegacion)
+      scheduleFlush();
     })
-    .catch((e) => console.warn("[CharlyQA] Error guardando entrada:", e));
+    .catch((e) => console.warn("[CharlyQA] Error encolando entrada:", e));
   return writeChain;
 }
 
 async function clearAll() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  pendingEvents = []; // descarta el buffer: si no, podria "revivir" tras vaciar
   seenIds = new Set();
   reportCache = { dirty: true, report: null };
   recCtx = null;
@@ -801,6 +895,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case "setSettings": {
           const merged = { ...(await getSettings()), ...(message.settings || {}) };
           await chrome.storage.local.set({ [K.settings]: merged });
+          settingsCache = merged; // invalida/actualiza la cache de inmediato
           sendResponse({ ok: true, settings: merged });
           break;
         }
@@ -1016,6 +1111,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onStartup.addListener(async () => {
   await hydrateRecState();
   updateBadge(await isRecording(), recState.tabId);
+});
+
+// Red de seguridad adicional (2.5.9): intento de ultimo momento antes de que
+// el navegador termine el service worker. "Best effort" — Chrome no garantiza
+// tiempo suficiente para que una operacion async complete aqui, por eso la
+// garantia principal sigue siendo el intervalo corto (400ms) de scheduleFlush.
+chrome.runtime.onSuspend.addListener(() => {
+  flushPending();
 });
 
 console.info("[CharlyQA] Suite de QA cargada (background).");

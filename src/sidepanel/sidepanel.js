@@ -788,7 +788,10 @@ function wire() {
   $("cfg-save").addEventListener("click", async () => {
     const prov = $("cfg-provider").value;
     const pDef = PROVIDERS[prov] || {};
-    const base = $("cfg-base").value.trim() || pDef.baseUrl || DEFAULT_AI.baseUrl;
+    // La URL fija del proveedor (si existe) gana siempre — evita guardar un
+    // baseUrl obsoleto que quedo en el campo oculto tras cambiar de proveedor
+    // (p.ej. la URL de OpenWebUI persistiendo al cambiar a Gemini).
+    const base = pDef.baseUrl || $("cfg-base").value.trim() || DEFAULT_AI.baseUrl;
     await saveConfig({
       provider: prov,
       baseUrl: base,
@@ -811,7 +814,7 @@ function wire() {
     const pDef = PROVIDERS[prov] || {};
     const tmp = new OpenWebUIClient({
       provider: prov,
-      baseUrl: $("cfg-base").value.trim() || pDef.baseUrl || "",
+      baseUrl: pDef.baseUrl || $("cfg-base").value.trim() || "",
       model: $("cfg-model").value.trim() || pDef.defaultModel || "",
       apiKey: $("cfg-key").value.trim(),
       proxyUrl: $("cfg-proxy").value.trim(),

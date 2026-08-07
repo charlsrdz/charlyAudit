@@ -798,6 +798,10 @@
         if (e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest") continue; // ya cubiertos
         // Dedup por URL+inicio: buffered:true puede reportar el mismo recurso
         // varias veces si startPerf se llama despues de la carga inicial de la pagina.
+        // Limite de tamaño ademas del temporal (30s, ver el intervalo mas abajo):
+        // una rafaga extrema (p.ej. un mapa con cientos de tiles en pocos
+        // segundos) no debe esperar al ciclo periodico para acotarse.
+        if (_resSeen.size > 2000) _resSeen.clear();
         const key = `${e.name}|${Math.round(e.startTime)}`;
         if (_resSeen.has(key)) continue;
         _resSeen.add(key);
@@ -826,6 +830,31 @@
     addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") emitVitals("hidden");
     });
+
+    // Gestion del buffer nativo de Resource Timing (v2.5.9 — fix de rendimiento,
+    // prioridad alta). Sin esto, el navegador acumula una entrada por cada
+    // recurso cargado durante TODA la sesion de grabacion sin limite propio —
+    // memoria de proceso, no solo nuestro heap de JS. Se amplia el buffer para
+    // no perder entradas entre limpiezas, y se limpia cada 30s (margen amplio
+    // sobre los 60ms que usa emitNetworkFull()/waterfallFor() para correlacionar
+    // un fetch/XHR con su entrada de Resource Timing, asi que nunca se limpia
+    // algo que todavia se necesita leer). _resSeen se vacia en el mismo
+    // momento: las entradas que ya limpiamos del navegador no van a reaparecer,
+    // asi que es seguro olvidarlas — mantiene ambas estructuras acotadas juntas.
+    try {
+      performance.setResourceTimingBufferSize(1000);
+    } catch {
+      /* API no disponible en este navegador */
+    }
+    perf._clearTimer = setInterval(() => {
+      if (!state.recording) return;
+      try {
+        performance.clearResourceTimings();
+      } catch {
+        /* no critico */
+      }
+      _resSeen.clear();
+    }, 30000);
   }
 
   // === Security: scanner pasivo ofensivo-controlado (tarea 3) =================

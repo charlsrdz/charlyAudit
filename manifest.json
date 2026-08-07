@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CharlyAudit",
-  "version": "2.5.8",
+  "version": "2.5.9",
   "description": "Plantilla MV3 con CharlyAPI (acceso amplio al navegador, pestanas, sistema y pestana activa), suite de QA (session replay, sniffer de red, captura de consola/errores/estado, export Cypress/Playwright) y un asistente de IA en el panel lateral via Open WebUI.",
   "author": "CharlyPlugin",
   "minimum_chrome_version": "116",
@@ -83,5 +83,5 @@
       ]
     }
   ],
-  "version_name": "2.5.8c"
+  "version_name": "2.5.9"
 }

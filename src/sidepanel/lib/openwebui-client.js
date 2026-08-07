@@ -65,7 +65,12 @@ export class OpenWebUIClient {
   constructor(cfg = {}) {
     this.provider = cfg.provider || "openwebui";
     const pDef = PROVIDERS[this.provider] || PROVIDERS.openwebui;
-    this.baseUrl = (cfg.baseUrl || pDef.baseUrl || "").replace(/\/+$/, "");
+    // La URL fija del proveedor (openai/gemini/claude) tiene prioridad SIEMPRE
+    // que exista — nunca debe perder frente a un baseUrl guardado en la config
+    // (p.ej. el de OpenWebUI, que queda persistido aunque el campo se oculte
+    // al cambiar de proveedor). Solo los proveedores SIN URL fija (openwebui,
+    // custom) usan el valor que el usuario escribio.
+    this.baseUrl = (pDef.baseUrl || cfg.baseUrl || "").replace(/\/+$/, "");
     this.chatPath = cfg.chatPath || pDef.chatPath;
     this.modelsPath = cfg.modelsPath !== undefined ? cfg.modelsPath : pDef.modelsPath;
     this.model = cfg.model || pDef.defaultModel || "";
