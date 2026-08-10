@@ -3,8 +3,9 @@
  * ======================================
  * Corre en el contexto JS real de la pagina (salta el entorno aislado), por lo
  * que puede observar `window`, la consola, la red y las funciones de la app.
- * No tiene acceso a chrome.*; toda salida va por window.postMessage al content
- * script con la marca { __charly:true, source:"charly-injected" }.
+ * No tiene acceso a chrome.*; toda salida va por un CustomEvent dedicado
+ * (__charlyqa_bridge__, ver mas abajo) al content script, marcada con
+ * { __charly:true, source:"charly-injected" }.
  *
  * Cubre: Herramienta 2 (errores + consola), 3 (red), 4 (estado global),
  * 5 (ruteo SPA) y 7 (patching de funciones a eleccion).
@@ -24,6 +25,19 @@
 
   const SOURCE = "charly-injected";
   const FROM_CONTENT = "charly-content";
+  // Canal dedicado para la comunicacion MAIN<->ISOLATED (fix critico v2.6.1a):
+  // antes se usaba window.postMessage(msg, "*"), que se retransmite a
+  // CUALQUIER listener "message" registrado en la pagina — incluidos los de
+  // scripts de terceros que no conocen nuestro formato. Se confirmo con una
+  // traza de consola real: un listener ajeno intentaba JSON.parse() sobre
+  // nuestro mensaje (un objeto, no una cadena JSON), lanzaba
+  // "SyntaxError: [object Object] is not valid JSON", nuestro propio
+  // window.onerror lo capturaba como un error nuevo, y al reportarlo
+  // disparabamos OTRO postMessage que volvia a activar el mismo listener
+  // ajeno — un bucle auto-sostenido que generaba miles de errores por
+  // segundo. Un CustomEvent con nombre propio solo lo recibe quien lo
+  // registra explicitamente: ningun script de terceros escucha este canal.
+  const BRIDGE_EVENT = "__charlyqa_bridge__";
 
   const state = {
     recording: false,
@@ -51,7 +65,7 @@
 
   function emit(type, data) {
     if (!state.recording) return;
-    window.postMessage({ __charly: true, source: SOURCE, type, data, ts: Date.now() }, "*");
+    document.dispatchEvent(new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: SOURCE, type, data, ts: Date.now() } }));
   }
 
   function safeSerialize(value, depth = 2, seen = new WeakSet()) {
@@ -371,8 +385,20 @@
     }
     return { emit: true };
   }
+  /**
+   * Normaliza identificadores "VM####" (Chrome los asigna de forma
+   * incremental a cada contexto evaluado dinamicamente — eval, Function,
+   * o scripts inyectados programaticamente) antes de construir la clave del
+   * circuito. Confirmado en produccion: el mismo bug repitiendose generaba
+   * un "origen" distinto en cada ocurrencia (VM1314, VM1315, VM1316...),
+   * evadiendo por completo el circuito porque cada variante nunca acumulaba
+   * las repeticiones necesarias para activarse — cada una parecia "nueva".
+   */
+  function normalizeSource(s) {
+    return String(s).replace(/VM\d+/g, "VM");
+  }
   function errorKey(...parts) {
-    return parts.map((p) => String(p)).join("|");
+    return parts.map((p) => normalizeSource(p)).join("|");
   }
 
   // --- Herramienta 2a/4: errores globales (correlacionados con la accion) ----
@@ -1001,9 +1027,8 @@
     if (location.protocol === "http:") secFinding("sin-https", "alta", location.hostname, "documento");
   }
 
-  window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
-    const d = event.data;
+  document.addEventListener(BRIDGE_EVENT, (event) => {
+    const d = event.detail;
     if (!d || d.__charly !== true || d.source !== FROM_CONTENT) return;
 
     switch (d.type) {
@@ -1023,9 +1048,8 @@
       case "get-source":
         // Respuesta directa (no es un evento de timeline, no se gatea por recording).
         fetchSourceBlock(d.data.url, d.data.line, d.data.column || 0, d.data.ctx || 6).then((block) => {
-          window.postMessage(
-            { __charly: true, source: SOURCE, type: "source-block", data: { requestId: d.data.requestId, block } },
-            "*"
+          document.dispatchEvent(
+            new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: SOURCE, type: "source-block", data: { requestId: d.data.requestId, block } } })
           );
         });
         break;
@@ -1050,8 +1074,7 @@
   });
 
   // Handshake: avisa al content script de que ya esta listo.
-  window.postMessage(
-    { __charly: true, source: SOURCE, type: "injected-ready", data: { url: location.href }, ts: Date.now() },
-    "*"
+  document.dispatchEvent(
+    new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: SOURCE, type: "injected-ready", data: { url: location.href }, ts: Date.now() } })
   );
 })();

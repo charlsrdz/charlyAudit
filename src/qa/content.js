@@ -17,6 +17,9 @@
   const FROM_INJECTED = "charly-injected";
   const TO_INJECTED = "charly-content";
   const RESUME_KEY = "__charlyQA_resume";
+  // Debe coincidir EXACTAMENTE con injected.js — mismo canal, dos direcciones
+  // (filtradas por el campo "source" del detail, igual que antes).
+  const BRIDGE_EVENT = "__charlyqa_bridge__";
 
   const local = {
     recording: false,
@@ -41,7 +44,8 @@
   // con "world": "MAIN" y run_at "document_start", de modo que Chrome lo ejecuta
   // en el contexto real de la pagina ANTES que los scripts del sitio. Eso es
   // imprescindible para que los interceptores de fetch/XHR y window.onerror
-  // queden instalados a tiempo. La coordinacion se hace por postMessage (abajo).
+  // queden instalados a tiempo. La coordinacion se hace por el canal dedicado
+  // BRIDGE_EVENT (CustomEvent, abajo) — no por window.postMessage.
 
   // === Utilidades de mensajeria ==============================================
   const uuid = () =>
@@ -103,7 +107,7 @@
   }
 
   function postToInjected(type, data) {
-    window.postMessage({ __charly: true, source: TO_INJECTED, type, data }, "*");
+    document.dispatchEvent(new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: TO_INJECTED, type, data } }));
   }
 
   /**
@@ -530,9 +534,8 @@
   );
 
   // === Recepcion de mensajes de injected.js → reenvio al SW ==================
-  window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
-    const d = event.data;
+  document.addEventListener(BRIDGE_EVENT, (event) => {
+    const d = event.detail;
     if (!d || d.__charly !== true || d.source !== FROM_INJECTED) return;
 
     if (d.type === "injected-ready") {

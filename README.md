@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.6.1**
+**Versión actual: 2.6.1a**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -102,9 +102,10 @@ src/sidepanel/
 - Gestión activa del buffer nativo de Resource Timing del navegador (`clearResourceTimings()` cada 30s + tamaño ampliado) — antes crecía sin límite durante toda la sesión, a nivel de memoria de proceso, no solo del heap de JS de la extensión
 - Deduplicación de recursos de red acotada por tiempo (se limpia junto al buffer nativo) y por tamaño (límite de seguridad ante ráfagas extremas)
 - Configuración del asistente cacheada en memoria del service worker (se invalida solo ante un cambio real, no en cada evento capturado)
-- Circuito de protección contra tormentas de errores idénticos: si el mismo error se repite a una tasa extrema (bucle roto en la página o en un script de terceros), se agrega en vez de emitir cada ocurrencia — preserva el conteo real (se informa explícitamente cuántas se suprimieron) sin saturar el pipeline de captura
+- Circuito de protección contra tormentas de errores idénticos: si el mismo error se repite a una tasa extrema (bucle roto en la página o en un script de terceros), se agrega en vez de emitir cada ocurrencia — preserva el conteo real (se informa explícitamente cuántas se suprimieron) sin saturar el pipeline de captura. Normaliza los identificadores `VM####` que Chrome asigna a contextos evaluados dinámicamente, para que la misma tormenta no evada el circuito solo porque su "origen" reportado cambia en cada ocurrencia
 - Sin fugas de listeners en la instrumentación de red: cada petición XHR limpia su propio listener al terminar (`{once:true}`), en vez de acumularse sin límite cuando una página reutiliza el mismo objeto XHR para múltiples peticiones (patrón común de polling)
 - Constancia explícita cuando una sesión supera el límite de eventos (`MAX_EVENTS`): el número de eventos descartados queda registrado y visible en Reporte, KPIs y el contexto del Asistente — nunca es una pérdida silenciosa
+- Comunicación interna `injected.js`↔`content.js` por un canal `CustomEvent` dedicado, no por `window.postMessage(msg, "*")` — antes, cualquier script de terceros con su propio listener `"message"` en la página recibía también nuestros mensajes internos; si ese listener no esperaba nuestro formato y fallaba al procesarlo, el error resultante lo capturábamos nosotros mismos y, al reportarlo, disparábamos otro mensaje que volvía a activar el mismo listener ajeno — un bucle auto-sostenido de errores generado enteramente por nuestra propia forma de comunicarnos
 
 ### ✅ Replay y Repetición
 - Reproducir/Detener/Velocidad viven **exclusivamente** dentro del bloque de Repetición (Auditoría), visibles solo con esa fuente activa
@@ -248,7 +249,7 @@ done
 - El icono personalizado no valida el tamaño del archivo antes de leerlo (`FileReader` carga el original completo en memoria antes de redimensionarlo) — un archivo extremadamente pesado podría tardar o consumir memoria de forma innecesaria antes de llegar al canvas de 128×128. Un tope razonable (p. ej. 5-10MB) evitaría ese caso sin afectar el uso normal.
 - La sincronización de paleta entre panel lateral y popup (2.6.0) usa el evento nativo `storage`, que solo se dispara si el popup ya está abierto en el momento exacto en que el panel guarda la paleta — dado que el popup normalmente está cerrado, en la práctica el popup solo ve la paleta actualizada la próxima vez que se abre (que es el caso común), no en vivo mientras ambos coexisten. Correcto para el uso típico, pero vale la pena documentarlo como una sincronización "al abrir", no en tiempo real.
 - El icono de la barra de herramientas se reaplica en `onStartup` a partir de lo guardado en `storage.local`; si ese dato guardado estuviera corrupto (no el archivo original al subirlo, que sí se valida, sino una corrupción posterior del propio storage), el intento de reaplicarlo fallaría silenciosamente y la barra se quedaría con el último icono que Chrome tenía cargado — no necesariamente el logo por defecto. Los logos del popup/panel sí garantizan la reversión (vía el `onerror` del propio `<img>`); la barra de herramientas depende de que `applyToolbarIcon` nunca reciba un dato corrupto en primer lugar.
-- El circuito de protección contra tormentas de errores (2.6.1) agrupa por mensaje+origen+línea+columna exactos. Si un bug produce mensajes ligeramente distintos en cada ocurrencia (p. ej. incluye un contador o timestamp embebido en el texto del error), cada variante obtendría su propia clave y evadiría el circuito, ya que nunca alcanzaría el umbral individualmente. El umbral (20/segundo) y el enfriamiento (5s) tampoco son configurables desde la UI — son constantes fijas, elegidas para no afectar nunca el uso normal, pero sin forma de ajustarlas sin tocar código si un caso real lo exigiera.
+- El circuito de protección contra tormentas de errores (2.6.1) agrupa por mensaje+origen+línea+columna, normalizando los identificadores `VM####` que Chrome asigna a contextos evaluados dinámicamente (2.6.1a cierra el caso confirmado en producción: la misma tormenta generaba un "origen" distinto en cada ocurrencia y evadía el circuito por completo). Sigue abierta la limitación más general: si un bug produce mensajes que varían por otras razones (p. ej. incluye un contador o timestamp embebido en el texto del error, no solo en el origen), cada variante seguiría obteniendo su propia clave. El umbral (20/segundo) y el enfriamiento (5s) tampoco son configurables desde la UI — son constantes fijas, elegidas para no afectar nunca el uso normal, pero sin forma de ajustarlas sin tocar código si un caso real lo exigiera.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -266,6 +267,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.6.1a** | Causa raíz real de la tormenta de errores: nuestra propia comunicación interna (`postMessage` sin restricción) activaba un listener de terceros en la página que fallaba al procesarla, y el error resultante lo capturábamos y reenviábamos nosotros mismos — bucle auto-sostenido. Reemplazado por un canal `CustomEvent` dedicado, invisible para cualquier otro script de la página. Circuito de protección endurecido contra identificadores `VM####` cambiantes |
 | **2.6.1** | Fix crítico confirmado con datos reales de producción: una tormenta de errores idénticos (5,000 en 624ms, un mismo error repetido) agotaba el límite de eventos de toda la sesión de un golpe — circuito de protección que agrega en vez de emitir cada repetición · corregido un leak real de listeners acumulados en peticiones XHR reutilizadas · aviso explícito cuando una sesión pierde eventos por límite alcanzado |
 | **2.6.0** | Ajustes migrados a Reporte (Perfil/Dominios/Telemetría) · fix real de responsividad del botón Detener (esperas internas que ignoraban la solicitud hasta 3.7s por paso) · botón Reproducir en el popup · icono personalizado con redimensionado y fallback garantizado · paleta de colores ahora compartida con el popup |
 | **2.5.9c** | Tres tipos de evento (Recursos, Código, Cabeceras) nunca tuvieron un ámbito propio en el Asistente — solo aparecían recortados dentro de otros. Se agregan como ámbitos dedicados (12→15), llevando el total a un ámbito por cada tipo de evento visible en Auditoría; se confirma que el reporte exportado ya era completo desde antes |
@@ -292,6 +294,86 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.6.1a — La causa raíz real: nuestra propia comunicación interna activaba un listener ajeno
+
+v2.6.1 mitigó el síntoma (un circuito que agrupa y suprime repeticiones
+extremas) sin identificar la causa raíz. El usuario reportó que, tras
+actualizar, el rendimiento mejoró pero **los errores seguían saliendo**, y
+compartió algo decisivo: una captura manual de la consola del navegador con
+la traza completa del error, algo que nuestro propio reporte nunca puede
+mostrar (por eso `Script error.` sale opaco — el navegador oculta la traza
+real de errores cross-origin). Esa traza contenía **nuestro propio código**
+(`injected.js:54`, `injected.js:385`, `injected.js:864`), lo que cambió
+por completo el diagnóstico.
+
+**Reconstrucción de la causa raíz, confirmada paso a paso:**
+1. `injected.js` (mundo MAIN) y `content.js` (mundo ISOLATED) se comunican
+   mediante `window.postMessage(msg, "*")` — una API que, por diseño,
+   entrega el mensaje a **todos** los listeners `"message"` registrados en
+   la página, no solo al nuestro.
+2. Algún listener de terceros en la plataforma (o en el SDK de Google Maps
+   que carga) intenta `JSON.parse(event.data)` asumiendo que todo mensaje
+   entrante es una cadena JSON — un patrón común en protocolos de
+   comunicación por iframe/widget. Nuestro mensaje es un **objeto**, no una
+   cadena; al pasarlo a `JSON.parse`, JavaScript lo convierte primero a
+   texto (`"[object Object]"`) y **eso** es lo que falla al parsear —
+   coincide exactamente con el mensaje capturado:
+   `Uncaught SyntaxError: "[object Object]" is not valid JSON`.
+3. Esa excepción, sin capturar en el contexto de ese listener ajeno, se
+   convierte en un error global — que **nuestro propio `window.onerror`**
+   intercepta como cualquier otro error de la página.
+4. Al reportarlo, `emit()` dispara **otro** `postMessage` — que vuelve a
+   activar el mismo listener ajeno, que vuelve a fallar, que genera otro
+   error, que capturamos, que reportamos, que dispara otro `postMessage`...
+
+Un bucle auto-sostenido, generado enteramente por nuestra propia forma de
+comunicarnos — no por un bug de la plataforma ni de un script de terceros
+en sí. Esto también explica por qué la herramienta nunca mostraba el
+detalle real del error (el reclamo original del usuario): el error que nos
+llega a través de `window.onerror` siempre es la versión opaca que el
+navegador entrega para excepciones que no puede atribuir con certeza al
+mismo origen — exactamente lo que ocurre con un error lanzado desde el
+contexto de otro listener de página, ajeno al nuestro.
+
+**Fix — canal de comunicación dedicado.** Se reemplazó `window.postMessage`
+por `document.dispatchEvent(new CustomEvent("__charlyqa_bridge__", ...))`
+en las cuatro direcciones de comunicación entre `injected.js` y
+`content.js`. Un `CustomEvent` con nombre propio solo lo recibe quien lo
+registra explícitamente — ningún script de terceros en la página puede
+recibirlo ni, por lo tanto, romperse al intentar procesarlo. MAIN e
+ISOLATED comparten el mismo `document`, así que el bridge sigue funcionando
+exactamente igual entre ambos mundos, simplemente ya no pasa por un canal
+que cualquier otro script de la página también escucha.
+
+**Refuerzo adicional — el circuito de protección no detectaba esta tormenta específica.**
+La traza mostraba dos identificadores distintos para lo que era el mismo
+error: `VM1314` y `VM1315`. Chrome asigna un número de VM nuevo e
+incremental a cada contexto evaluado dinámicamente — así que el circuito de
+protección de v2.6.1 (que agrupa por mensaje+origen+línea+columna exactos)
+nunca acumulaba el umbral necesario para activarse: cada ocurrencia parecía
+"nueva" porque su campo de origen cambiaba cada vez. *Fix:* se normalizan
+los identificadores `VM####` antes de construir la clave del circuito, para
+que la misma tormenta se reconozca como tal sin importar cuántas veces
+cambie el número de VM.
+
+**Validado con evidencia real, no solo revisado:**
+- Se cargaron `injected.js` y `content.js` **reales** (no simulados) en una
+  página con un listener de terceros que replica exactamente el patrón que
+  rompía antes (`JSON.parse(event.data)` sin verificar el tipo). Se activó
+  la grabación por el camino real, se disparó un error genuino sin manejar,
+  y se confirmó que el listener de terceros **nunca recibió nada** en
+  ningún momento — ni durante el arranque, ni durante el handshake, ni tras
+  el error — mientras que nuestro propio pipeline sí capturó el error
+  completo, con `stack` real incluido.
+- Se reprodujo el escenario exacto que evadía el circuito de protección
+  (5,000 ocurrencias del mismo error, cada una con un `VM####` distinto):
+  antes de la normalización, las 5,000 se habrían emitido igual; con la
+  normalización, se reducen a 21.
+
+Sintaxis de los 16 JS como módulo ES.
 
 ---
 
