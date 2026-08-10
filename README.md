@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.5.9c**
+**Versión actual: 2.6.0**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -56,7 +56,7 @@ src/sidepanel/
 |---|---|
 | **Asistente** | Chat con IA sobre la sesión; selector de fuente Temporal/Importado; 15 ámbitos de contexto (uno por cada tipo de evento visible en Auditoría) |
 | **Auditoría** | Grabar, ver el timeline evento a evento, y reproducir (Temporal / Importado / Repetición) |
-| **Reporte** | Único lugar para importar un archivo, descargar la sesión temporal (JSON/Cypress/Playwright) y gestionar el reporte importado |
+| **Reporte** | Único lugar para importar un archivo, descargar la sesión temporal (JSON/Cypress/Playwright), gestionar el reporte importado, y tarjetas de Perfil/Dominios/Telemetría e Icono personalizado |
 
 ---
 
@@ -112,6 +112,8 @@ src/sidepanel/
 - Resolución de código bajo demanda: cada frame del stack de un error tiene un botón "Ver código" que resuelve el snippet real (con soporte de source maps) vía el canal `getSource` → `qa-source` → `get-source`
 - Checkbox persistido: recargar (o no) el sitio en la URL de inicio al reproducir — útil para conservar el estado actual de la sesión en vez de forzar una navegación
 - Fidelidad de reproducción: cada click dispara la secuencia real de eventos del navegador (`PointerEvent` + `MouseEvent`, no solo uno de los dos), el doble click reproduce dos ciclos completos down/up/click antes del `dblclick`, y el llenado de inputs dispara `beforeinput` antes del cambio de valor — la misma secuencia que produce una interacción humana real, no una síntesis parcial
+- Detener responde casi de inmediato, en el banner flotante de la página o en Auditoría — antes las esperas internas entre pasos (hasta 2.5s + 1.2s) no comprobaban si se había pedido detener, así que en páginas muy dinámicas (mutación de DOM constante) el clic en "Detener" podía tardar varios segundos en tener efecto real
+- Botón "▶ Reproducir" en el popup, junto a Grabar — visible únicamente cuando hay un reporte importado
 
 ### ✅ Asistente IA
 - **Conversación multi-turno real**: `messages: [{role:"system",...},{role:"user",...},{role:"assistant",...},...,{role:"user"}]`; el historial viaja como roles nativos, no como texto incrustado
@@ -145,7 +147,9 @@ src/sidepanel/
 - Validación del webhook antes de guardar (exige HTTPS/localhost)
 - `aria-pressed`, `aria-expanded`, `aria-selected`, `aria-describedby`, `aria-live`
 - Foco de teclado visible con `:focus-visible` en todos los controles
-- Personalización de paleta de colores (tokens canónicos, aplica en vivo)
+- Personalización de paleta de colores (tokens canónicos, aplica en vivo) — **compartida con el popup**: antes el popup tenía su propio conjunto de variables CSS (`--ink`/`--panel`/`--brand`...) sin ningún puente con la paleta guardada, así que sus colores nunca reflejaban lo que el usuario personalizara; ahora ambos leen del mismo `localStorage` compartido
+- Icono personalizado: el usuario puede cargar una imagen (se redimensiona en el navegador, nunca se sube a ningún lado) para reemplazar el logo del popup, del panel lateral y de la barra de herramientas. Si el dato guardado resulta corrupto o ilegible, ambas superficies vuelven solas al logo original — nunca queda sin icono
+- Perfil, Dominios y Telemetría viven ahora en su propia tarjeta dentro de la pestaña Reporte (antes detrás de un botón "Ajustes ▾" en Auditoría) — es configuración persistente, no algo que se ajuste durante una grabación
 
 ### ✅ Seguridad
 - CSP/HSTS/XFO/XCTO ausentes, detectados por `webRequest.onHeadersReceived`
@@ -221,7 +225,6 @@ done
 - Re-lectura de cookies tras `Set-Cookie` por request (correlación request↔cookie).
 
 ### P4 — UX / Accesibilidad / DX
-- Panel de ajustes más completo para perfil, webhook y dominios.
 - `prefers-reduced-motion` en el banner de grabación de la página auditada.
 - Auditoría sistemática de contraste WCAG AA sobre el resto de combinaciones posibles de la paleta personalizable.
 - `--c-brand-dim` (hovers, bordes sutiles) no se deriva automáticamente del `--c-brand` personalizado — sigue fijo al valor por defecto. Calcular un tono derivado, o añadirlo como sexto control en la paleta.
@@ -239,6 +242,9 @@ done
 - El ámbito Interacción sigue sin el árbol de ancestros completo (`path`) de cada elemento — se excluyó deliberadamente por inflar demasiado el contexto (cadenas largas por cada evento). Sí incluye el selector compacto, el INP medido y el aviso de accesibilidad (2.5.9b), que cubren la señal de QA más accionable sin pagar el costo del árbol completo.
 - En sesiones muy intensas en red o en recursos (cientos de peticiones/tiles), el sistema de presupuesto sigue recortando el **detalle por elemento** disponible para el Asistente, aunque el **total** (conteo agregado) nunca se pierde — es un límite de diseño consciente (tokens/costo de la conversación), no un descuido, pero vale la pena revisar si un resumen estadístico (percentiles de duración, top dominios) sería más útil que una lista truncada cuando el recorte es agresivo.
 - Los ámbitos "Recursos" y "Performance → recursosPesados" ambos leen de `resource-timing` con vistas distintas (listado completo vs. los más pesados) — es una duplicación intencional (cada uno responde una pregunta distinta: "qué cargó" vs. "qué pesa más"), pero vale la pena revisar si conviene fusionarlas en una sola vista con ambos criterios de orden disponibles, para no hacer que el Asistente reciba el mismo dato dos veces si ambos ámbitos están activos a la vez.
+- El icono personalizado no valida el tamaño del archivo antes de leerlo (`FileReader` carga el original completo en memoria antes de redimensionarlo) — un archivo extremadamente pesado podría tardar o consumir memoria de forma innecesaria antes de llegar al canvas de 128×128. Un tope razonable (p. ej. 5-10MB) evitaría ese caso sin afectar el uso normal.
+- La sincronización de paleta entre panel lateral y popup (2.6.0) usa el evento nativo `storage`, que solo se dispara si el popup ya está abierto en el momento exacto en que el panel guarda la paleta — dado que el popup normalmente está cerrado, en la práctica el popup solo ve la paleta actualizada la próxima vez que se abre (que es el caso común), no en vivo mientras ambos coexisten. Correcto para el uso típico, pero vale la pena documentarlo como una sincronización "al abrir", no en tiempo real.
+- El icono de la barra de herramientas se reaplica en `onStartup` a partir de lo guardado en `storage.local`; si ese dato guardado estuviera corrupto (no el archivo original al subirlo, que sí se valida, sino una corrupción posterior del propio storage), el intento de reaplicarlo fallaría silenciosamente y la barra se quedaría con el último icono que Chrome tenía cargado — no necesariamente el logo por defecto. Los logos del popup/panel sí garantizan la reversión (vía el `onerror` del propio `<img>`); la barra de herramientas depende de que `applyToolbarIcon` nunca reciba un dato corrupto en primer lugar.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -256,6 +262,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.6.0** | Ajustes migrados a Reporte (Perfil/Dominios/Telemetría) · fix real de responsividad del botón Detener (esperas internas que ignoraban la solicitud hasta 3.7s por paso) · botón Reproducir en el popup · icono personalizado con redimensionado y fallback garantizado · paleta de colores ahora compartida con el popup |
 | **2.5.9c** | Tres tipos de evento (Recursos, Código, Cabeceras) nunca tuvieron un ámbito propio en el Asistente — solo aparecían recortados dentro de otros. Se agregan como ámbitos dedicados (12→15), llevando el total a un ámbito por cada tipo de evento visible en Auditoría; se confirma que el reporte exportado ya era completo desde antes |
 | **2.5.9b** | Corrección de alcance sobre 2.5.9a: la auditoría de consistencia se amplía a nivel de *detalle* (no solo conteos) en los 12 ámbitos — Red ahora envía la lista completa con waterfall (antes solo fallidas/lentas), Consola incluye todos los niveles (antes solo warn/error), Interacción incluye INP medido y aviso de accesibilidad por evento, Rutas incluye el timing completo de cada navegación |
 | **2.5.9a** | Consistencia total entre Auditoría/Asistente/KPIs: "Rutas" excluía navegaciones completas de página en el contexto del Asistente (mostraba 0 aunque Auditoría mostrara eventos reales) — causa raíz: tres listas independientes de "qué es una interacción/ruta" desincronizadas; se unifican en una sola fuente compartida |
@@ -280,6 +287,137 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.6.0 — Ajustes en Reporte, fix real del botón Detener, icono personalizado, popup con Reproducir, paleta compartida
+
+Seis objetivos, tratados con el mismo criterio de siempre: diagnóstico con
+evidencia real antes de tocar código, y validación contra el código real
+(no solo revisado) antes de dar cada punto por cerrado.
+
+#### 1 — Perfil, Dominios y Telemetría migran a Reporte
+
+Vivían detrás de un botón "Ajustes ▾" en Auditoría, junto al resto de la
+configuración de captura de una sesión — pero son ajustes persistentes,
+no algo que se toque durante una grabación. Se movieron a su propia
+tarjeta, siempre visible, dentro de la pestaña Reporte (junto a Sesión
+actual, Sesión importada e Icono personalizado). Los mismos campos, los
+mismos `id`, ningún binding de JavaScript se rompió en el traslado — solo
+cambió dónde vive la tarjeta y que ya no depende de un botón para
+mostrarse. Validado en navegador real: el botón "Ajustes" ya no existe en
+Auditoría, y los tres datos de prueba (dominios, nombre, URL de webhook) se
+cargan automáticamente al abrir Reporte.
+
+#### 2 — El botón "Detener" del banner flotante: diagnóstico con evidencia, no teoría
+
+El síntoma reportado: al reproducir una repetición, el botón "Detener" del
+banner flotante en la página hacía desaparecer la etiqueta pero la
+repetición seguía corriendo — mientras que el botón "Detener" de Auditoría
+sí funcionaba, pese a usar el mismo mecanismo de fondo.
+
+En vez de teorizar sobre la causa, se construyó una reproducción **literal**
+del mecanismo real (el mismo bucle, el mismo banner, el mismo cierre
+`stop()`) ejecutada en un navegador de verdad vía Playwright. Esa prueba
+confirmó que el mecanismo central — el bucle de reproducción, el banner, el
+cierre `stop()` — funciona correctamente: al hacer clic, el bucle se
+detiene en la siguiente iteración.
+
+El hallazgo real estaba un nivel más abajo: **`waitForStable()`** (hasta
+2.5s por paso, esperando a que el DOM deje de mutar) y
+**`observeConsequences()`** (hasta 1.2s por paso, observando las
+consecuencias de una interacción) **nunca comprobaban si se había pedido
+detener** durante su propia espera interna. En una página con mutación de
+DOM constante — el caso típico de un mapa en vivo con marcadores
+moviéndose — `waitForStable()` casi nunca llegaba a su condición de
+"quietud" (350ms sin mutaciones) y corría hasta su tope completo en
+**cada** paso. Un clic en "Detener" durante esa ventana no tenía ningún
+efecto hasta que el temporizador terminara por su cuenta — hasta 3.7
+segundos de retraso por paso, acumulándose mientras quedaran pasos por
+reproducir. Esto explica el patrón reportado: no es que un botón funcione y
+el otro no (ambos comparten el mismo mecanismo de fondo) — es que la
+respuesta real dependía de en qué momento exacto del ciclo cayera el clic,
+lo que se siente exactamente como "a veces funciona, a veces no".
+
+*Fix:* ambas funciones ahora comprueban cada 150ms si se pidió detener, y
+salen de inmediato si es así. Además, el clic del banner ahora quita la
+etiqueta al instante (antes esperaba la ida y vuelta al service worker para
+el mismo efecto visual).
+
+*Validado con medición real:* en una página que muta el DOM cada 50ms sin
+parar (simulando un mapa en vivo), la versión anterior de `waitForStable()`
+ignoraba una solicitud de detener durante **2.55 segundos**; la corregida
+responde en **0.47 segundos** — más de 5 veces más rápido, medido, no
+estimado.
+
+#### 3 — Botón "Reproducir" en el popup
+
+Junto a Grabar, visible únicamente cuando hay un reporte importado —
+oculto el resto del tiempo. Reacciona a cambios reales de storage
+(`qa:replay`), no a un sondeo periódico. Validado en navegador: aparece al
+importar, permanece oculto sin importación, y dispara `startReplay`
+correctamente al hacer clic, respetando la misma preferencia de recarga
+(`localStorage`) que ya usa el panel lateral.
+
+#### 4 — Icono personalizado
+
+Nueva tarjeta en Reporte: el usuario carga una imagen, que se redimensiona
+**en el navegador** (recorte tipo "cover" a 128×128 vía un `<canvas>`
+oculto) antes de guardarse — el archivo original nunca sale de la máquina
+del usuario ni se sube a ningún lado. El resultado reemplaza el logo del
+popup, del panel lateral, y de la barra de herramientas de Chrome (esta
+última vía `chrome.action.setIcon`, redimensionando de nuevo con
+`OffscreenCanvas` en el service worker a los tamaños que Chrome exige:
+16/32/48/128).
+
+*Garantía central del pedido:* si el dato guardado resulta corrupto o
+ilegible, la extensión **nunca** debe quedar sin icono. Para los logos del
+popup y del panel, esto se implementó de la forma más robusta posible: el
+propio evento `error` del elemento `<img>` revierte al logo original
+automáticamente, sin ninguna lógica adicional que pueda fallar. Para la
+barra de herramientas, `applyToolbarIcon()` nunca relanza una excepción —
+cualquier fallo se registra y se descarta, dejando el icono tal como
+estaba.
+
+*Validado con el caso crítico, no solo el camino feliz:* se guardó
+deliberadamente un dato corrupto (base64 inválido) como si fuera el icono
+guardado, y se confirmó que el logo revierte automáticamente al original
+sin ningún error de página. Por separado, se validó el flujo completo
+feliz — cargar una imagen real de prueba, confirmar el redimensionado a
+128×128, la actualización inmediata de ambas superficies, y el botón
+"Restablecer" devolviendo el logo original.
+
+#### 5 — Elementos no vinculados a la paleta de colores
+
+Auditoría de los dos documentos de la extensión (panel lateral y popup) en
+busca de colores hardcodeados que ignoraran la personalización. El CSS del
+panel lateral resultó limpio (cada color hexadecimal aparece una sola vez,
+en su propia declaración de variable, sin duplicados sueltos). El hallazgo
+real fue estructural: **el popup tiene su propio conjunto de variables CSS**
+(`--ink`/`--panel`/`--brand`/`--line`/`--text`), completamente separado de
+los tokens canónicos (`--c-*`) que usa el panel lateral — son dos
+documentos distintos, cada uno con su propio `:root`. La paleta
+personalizada (botón lápiz, en Reporte) solo tocaba el
+`document.documentElement` del panel lateral; el popup nunca la leía ni la
+aplicaba, así que sus colores **nunca** reflejaban lo que el usuario
+personalizara, sin importar cuántas veces la guardara.
+
+*Fix:* un mapa de equivalencia entre los nombres canónicos y los del popup,
+y una función que lee el mismo `localStorage` compartido (mismo origen de
+extensión) y aplica los valores correspondientes al cargar el popup —
+además de escuchar el evento `storage` para mantenerse sincronizado si
+ambas superficies llegan a coexistir abiertas al mismo tiempo.
+
+*Validado:* se guardó una paleta de prueba en `localStorage` (colores
+claramente distintos a los por defecto) y se confirmó, leyendo los valores
+computados reales de las variables del popup tras cargar, que ambas
+coinciden exactamente con lo guardado.
+
+**Validado (general):** sintaxis de los 16 JS como módulo ES; verificación cruzada de IDs sin
+huérfanos en panel lateral y popup; arranque limpio del service worker con
+las tres acciones nuevas (`setCustomIcon`/`getCustomIcon`/
+`clearCustomIcon`), incluida la validación de formato rechazando
+correctamente un dato de icono inválido.
 
 ---
 

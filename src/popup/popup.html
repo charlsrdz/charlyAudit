@@ -9,7 +9,7 @@
   <body>
     <div class="shell">
       <header class="head">
-        <img src="../../icons/icon48.png" alt="" class="head__logo" />
+        <img id="head-logo" src="../../icons/icon48.png" alt="" class="head__logo" />
         <div class="head__titles">
           <h1 class="head__title">CharlyAudit</h1>
           <p class="head__sub">Session replay & audit</p>
@@ -17,6 +17,9 @@
         <button id="rec" class="rec" type="button" aria-pressed="false">
           <span class="rec__dot"></span>
           <span id="rec-label">Grabar</span>
+        </button>
+        <button id="play-imported" class="btn btn--brand btn--sm" type="button" hidden style="margin-left:6px">
+          ▶ Reproducir
         </button>
       </header>
 

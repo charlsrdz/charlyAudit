@@ -28,6 +28,7 @@ const K = {
   replayJob: "qa:replayJob", // { active, index, options, tabId } para reanudar
   settings: "qa:settings", // dominios permitidos, perfil, webhook, auto-inicio
   webhookPending: "qa:webhookPending", // estado de reintentos pendientes del webhook
+  customIcon: "qa:customIcon", // data URL del icono personalizado (128x128, PNG)
 };
 
 const MAX_EVENTS = 5000;
@@ -157,6 +158,35 @@ const DEFAULT_SETTINGS = {
 // es "setSettings" (mas abajo), que actualiza esta misma cache al guardar —
 // nunca puede quedar desactualizada frente a un cambio hecho por esta extension.
 let settingsCache = null;
+/**
+ * Aplica (o restablece) el icono de la barra de herramientas. Redimensiona la
+ * imagen a los tamaños que Chrome espera (16/32/48/128) usando OffscreenCanvas
+ * (disponible en el service worker). `dataUrl` null o falsy = vuelve a los
+ * iconos por defecto del manifest. Cualquier fallo se registra y se descarta
+ * silenciosamente — un icono personalizado corrupto NUNCA debe dejar la
+ * extension sin icono ni interrumpir ninguna otra operacion.
+ */
+async function applyToolbarIcon(dataUrl) {
+  try {
+    if (!dataUrl) {
+      await chrome.action.setIcon({ path: { 16: "icons/icon16.png", 48: "icons/icon48.png", 128: "icons/icon128.png" } });
+      return;
+    }
+    const blob = await (await fetch(dataUrl)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const imageData = {};
+    for (const size of [16, 32, 48, 128]) {
+      const canvas = new OffscreenCanvas(size, size);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0, size, size);
+      imageData[size] = ctx.getImageData(0, 0, size, size);
+    }
+    await chrome.action.setIcon({ imageData });
+  } catch (e) {
+    console.warn("[CharlyAudit] No se pudo aplicar el icono personalizado a la barra de herramientas; se conserva el actual:", e && e.message);
+  }
+}
+
 async function getSettings() {
   if (settingsCache) return settingsCache;
   const stored = (await chrome.storage.local.get(K.settings))[K.settings];
@@ -899,6 +929,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: true, settings: merged });
           break;
         }
+        // Icono personalizado (v2.6.0, item 4): reemplaza el logo del popup/
+        // panel lateral y la barra de herramientas. Se guarda ya redimensionado
+        // (lo hace el panel via canvas antes de enviarlo) — aqui solo se valida
+        // el formato y se persiste. Si algo falla al aplicarlo a la barra de
+        // herramientas, NUNCA se relanza el error: el icono por defecto sigue
+        // siendo valido y la extension debe seguir funcionando igual.
+        case "setCustomIcon": {
+          const dataUrl = String(message.dataUrl || "");
+          if (!/^data:image\/(png|jpeg|webp);base64,/.test(dataUrl)) {
+            sendResponse({ ok: false, error: "Formato de imagen invalido" });
+            break;
+          }
+          await chrome.storage.local.set({ [K.customIcon]: dataUrl });
+          await applyToolbarIcon(dataUrl);
+          sendResponse({ ok: true });
+          break;
+        }
+        case "getCustomIcon": {
+          const data = (await chrome.storage.local.get(K.customIcon))[K.customIcon] || null;
+          sendResponse({ ok: true, dataUrl: data });
+          break;
+        }
+        case "clearCustomIcon": {
+          await chrome.storage.local.remove(K.customIcon);
+          await applyToolbarIcon(null);
+          sendResponse({ ok: true });
+          break;
+        }
         case "flushTelemetry":
           await sendTelemetry("manual");
           sendResponse({ ok: true });
@@ -1111,6 +1169,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.runtime.onStartup.addListener(async () => {
   await hydrateRecState();
   updateBadge(await isRecording(), recState.tabId);
+  const savedIcon = (await chrome.storage.local.get(K.customIcon))[K.customIcon] || null;
+  if (savedIcon) applyToolbarIcon(savedIcon);
 });
 
 // Red de seguridad adicional (2.5.9): intento de ultimo momento antes de que

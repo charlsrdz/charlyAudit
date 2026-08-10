@@ -802,9 +802,21 @@
   /** Espera a que el documento cargue y a que cesen las mutaciones (quietud). */
   async function waitForStable(maxMs = 2500) {
     const t0 = Date.now();
-    while (document.readyState !== "complete" && Date.now() - t0 < maxMs) await sleep(80);
+    while (document.readyState !== "complete" && Date.now() - t0 < maxMs) {
+      if (!local.replaying) return; // se pidio detener durante la carga de la pagina
+      await sleep(80);
+    }
     await new Promise((resolve) => {
       let quiet = setTimeout(done, 350);
+      // Verifica cada 150ms si se pidio detener el replay — sin esto, un stop
+      // solicitado durante esta espera no tenia efecto hasta que el propio
+      // timeout (hasta maxMs, 2.5s por defecto) terminara por su cuenta. En
+      // paginas muy dinamicas (mapas en vivo, actualizaciones continuas) esto
+      // podia repetirse en CADA paso, haciendo que "Detener" pareciera no
+      // funcionar durante varios segundos mas tras el clic.
+      const replayingCheck = setInterval(() => {
+        if (!local.replaying) done();
+      }, 150);
       const obs = new MutationObserver(() => {
         clearTimeout(quiet);
         quiet = setTimeout(done, 350);
@@ -812,12 +824,14 @@
       try {
         obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
       } catch {
+        clearInterval(replayingCheck);
         return resolve();
       }
       const hard = setTimeout(done, maxMs);
       function done() {
         clearTimeout(quiet);
         clearTimeout(hard);
+        clearInterval(replayingCheck);
         obs.disconnect();
         resolve();
       }
@@ -839,10 +853,18 @@
       /* sin DOM */
     }
     return new Promise((resolve) => {
-      setTimeout(() => {
+      // Igual que en waitForStable: revisa cada 150ms si se pidio detener el
+      // replay, en vez de esperar ciegamente los durationMs completos.
+      const replayingCheck = setInterval(() => {
+        if (!local.replaying) done();
+      }, 150);
+      const hard = setTimeout(done, durationMs);
+      function done() {
+        clearTimeout(hard);
+        clearInterval(replayingCheck);
         obs.disconnect();
         resolve({ mutations, urlChanged: location.href !== urlBefore, urlAfter: location.href });
-      }, durationMs);
+      }
     });
   }
   function replayBanner(text, onStop) {
@@ -915,6 +937,7 @@
     let inconsist = 0;
     const stop = () => {
       local.replaying = false;
+      removeBanner(); // feedback visual inmediato, sin esperar la ida y vuelta al SW
       try {
         chrome.runtime.sendMessage({ channel: "qa-control", action: "stopReplay" }).catch(() => {});
       } catch {

@@ -5,6 +5,33 @@
  */
 import { Poller } from "../lib/reactive-store.js";
 
+// Item 5 (2.6.0): el popup tiene su propio conjunto de variables CSS
+// (--ink/--panel/--brand/--line/--text), separado de los tokens canonicos
+// --c-* que usa el panel lateral — son dos documentos distintos, cada uno
+// con su propio `:root`. La paleta personalizada (boton lapiz en Reporte)
+// solo tocaba el `document.documentElement` del panel lateral; el popup
+// nunca la leia ni la aplicaba, asi que sus colores nunca reflejaban lo que
+// el usuario personalizara. Mismo `localStorage` (origen de extension
+// compartido) — solo faltaba el puente entre nombres de variable.
+const PALETTE_MAP = { "--c-brand": "--brand", "--c-bg": "--ink", "--c-surface": "--panel", "--c-border": "--line", "--c-text": "--text" };
+function applySharedPalette() {
+  try {
+    const pal = JSON.parse(localStorage.getItem("charlyaudit:palette") || "{}");
+    for (const [canon, popupVar] of Object.entries(PALETTE_MAP)) {
+      if (pal[canon]) document.documentElement.style.setProperty(popupVar, pal[canon]);
+    }
+  } catch {
+    /* paleta invalida o ausente: se queda con los colores por defecto */
+  }
+}
+applySharedPalette();
+// Si el panel lateral cambia la paleta mientras el popup sigue abierto,
+// "storage" (no chrome.storage: esto es localStorage) dispara en otros
+// documentos del mismo origen — mantiene ambas superficies en sincronia.
+window.addEventListener("storage", (e) => {
+  if (e.key === "charlyaudit:palette") applySharedPalette();
+});
+
 // Color y etiqueta por tipo de evento (coherente con el resto de la suite).
 const TYPE_META = {
   click: { c: "#5b6cff", l: "click" },
@@ -202,6 +229,28 @@ async function refresh() {
   }
 }
 
+// Item 4 (2.6.0): aplica el icono personalizado guardado (si existe) al logo
+// del popup — la carga/redimensionado solo vive en Reporte del panel lateral,
+// el popup unicamente refleja lo ya guardado. Si el dato esta corrupto, el
+// propio evento "error" de la imagen revierte al logo original sin ninguna
+// intervencion del usuario.
+async function applyCustomIconIfAny() {
+  try {
+    const res = await control("getCustomIcon");
+    if (!res || !res.ok || !res.dataUrl) return;
+    const img = $("head-logo");
+    if (!img) return;
+    const original = img.getAttribute("src");
+    img.onerror = () => {
+      img.onerror = null;
+      img.src = original;
+    };
+    img.src = res.dataUrl;
+  } catch {
+    /* se queda con el logo por defecto que ya trae el HTML */
+  }
+}
+
 let configFilled = false;
 function fillConfig(config) {
   if (configFilled || !config) return; // no pisar lo que el usuario escribe
@@ -210,6 +259,29 @@ function fillConfig(config) {
   $("masks").value = (config.maskSelectors || []).join("\n");
   configFilled = true;
 }
+
+// Item 3 (2.6.0): boton "Reproducir" junto a Grabar — visible solo si hay un
+// reporte importado (desde la pestana Reporte del panel lateral; el popup no
+// importa, solo reproduce). Se refresca por cambio real de storage, no en
+// cada poll — mismo estandar reactivo que el resto del proyecto.
+async function refreshImportedReplayButton() {
+  try {
+    const res = await control("getReplay");
+    $("play-imported").hidden = !(res && res.ok && res.report);
+  } catch {
+    /* sin cambios visibles si falla */
+  }
+}
+$("play-imported").addEventListener("click", async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || tab.id == null) return toast("Sin pestana activa.");
+  // Preferencia de recarga (2.5.8b): comparte localStorage con el panel
+  // lateral (mismo origen de extension) — se configura desde Reporte.
+  const reloadOnReplay = localStorage.getItem("charlyaudit:reloadOnReplay") !== "false";
+  const res = await control("startReplay", { tabId: tab.id, options: { speed: 1 }, reloadOnReplay });
+  if (res && res.ok) toast(res.navegando ? "Reproduciendo (recargando la pagina de inicio)…" : "Reproduciendo en la pestana actual…");
+  else toast("No se pudo iniciar la repeticion.");
+});
 
 // --- Acciones ---------------------------------------------------------------
 $("rec").addEventListener("click", async () => {
@@ -333,6 +405,8 @@ async function renderWebhookPending() {
 }
 refresh();
 renderWebhookPending();
+refreshImportedReplayButton();
+applyCustomIconIfAny();
 popupPoller.start();
 // Sincronia popup<->panel<->SW: reacciona al estado compartido para que grabar/
 // detener desde el panel lateral (o el SW) se refleje aqui, y viceversa.
@@ -341,6 +415,8 @@ try {
     if (area !== "local") return;
     if (changes["qa:isRecording"] || changes["qa:timeline"] || changes["qa:meta"]) refresh();
     if (changes["qa:webhookPending"]) renderWebhookPending();
+    if (changes["qa:replay"]) refreshImportedReplayButton();
+    if (changes["qa:customIcon"]) applyCustomIconIfAny();
   });
 } catch {
   /* sin storage */

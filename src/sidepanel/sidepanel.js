@@ -314,28 +314,109 @@ function wireActions() {
     $("act-cfg").setAttribute("aria-expanded", String(open));
   });
   // Perfil, dominios y telemetria: configuracion persistente, independiente de
-  // la sesion de captura — por eso vive en su propio panel con su propio boton.
-  $("act-domains").addEventListener("click", async () => {
-    const panel = $("domains-cfg");
-    const open = panel.hasAttribute("hidden");
-    if (open) {
-      const s = (await qaControl("getSettings")) || {};
-      const st = (s && s.settings) || {};
-      state.settings = st;
-      $("cfg-domains").value = arrToLines(st.allowedDomains);
-      $("cfg-prof-name").value = (st.profile && st.profile.name) || "";
-      $("cfg-prof-email").value = (st.profile && st.profile.email) || "";
-      $("cfg-wh-url").value = (st.webhook && st.webhook.url) || "";
-      $("cfg-wh-token").value = (st.webhook && st.webhook.token) || "";
-      $("cfg-wh-mode").value = (st.webhook && st.webhook.mode) || "manual";
-      $("cfg-wh-enabled").checked = !!(st.webhook && st.webhook.enabled);
-      $("cfg-autostart").checked = !!st.autoStart;
-      panel.removeAttribute("hidden");
-    } else {
-      panel.setAttribute("hidden", "");
+  // la sesion de captura — vive como tarjeta siempre visible en Reporte (2.6.0),
+  // ya no detras de un boton "Ajustes ▾" en Auditoria.
+  async function loadSettingsIntoForm() {
+    const s = (await qaControl("getSettings")) || {};
+    const st = (s && s.settings) || {};
+    state.settings = st;
+    $("cfg-domains").value = arrToLines(st.allowedDomains);
+    $("cfg-prof-name").value = (st.profile && st.profile.name) || "";
+    $("cfg-prof-email").value = (st.profile && st.profile.email) || "";
+    $("cfg-wh-url").value = (st.webhook && st.webhook.url) || "";
+    $("cfg-wh-token").value = (st.webhook && st.webhook.token) || "";
+    $("cfg-wh-mode").value = (st.webhook && st.webhook.mode) || "manual";
+    $("cfg-wh-enabled").checked = !!(st.webhook && st.webhook.enabled);
+    $("cfg-autostart").checked = !!st.autoStart;
+  }
+  window.__charlyLoadSettings = loadSettingsIntoForm;
+  loadSettingsIntoForm(); // la tarjeta vive siempre visible en Reporte: se carga una vez al iniciar
+
+  // === Icono personalizado (item 4) ==========================================
+  // Todo el redimensionado ocurre en el navegador (canvas oculto ya presente
+  // en el HTML) — nunca se sube la imagen original a ningun lado. El logo por
+  // defecto SIEMPRE es el que ya trae el <img> en el HTML (icons/icon48.png);
+  // si el dato guardado resulta corrupto (base64 truncado, formato invalido),
+  // el propio evento "error" de la imagen revierte al original sin que el
+  // usuario tenga que hacer nada.
+  const DEFAULT_LOGO_SRC = "../../icons/icon48.png";
+  function applyIconEverywhere(dataUrl) {
+    for (const id of ["bar-logo", "icon-preview"]) {
+      const img = document.getElementById(id);
+      if (!img) continue;
+      img.onerror = () => {
+        img.onerror = null; // evita un bucle si el propio default fallara
+        img.src = DEFAULT_LOGO_SRC;
+      };
+      img.src = dataUrl || DEFAULT_LOGO_SRC;
     }
-    $("act-domains").setAttribute("aria-expanded", String(open));
+  }
+  /** Redimensiona un archivo de imagen a un PNG cuadrado (recorte "cover"). */
+  function resizeImageFile(file, size) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("El archivo no es una imagen valida"));
+        img.onload = () => {
+          const canvas = $("icon-canvas");
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, size, size);
+          const scale = Math.max(size / img.width, size / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+          resolve(canvas.toDataURL("image/png"));
+        };
+        img.src = String(reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  $("icon-upload").addEventListener("click", () => $("icon-file").click());
+  $("icon-file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImageFile(file, 128);
+      const res = await qaControl("setCustomIcon", { dataUrl });
+      if (!res || !res.ok) throw new Error((res && res.error) || "no se pudo guardar");
+      applyIconEverywhere(dataUrl);
+      $("icon-msg").textContent = "Icono actualizado.";
+      $("icon-reset").disabled = false;
+      toast("Icono personalizado guardado.");
+    } catch (e) {
+      $("icon-msg").textContent = "No se pudo procesar la imagen: " + (e && e.message ? e.message : "formato invalido");
+      toast("No se pudo cargar el icono.");
+    } finally {
+      ev.target.value = "";
+    }
   });
+  $("icon-reset").addEventListener("click", async () => {
+    await qaControl("clearCustomIcon");
+    applyIconEverywhere(null);
+    $("icon-msg").textContent = "";
+    $("icon-reset").disabled = true;
+    toast("Icono restablecido al original.");
+  });
+  // Al iniciar: si hay un icono guardado, se aplica; si no existe o esta
+  // corrupto, el <img> ya trae el logo por defecto en su atributo src y el
+  // onerror (conectado dentro de applyIconEverywhere) lo garantiza.
+  (async () => {
+    try {
+      const res = await qaControl("getCustomIcon");
+      if (res && res.ok && res.dataUrl) {
+        applyIconEverywhere(res.dataUrl);
+        $("icon-reset").disabled = false;
+      }
+    } catch {
+      /* se queda con el logo por defecto que ya trae el HTML */
+    }
+  })();
+
   // Panel de KPIs (desplegable): resumen de la sesion sin recorrer el timeline.
   $("tl-kpis-toggle").addEventListener("click", () => {
     const panel = $("tl-kpis");
@@ -1231,6 +1312,7 @@ init();
     } else if (name === "report") {
       qaPoller.stop();
       renderReportTab();
+      window.__charlyLoadSettings?.();
     } else {
       qaPoller.stop();
     }

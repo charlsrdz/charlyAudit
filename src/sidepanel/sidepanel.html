@@ -10,7 +10,7 @@
 
     <!-- ── CABECERA ──────────────────────────────────────────── -->
     <header class="bar">
-      <img src="../../icons/icon48.png" alt="" class="bar__logo" />
+      <img id="bar-logo" src="../../icons/icon48.png" alt="" class="bar__logo" />
       <div class="bar__id">
         <h1 class="bar__name">CharlyAudit</h1>
         <div id="status" class="bar__status">
@@ -101,9 +101,6 @@
         <button id="act-cfg" class="act act--ghost" type="button"
                 title="Que capturar durante la grabacion" aria-expanded="false"
                 aria-controls="capture-cfg">Captura ▾</button>
-        <button id="act-domains" class="act act--ghost" type="button"
-                title="Perfil, dominios y telemetria" aria-expanded="false"
-                aria-controls="domains-cfg">Ajustes ▾</button>
       </section>
 
       <!-- Panel: QUE capturar durante la grabacion (config por sesion) -->
@@ -134,68 +131,6 @@
 
       <!-- Panel: QUIEN graba y A DONDE se envia (config persistente, independiente
            de la sesion de captura — por eso vive en un panel propio). -->
-      <section id="domains-cfg" class="capture-cfg" hidden
-               aria-label="Perfil, dominios y telemetria">
-
-        <div class="cfg-group">
-          <span class="cfg-group__title">Perfil y dominios</span>
-          <div class="fld">
-            <label for="cfg-domains">Dominios permitidos <small>(vacio = todos)</small></label>
-            <textarea id="cfg-domains" rows="2" spellcheck="false"
-                      placeholder="library.redgps.com&#10;app.redgps.com"></textarea>
-          </div>
-          <div class="fld">
-            <label for="cfg-prof-name">Nombre</label>
-            <input id="cfg-prof-name" type="text" placeholder="Tu nombre" />
-          </div>
-          <div class="fld">
-            <label for="cfg-prof-email">Correo <small>(opcional)</small></label>
-            <input id="cfg-prof-email" type="email" placeholder="tu@correo.com" />
-          </div>
-        </div>
-
-        <div class="cfg-group">
-          <span class="cfg-group__title">Telemetria</span>
-          <div class="fld">
-            <label for="cfg-wh-url">URL del webhook</label>
-            <input id="cfg-wh-url" type="url"
-                   placeholder="https://tu-endpoint/telemetria" />
-          </div>
-          <div class="fld">
-            <label for="cfg-wh-token">Bearer token <small>(opcional)</small></label>
-            <input id="cfg-wh-token" type="password" autocomplete="off"
-                   placeholder="token…" />
-          </div>
-          <div class="fld">
-            <label for="cfg-wh-mode">Modo de envio</label>
-            <select id="cfg-wh-mode">
-              <option value="manual">Manual</option>
-              <option value="chunks">Automatico por lotes</option>
-              <option value="onclose">Al cerrar la pestana</option>
-            </select>
-          </div>
-          <label class="chk">
-            <input id="cfg-wh-enabled" type="checkbox" />
-            Habilitar envio de telemetria
-          </label>
-          <label class="chk">
-            <input id="cfg-autostart" type="checkbox" />
-            Auto-iniciar grabacion en dominios permitidos
-          </label>
-        </div>
-
-        <div class="cfg-group">
-          <div class="capture-cfg__row">
-            <button id="cfg-settings-save" class="act act--brand"
-                    type="button">Guardar ajustes</button>
-            <button id="cfg-tele-flush" class="act" type="button">Enviar ahora</button>
-          </div>
-          <span id="cfg-settings-msg" class="cfg-msg"
-                role="status" aria-live="polite"></span>
-        </div>
-
-      </section>
-
       <!-- Cabecera del timeline -->
       <section class="tl-head">
 
@@ -311,6 +246,86 @@
               o quieres conservar el estado actual de la sesion.
             </small>
           </label>
+        </section>
+
+        <!-- Perfil, dominios y telemetria: antes vivia en Auditoria detras de
+             un boton "Ajustes ▾"; se muda aqui porque es configuracion
+             persistente, no algo que se ajuste durante una grabacion. -->
+        <section class="cfg-group">
+          <span class="cfg-group__title">Perfil, dominios y telemetria</span>
+
+          <p class="cfg-group__sub">Perfil y dominios</p>
+          <div class="fld">
+            <label for="cfg-domains">Dominios permitidos <small>(vacio = todos)</small></label>
+            <textarea id="cfg-domains" rows="2" spellcheck="false"
+                      placeholder="library.redgps.com&#10;app.redgps.com"></textarea>
+          </div>
+          <div class="fld">
+            <label for="cfg-prof-name">Nombre</label>
+            <input id="cfg-prof-name" type="text" placeholder="Tu nombre" />
+          </div>
+          <div class="fld">
+            <label for="cfg-prof-email">Correo <small>(opcional)</small></label>
+            <input id="cfg-prof-email" type="email" placeholder="tu@correo.com" />
+          </div>
+
+          <p class="cfg-group__sub">Telemetria</p>
+          <div class="fld">
+            <label for="cfg-wh-url">URL del webhook</label>
+            <input id="cfg-wh-url" type="url"
+                   placeholder="https://tu-endpoint/telemetria" />
+          </div>
+          <div class="fld">
+            <label for="cfg-wh-token">Bearer token <small>(opcional)</small></label>
+            <input id="cfg-wh-token" type="password" autocomplete="off"
+                   placeholder="token…" />
+          </div>
+          <div class="fld">
+            <label for="cfg-wh-mode">Modo de envio</label>
+            <select id="cfg-wh-mode">
+              <option value="manual">Manual</option>
+              <option value="chunks">Automatico por lotes</option>
+              <option value="onclose">Al cerrar la pestana</option>
+            </select>
+          </div>
+          <label class="chk">
+            <input id="cfg-wh-enabled" type="checkbox" />
+            Habilitar envio de telemetria
+          </label>
+          <label class="chk">
+            <input id="cfg-autostart" type="checkbox" />
+            Auto-iniciar grabacion en dominios permitidos
+          </label>
+
+          <div class="capture-cfg__row" style="margin-top:8px">
+            <button id="cfg-settings-save" class="act act--brand"
+                    type="button">Guardar ajustes</button>
+            <button id="cfg-tele-flush" class="act" type="button">Enviar ahora</button>
+          </div>
+          <span id="cfg-settings-msg" class="cfg-msg"
+                role="status" aria-live="polite"></span>
+        </section>
+
+        <!-- Icono personalizado (v2.6.0): reemplaza el logo del popup y del
+             panel lateral. Se redimensiona en el navegador antes de guardar
+             (no se sube a ningun lado, todo local). Si el archivo guardado
+             resulta corrupto o ilegible, ambas superficies vuelven solas al
+             logo original — nunca queda sin icono. -->
+        <section class="cfg-group">
+          <span class="cfg-group__title">Icono personalizado</span>
+          <div class="fld" style="flex-direction:row;align-items:center;gap:12px">
+            <img id="icon-preview" src="../../icons/icon48.png" alt="Vista previa del icono"
+                 style="width:48px;height:48px;border-radius:8px;border:1px solid var(--c-border);object-fit:cover" />
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="capture-cfg__row">
+                <button id="icon-upload" class="act act--brand" type="button">Cargar imagen…</button>
+                <button id="icon-reset" class="act" type="button" disabled>Restablecer logo original</button>
+              </div>
+              <span id="icon-msg" class="cfg-msg" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+          <input id="icon-file" type="file" accept="image/*" hidden />
+          <canvas id="icon-canvas" width="128" height="128" hidden></canvas>
         </section>
 
       </div>
