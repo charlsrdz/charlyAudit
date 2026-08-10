@@ -1430,9 +1430,15 @@ init();
     try {
       const res = await qaControl("getKpis");
       const k = res && res.kpis;
+      const descartados = k && k.eventosDescartados;
       liveEl.textContent = k && k.eventos
         ? `${k.eventos} eventos · ${k.errores} errores · fidelidad no aplica aqui`
         : "Aun sin eventos. Graba una sesion en la pestana Auditoria.";
+      // Aviso explicito de recorte (v2.6.1): antes de esto, una sesion que
+      // superara MAX_EVENTS perdia datos de forma completamente silenciosa.
+      if (descartados > 0) {
+        liveEl.textContent += ` · ⚠ ${descartados} eventos anteriores descartados (limite de sesion alcanzado)`;
+      }
     } catch {
       liveEl.textContent = "Sin datos disponibles.";
     }

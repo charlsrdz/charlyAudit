@@ -183,6 +183,7 @@ const builders = {
         url: m.url,
         duracionMs: m.durationMs,
         eventos: m.eventCount,
+        eventosDescartados: m.discardedEvents || undefined, // recorte por MAX_EVENTS (v2.6.1)
         conteos: m.counts,
         resolucion: m.resolution,
         viewport: m.viewport,

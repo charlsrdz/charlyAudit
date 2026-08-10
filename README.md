@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.6.0**
+**Versión actual: 2.6.1**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -102,6 +102,9 @@ src/sidepanel/
 - Gestión activa del buffer nativo de Resource Timing del navegador (`clearResourceTimings()` cada 30s + tamaño ampliado) — antes crecía sin límite durante toda la sesión, a nivel de memoria de proceso, no solo del heap de JS de la extensión
 - Deduplicación de recursos de red acotada por tiempo (se limpia junto al buffer nativo) y por tamaño (límite de seguridad ante ráfagas extremas)
 - Configuración del asistente cacheada en memoria del service worker (se invalida solo ante un cambio real, no en cada evento capturado)
+- Circuito de protección contra tormentas de errores idénticos: si el mismo error se repite a una tasa extrema (bucle roto en la página o en un script de terceros), se agrega en vez de emitir cada ocurrencia — preserva el conteo real (se informa explícitamente cuántas se suprimieron) sin saturar el pipeline de captura
+- Sin fugas de listeners en la instrumentación de red: cada petición XHR limpia su propio listener al terminar (`{once:true}`), en vez de acumularse sin límite cuando una página reutiliza el mismo objeto XHR para múltiples peticiones (patrón común de polling)
+- Constancia explícita cuando una sesión supera el límite de eventos (`MAX_EVENTS`): el número de eventos descartados queda registrado y visible en Reporte, KPIs y el contexto del Asistente — nunca es una pérdida silenciosa
 
 ### ✅ Replay y Repetición
 - Reproducir/Detener/Velocidad viven **exclusivamente** dentro del bloque de Repetición (Auditoría), visibles solo con esa fuente activa
@@ -245,6 +248,7 @@ done
 - El icono personalizado no valida el tamaño del archivo antes de leerlo (`FileReader` carga el original completo en memoria antes de redimensionarlo) — un archivo extremadamente pesado podría tardar o consumir memoria de forma innecesaria antes de llegar al canvas de 128×128. Un tope razonable (p. ej. 5-10MB) evitaría ese caso sin afectar el uso normal.
 - La sincronización de paleta entre panel lateral y popup (2.6.0) usa el evento nativo `storage`, que solo se dispara si el popup ya está abierto en el momento exacto en que el panel guarda la paleta — dado que el popup normalmente está cerrado, en la práctica el popup solo ve la paleta actualizada la próxima vez que se abre (que es el caso común), no en vivo mientras ambos coexisten. Correcto para el uso típico, pero vale la pena documentarlo como una sincronización "al abrir", no en tiempo real.
 - El icono de la barra de herramientas se reaplica en `onStartup` a partir de lo guardado en `storage.local`; si ese dato guardado estuviera corrupto (no el archivo original al subirlo, que sí se valida, sino una corrupción posterior del propio storage), el intento de reaplicarlo fallaría silenciosamente y la barra se quedaría con el último icono que Chrome tenía cargado — no necesariamente el logo por defecto. Los logos del popup/panel sí garantizan la reversión (vía el `onerror` del propio `<img>`); la barra de herramientas depende de que `applyToolbarIcon` nunca reciba un dato corrupto en primer lugar.
+- El circuito de protección contra tormentas de errores (2.6.1) agrupa por mensaje+origen+línea+columna exactos. Si un bug produce mensajes ligeramente distintos en cada ocurrencia (p. ej. incluye un contador o timestamp embebido en el texto del error), cada variante obtendría su propia clave y evadiría el circuito, ya que nunca alcanzaría el umbral individualmente. El umbral (20/segundo) y el enfriamiento (5s) tampoco son configurables desde la UI — son constantes fijas, elegidas para no afectar nunca el uso normal, pero sin forma de ajustarlas sin tocar código si un caso real lo exigiera.
 
 ### Backlog
 - Shadow DOM / iframes en captura y replay.
@@ -262,6 +266,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.6.1** | Fix crítico confirmado con datos reales de producción: una tormenta de errores idénticos (5,000 en 624ms, un mismo error repetido) agotaba el límite de eventos de toda la sesión de un golpe — circuito de protección que agrega en vez de emitir cada repetición · corregido un leak real de listeners acumulados en peticiones XHR reutilizadas · aviso explícito cuando una sesión pierde eventos por límite alcanzado |
 | **2.6.0** | Ajustes migrados a Reporte (Perfil/Dominios/Telemetría) · fix real de responsividad del botón Detener (esperas internas que ignoraban la solicitud hasta 3.7s por paso) · botón Reproducir en el popup · icono personalizado con redimensionado y fallback garantizado · paleta de colores ahora compartida con el popup |
 | **2.5.9c** | Tres tipos de evento (Recursos, Código, Cabeceras) nunca tuvieron un ámbito propio en el Asistente — solo aparecían recortados dentro de otros. Se agregan como ámbitos dedicados (12→15), llevando el total a un ámbito por cada tipo de evento visible en Auditoría; se confirma que el reporte exportado ya era completo desde antes |
 | **2.5.9b** | Corrección de alcance sobre 2.5.9a: la auditoría de consistencia se amplía a nivel de *detalle* (no solo conteos) en los 12 ámbitos — Red ahora envía la lista completa con waterfall (antes solo fallidas/lentas), Consola incluye todos los niveles (antes solo warn/error), Interacción incluye INP medido y aviso de accesibilidad por evento, Rutas incluye el timing completo de cada navegación |
@@ -287,6 +292,94 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.6.1 — Tormenta de errores identicos agotaba el limite de eventos de la sesion
+
+Parte de un reporte de producción con evidencia real: una grabación sobre
+`plataforma.redgps.com/mapa/google` mostró un consumo de RAM disparado, y el
+propio Asistente de la extensión, al analizar la sesión, generó un
+diagnóstico que atribuía el problema a "un usuario haciendo clic
+repetidamente en un botón". Antes de tocar código, se contrastó esa
+narrativa contra los datos crudos del reporte exportado — y no coincidía.
+
+**Lo que el Asistente diagnosticó mal, y por qué importa corregirlo.**
+El reporte afirmaba miles de clics reales disparando un bucle en el
+manejador `onClick`. Los datos crudos mostraban: un solo click registrado
+como `lastAction` (no miles), ocurrido **varios segundos antes** de que
+empezara la tormenta — muy por fuera de la ventana de correlación de
+1.5 segundos que usa `actionContext()` — y 4,999-5,000 errores con el
+**mismo fingerprint exacto**, comprimidos en **0.6-0.8 segundos reales**
+(hasta ~8,000 errores/segundo). Ningún ser humano genera eso con clics. El
+Asistente tomó un campo de correlación obsoleto y construyó una historia
+causal que el dato no sostenía — un recordatorio concreto de que
+correlación temporal débil no es lo mismo que causalidad, y de que vale la
+pena contrastar cualquier diagnóstico generado contra la evidencia cruda
+antes de actuar sobre él, venga de donde venga.
+
+**Hallazgo real — ninguna protección contra una tormenta de errores idénticos.**
+Sea cual sea la fuente (un bucle de reintento roto en un script de terceros
+cargado por la plataforma, o cualquier otra causa), la captura de errores
+no tenía ningún límite de tasa: cada ocurrencia, sin importar cuán rápido
+se repitiera, disparaba su propio `postMessage` (mundo MAIN→ISOLATED) y
+`chrome.runtime.sendMessage` (ISOLATED→SW) de forma independiente. Una
+tormenta de 5,000 errores idénticos en menos de un segundo agotaba
+`MAX_EVENTS` (el límite de toda la sesión) de un solo golpe — y por el
+recorte FIFO, podía desplazar y descartar silenciosamente todo lo demás
+capturado en los minutos anteriores de grabación real.
+
+*Fix:* nuevo circuito de protección (`errorBreakerCheck`) en los tres
+puntos de captura de errores de `injected.js` (`window.onerror`, errores de
+recursos, `unhandledrejection`). Permite hasta 20 ocurrencias del mismo
+error (mismo mensaje+origen+línea+columna) por segundo sin ninguna
+alteración — nunca afecta el uso normal, ni siquiera páginas con varios
+errores esporádicos por segundo. Al superar ese umbral, emite un evento
+marcado (`circuitoActivado: true`) y silencia las repeticiones idénticas
+durante 5 segundos; al reanudar, emite un evento con `suprimidosPrevios: N`
+informando cuántas se suprimieron — el hecho de que ocurrió una tormenta, y
+cuántas veces, nunca se pierde, solo se deja de repetir el mismo dato
+byte-a-byte miles de veces.
+
+**Hallazgo adicional, encontrado al auditar la instrumentación de red en busca de más causas.**
+`XHR.prototype.send` agregaba un listener `"loadend"` nuevo en cada
+llamada, sin quitar los anteriores. Una página que reutiliza el mismo
+objeto XHR para múltiples peticiones (patrón común de *polling*) acumulaba
+listeners sin límite — la petición N terminaba disparando los N listeners
+acumulados, no solo el suyo, un crecimiento cuadrático de trabajo y memoria
+con el número de peticiones reenviadas sobre la misma instancia. *Fix:*
+`{ once: true }`, que hace que cada listener se autoelimine tras
+dispararse, sin importar cuántas veces se reutilice el objeto.
+
+**Hallazgo estructural — el recorte por `MAX_EVENTS` era completamente silencioso.**
+Cuando una sesión superaba el límite, los eventos más antiguos se
+descartaban sin dejar ningún rastro — un reporte podía parecer íntegro
+cuando en realidad ya había perdido datos. *Fix:* se registra un contador
+persistente de eventos descartados (`meta.discardedEvents`), propagado a
+`report.metadata.discardedEvents`, a los KPIs (`eventosDescartados`), al
+resumen visible en la pestaña Reporte, y al ámbito Resumen del Asistente.
+
+**Validado con evidencia real, no solo revisado:**
+- Se reprodujo el escenario **exacto** reportado (5,000 errores idénticos
+  en una ventana de 624ms) contra la lógica real del circuito: de 5,000
+  emisiones a 21 — el circuito habría evitado por completo que esta
+  tormenta agotara `MAX_EVENTS`, dejando sobrevivir el resto de la sesión.
+- Se probó una tormenta sostenida de 15 segundos (más larga que el
+  enfriamiento de 5s) a 1,000 errores/segundo: de 15,000 a 65 emisiones
+  reales, con activaciones y reanudaciones periódicas confirmadas — nunca
+  queda en silencio permanente.
+- El fix del leak de XHR se validó con `EventTarget` real de un navegador
+  (no simulado): sin el fix, 5 reenvíos sobre la misma instancia generaban
+  15 invocaciones acumuladas (1+2+3+4+5); con el fix, exactamente 5.
+- El aviso de recorte se validó de punta a punta contra el código real del
+  service worker: se enviaron 5,300 eventos reales a través del pipeline
+  completo, y se confirmó `eventosDescartados: 300` correcto tanto en
+  KPIs como en `report.metadata`, con `eventCount` correctamente acotado a
+  5,000.
+
+Sintaxis de los 16 JS como módulo ES; verificación cruzada de IDs sin
+huérfanos; renderizado del aviso de recorte confirmado en navegador real
+sin errores de página.
 
 ---
 

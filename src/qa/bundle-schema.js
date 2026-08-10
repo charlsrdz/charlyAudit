@@ -368,5 +368,8 @@ export function computeKpis(report, replay) {
     seguridad: { total: sec.length, porSeveridad },
     interacciones: tl.filter((e) => interKinds.has(e.type)).length,
     replay: trace.length ? { pasos: trace.length, inconsistencias: incons, fidelidad: Math.round(((trace.length - incons) / trace.length) * 100) } : null,
+    // Constancia de recorte (v2.6.1): eventos mas antiguos descartados al
+    // superar MAX_EVENTS. 0 en la inmensa mayoria de sesiones normales.
+    eventosDescartados: meta.discardedEvents || 0,
   };
 }

@@ -310,22 +310,92 @@
     });
   }
 
+  // ===========================================================================
+  // Circuito de proteccion contra tormentas de errores identicos (v2.6.1)
+  // ===========================================================================
+  // Confirmado con datos reales de produccion: un bucle roto en una pagina (o
+  // en un script de terceros que carga en ella) puede lanzar el MISMO error
+  // miles de veces por segundo — se observaron sesiones con 5000 errores
+  // identicos (mismo mensaje/origen/linea/columna) capturados en menos de un
+  // segundo, agotando el limite de eventos de toda la sesion de un solo golpe
+  // y generando presion real de CPU/memoria (un postMessage + sendMessage por
+  // cada ocurrencia, sin ningun limite). Esto NO depende de que la causa sea
+  // nuestra o de la pagina — el circuito protege contra cualquier fuente.
+  //
+  // Umbral generoso (20 iguales por segundo) para no alterar jamas el
+  // comportamiento normal: una pagina con errores esporadicos, incluso varios
+  // por segundo, nunca activa el circuito. Solo se activa ante una tasa que
+  // ninguna interaccion humana ni error legitimo aislado puede producir.
+  const ERROR_BREAKER_WINDOW_MS = 1000;
+  const ERROR_BREAKER_THRESHOLD = 20; // mas de 20 iguales en 1s = tormenta
+  const ERROR_BREAKER_COOLDOWN_MS = 5000; // tras activarse, silencia 5s antes de retomar
+  const errorBreaker = new Map(); // clave -> estado del circuito para ESE error especifico
+
+  /**
+   * Decide si esta ocurrencia de un error debe emitirse. Nunca descarta la
+   * PRIMERA vez que se activa el circuito (emite un evento marcado avisando
+   * que empieza a suprimir) ni la primera tras el enfriamiento (emite un
+   * evento con el conteo de lo suprimido) — la unica informacion que se
+   * pierde es la repeticion exacta byte-a-byte de un error ya reportado,
+   * nunca el hecho de que ocurrio ni cuantas veces.
+   */
+  function errorBreakerCheck(key) {
+    const now = Date.now();
+    let st = errorBreaker.get(key);
+    if (!st) {
+      st = { count: 0, windowStart: now, tripped: false, suppressed: 0, tripAt: 0 };
+      errorBreaker.set(key, st);
+    }
+    if (st.tripped) {
+      if (now - st.tripAt >= ERROR_BREAKER_COOLDOWN_MS) {
+        st.tripped = false;
+        st.count = 0;
+        st.windowStart = now;
+        const suppressed = st.suppressed;
+        st.suppressed = 0;
+        return { emit: true, suprimidosPrevios: suppressed };
+      }
+      st.suppressed++;
+      return { emit: false };
+    }
+    if (now - st.windowStart > ERROR_BREAKER_WINDOW_MS) {
+      st.windowStart = now;
+      st.count = 0;
+    }
+    st.count++;
+    if (st.count > ERROR_BREAKER_THRESHOLD) {
+      st.tripped = true;
+      st.tripAt = now;
+      st.suppressed = 0;
+      return { emit: true, circuitoActivado: true };
+    }
+    return { emit: true };
+  }
+  function errorKey(...parts) {
+    return parts.map((p) => String(p)).join("|");
+  }
+
   // --- Herramienta 2a/4: errores globales (correlacionados con la accion) ----
   const prevOnError = window.onerror;
   window.onerror = function (message, source, line, column, error) {
-    const frames = error?.stack ? parseStack(error.stack) : source ? [{ fn: "", url: source, line, column }] : [];
-    const top = frames[0];
-    emit("error", {
-      message: String(message),
-      source,
-      line,
-      column,
-      stack: error?.stack || null,
-      frames,
-      ref: refOf(top),
-      ...actionContext(),
-    });
-    if (top) maybeEmitCodeBlock(top); // recupera el bloque de codigo del origen
+    const decision = errorBreakerCheck(errorKey("onerror", message, source, line, column));
+    if (decision.emit) {
+      const frames = error?.stack ? parseStack(error.stack) : source ? [{ fn: "", url: source, line, column }] : [];
+      const top = frames[0];
+      emit("error", {
+        message: String(message),
+        source,
+        line,
+        column,
+        stack: error?.stack || null,
+        frames,
+        ref: refOf(top),
+        ...actionContext(),
+        ...(decision.circuitoActivado ? { circuitoActivado: true, nota: "mismo error repetido a tasa extrema; se suprimen las siguientes repeticiones identicas por unos segundos" } : {}),
+        ...(decision.suprimidosPrevios ? { suprimidosPrevios: decision.suprimidosPrevios } : {}),
+      });
+      if (top) maybeEmitCodeBlock(top); // recupera el bloque de codigo del origen
+    }
     return typeof prevOnError === "function" ? prevOnError.apply(this, arguments) : false;
   };
   window.addEventListener(
@@ -333,28 +403,40 @@
     (event) => {
       const tgt = event.target;
       if (tgt && tgt !== window && (tgt.src || tgt.href)) {
-        emit("error", {
-          kind: "resource",
-          tag: tgt.tagName?.toLowerCase?.(),
-          url: tgt.src || tgt.href,
-          ...actionContext(),
-        });
+        const url = tgt.src || tgt.href;
+        const decision = errorBreakerCheck(errorKey("resource", tgt.tagName, url));
+        if (decision.emit) {
+          emit("error", {
+            kind: "resource",
+            tag: tgt.tagName?.toLowerCase?.(),
+            url,
+            ...actionContext(),
+            ...(decision.circuitoActivado ? { circuitoActivado: true } : {}),
+            ...(decision.suprimidosPrevios ? { suprimidosPrevios: decision.suprimidosPrevios } : {}),
+          });
+        }
       }
     },
     true
   );
   window.addEventListener("unhandledrejection", (event) => {
     const r = event.reason;
-    const frames = r?.stack ? parseStack(r.stack) : [];
-    const top = frames[0];
-    emit("unhandledrejection", {
-      reason: r?.message || String(r),
-      stack: r?.stack || null,
-      frames,
-      ref: refOf(top),
-      ...actionContext(),
-    });
-    if (top) maybeEmitCodeBlock(top);
+    const msg = r?.message || String(r);
+    const decision = errorBreakerCheck(errorKey("rejection", msg));
+    if (decision.emit) {
+      const frames = r?.stack ? parseStack(r.stack) : [];
+      const top = frames[0];
+      emit("unhandledrejection", {
+        reason: msg,
+        stack: r?.stack || null,
+        frames,
+        ref: refOf(top),
+        ...actionContext(),
+        ...(decision.circuitoActivado ? { circuitoActivado: true, nota: "mismo rechazo repetido a tasa extrema; se suprimen las siguientes repeticiones identicas por unos segundos" } : {}),
+        ...(decision.suprimidosPrevios ? { suprimidosPrevios: decision.suprimidosPrevios } : {}),
+      });
+      if (top) maybeEmitCodeBlock(top);
+    }
   });
 
   // --- Herramienta 2b: monkey patching de la consola -------------------------
@@ -477,23 +559,35 @@
       if (meta) {
         const start = performance.now();
         const requestId = "req-" + netSeq++;
-        this.addEventListener("loadend", () => {
-          const ok = this.status >= 200 && this.status < 400;
-          emitNetworkFull(
-            {
-              requestId,
-              type: "xhr",
-              method: meta.method,
-              url: redactUrl(meta.url),
-              status: this.status,
-              ok,
-              durationMs: Math.round(performance.now() - start),
-              ...(ok ? {} : actionContext()),
-            },
-            start
-          );
-          securityScanUrl(meta.url, "red");
-        });
+        // {once:true}: el listener se autoelimina tras dispararse. Sin esto,
+        // una pagina que reutiliza el MISMO objeto XHR para varias peticiones
+        // (patron comun de polling: open()+send() repetido sobre la misma
+        // instancia en vez de crear un XHR nuevo cada vez) acumulaba un
+        // listener nuevo por cada send() sin quitar los anteriores — la
+        // peticion N terminaba disparando los N listeners acumulados, no solo
+        // el suyo, un crecimiento cuadratico de trabajo y memoria con el
+        // numero de peticiones reenviadas sobre la misma instancia.
+        this.addEventListener(
+          "loadend",
+          () => {
+            const ok = this.status >= 200 && this.status < 400;
+            emitNetworkFull(
+              {
+                requestId,
+                type: "xhr",
+                method: meta.method,
+                url: redactUrl(meta.url),
+                status: this.status,
+                ok,
+                durationMs: Math.round(performance.now() - start),
+                ...(ok ? {} : actionContext()),
+              },
+              start
+            );
+            securityScanUrl(meta.url, "red");
+          },
+          { once: true }
+        );
       }
       return send.apply(this, arguments);
     };

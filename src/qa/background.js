@@ -123,8 +123,21 @@ function flushPending() {
       // una por evento — aqui es donde se recupera el O(1) amortizado.
       const timeline = await getStoredTimeline();
       for (const entry of batch) timeline.push(entry);
-      if (timeline.length > MAX_EVENTS) timeline.splice(0, timeline.length - MAX_EVENTS);
-      await chrome.storage.local.set({ [K.timeline]: timeline });
+      let discardedNow = 0;
+      if (timeline.length > MAX_EVENTS) {
+        discardedNow = timeline.length - MAX_EVENTS;
+        timeline.splice(0, discardedNow);
+      }
+      const toWrite = { [K.timeline]: timeline };
+      if (discardedNow > 0) {
+        // Deja constancia explicita del recorte: sin esto, una sesion que
+        // superara MAX_EVENTS perdia datos de forma completamente silenciosa
+        // — un reporte podia parecer completo cuando en realidad ya habia
+        // descartado eventos anteriores (p.ej. tras una tormenta de errores).
+        const meta = await getMeta();
+        toWrite[K.meta] = { ...meta, discardedEvents: (meta.discardedEvents || 0) + discardedNow };
+      }
+      await chrome.storage.local.set(toWrite);
       for (const entry of batch) {
         telemetryOnEvent(entry);
         maybeResampleOnNav(entry);
