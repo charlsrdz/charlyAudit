@@ -7,6 +7,28 @@
  */
 
 /**
+ * Agrupaciones canonicas de tipos de evento — FUENTE UNICA DE VERDAD.
+ * Este modulo es puro y lo importan tanto el service worker (background.js,
+ * computeKpis) como el panel lateral (context-bridge.js, sidepanel.js), asi
+ * que es el unico lugar correcto para definir "que tipos de evento cuentan
+ * como interaccion / como navegacion" sin duplicar la lista en cada sitio
+ * que la necesita. Antes existian TRES copias independientes de "que es una
+ * interaccion" (el contador de la pestana Auditoria, el builder de contexto
+ * del Asistente, y computeKpis) que se fueron desincronizando con el tiempo
+ * — "routes" no sumaba navegaciones completas de pagina en dos de los tres
+ * lugares, "interactions" no sumaba middleclick en uno de ellos. Con esto,
+ * un cambio se hace UNA vez y se refleja en Auditoria, Asistente y KPIs por
+ * igual, sea la sesion temporal o importada.
+ *
+ * NOTA: `INTERACTIVE_TYPES` en report-engine.js es DISTINTO a proposito (no
+ * incluye dragdrop/scroll/resize) — sirve para correlacionar INP real por
+ * interaccion, un concepto mas angosto que "que cuenta como interaccion" en
+ * general. No debe unificarse con esto.
+ */
+export const INTERACTION_TYPES = ["click", "dblclick", "middleclick", "input", "key", "dragdrop", "scroll", "resize"];
+export const ROUTE_TYPES = ["route", "navigation"];
+
+/**
  * Redaccion canonica pre-embedding: elimina PII/tokens del texto libre ANTES de
  * que el bundle salga (export/webhook/ingesta), para no contaminar la base
  * vectorial. Pura y determinista (no depende del orden de los patrones sensibles).
@@ -313,7 +335,7 @@ export function computeKpis(report, replay) {
   }
   const trace = (replay && replay.trace) || [];
   const incons = trace.filter((t) => t.inconsistencias && t.inconsistencias.length).length;
-  const interKinds = new Set(["click", "dblclick", "middleclick", "input", "key", "dragdrop"]);
+  const interKinds = new Set(INTERACTION_TYPES);
   // INP real por interaccion (p98 de las latencias YA correlacionadas a cada
   // click/input/tecla concreto — no el aproximado de web-vitals) siguiendo la
   // metodologia estandar (percentil 98, no el maximo absoluto de una sola vez).
@@ -321,7 +343,7 @@ export function computeKpis(report, replay) {
   const inpP98 = interLatencies.length ? interLatencies[Math.min(interLatencies.length - 1, Math.floor(interLatencies.length * 0.98))] : null;
   // TBT por navegacion: el segmento (entre rutas) con mas bloqueo — util para
   // localizar QUE vista/pagina especifica concentra el problema de performance.
-  const segs = [...by("route"), ...by("navigation")].map((e) => (e.data && e.data.tbtSegmentMs) || 0);
+  const segs = ROUTE_TYPES.flatMap((t) => by(t)).map((e) => (e.data && e.data.tbtSegmentMs) || 0);
   const tbtSegmentMax = segs.length ? Math.max(...segs) : null;
   return {
     eventos: tl.length,
@@ -346,5 +368,8 @@ export function computeKpis(report, replay) {
     seguridad: { total: sec.length, porSeveridad },
     interacciones: tl.filter((e) => interKinds.has(e.type)).length,
     replay: trace.length ? { pasos: trace.length, inconsistencias: incons, fidelidad: Math.round(((trace.length - incons) / trace.length) * 100) } : null,
+    // Constancia de recorte (v2.6.1): eventos mas antiguos descartados al
+    // superar MAX_EVENTS. 0 en la inmensa mayoria de sesiones normales.
+    eventosDescartados: meta.discardedEvents || 0,
   };
 }

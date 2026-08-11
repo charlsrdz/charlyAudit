@@ -3,8 +3,9 @@
  * ======================================
  * Corre en el contexto JS real de la pagina (salta el entorno aislado), por lo
  * que puede observar `window`, la consola, la red y las funciones de la app.
- * No tiene acceso a chrome.*; toda salida va por window.postMessage al content
- * script con la marca { __charly:true, source:"charly-injected" }.
+ * No tiene acceso a chrome.*; toda salida va por un CustomEvent dedicado
+ * (__charlyqa_bridge__, ver mas abajo) al content script, marcada con
+ * { __charly:true, source:"charly-injected" }.
  *
  * Cubre: Herramienta 2 (errores + consola), 3 (red), 4 (estado global),
  * 5 (ruteo SPA) y 7 (patching de funciones a eleccion).
@@ -24,6 +25,19 @@
 
   const SOURCE = "charly-injected";
   const FROM_CONTENT = "charly-content";
+  // Canal dedicado para la comunicacion MAIN<->ISOLATED (fix critico v2.6.1a):
+  // antes se usaba window.postMessage(msg, "*"), que se retransmite a
+  // CUALQUIER listener "message" registrado en la pagina — incluidos los de
+  // scripts de terceros que no conocen nuestro formato. Se confirmo con una
+  // traza de consola real: un listener ajeno intentaba JSON.parse() sobre
+  // nuestro mensaje (un objeto, no una cadena JSON), lanzaba
+  // "SyntaxError: [object Object] is not valid JSON", nuestro propio
+  // window.onerror lo capturaba como un error nuevo, y al reportarlo
+  // disparabamos OTRO postMessage que volvia a activar el mismo listener
+  // ajeno — un bucle auto-sostenido que generaba miles de errores por
+  // segundo. Un CustomEvent con nombre propio solo lo recibe quien lo
+  // registra explicitamente: ningun script de terceros escucha este canal.
+  const BRIDGE_EVENT = "__charlyqa_bridge__";
 
   const state = {
     recording: false,
@@ -51,7 +65,7 @@
 
   function emit(type, data) {
     if (!state.recording) return;
-    window.postMessage({ __charly: true, source: SOURCE, type, data, ts: Date.now() }, "*");
+    document.dispatchEvent(new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: SOURCE, type, data, ts: Date.now() } }));
   }
 
   function safeSerialize(value, depth = 2, seen = new WeakSet()) {
@@ -310,22 +324,104 @@
     });
   }
 
+  // ===========================================================================
+  // Circuito de proteccion contra tormentas de errores identicos (v2.6.1)
+  // ===========================================================================
+  // Confirmado con datos reales de produccion: un bucle roto en una pagina (o
+  // en un script de terceros que carga en ella) puede lanzar el MISMO error
+  // miles de veces por segundo — se observaron sesiones con 5000 errores
+  // identicos (mismo mensaje/origen/linea/columna) capturados en menos de un
+  // segundo, agotando el limite de eventos de toda la sesion de un solo golpe
+  // y generando presion real de CPU/memoria (un postMessage + sendMessage por
+  // cada ocurrencia, sin ningun limite). Esto NO depende de que la causa sea
+  // nuestra o de la pagina — el circuito protege contra cualquier fuente.
+  //
+  // Umbral generoso (20 iguales por segundo) para no alterar jamas el
+  // comportamiento normal: una pagina con errores esporadicos, incluso varios
+  // por segundo, nunca activa el circuito. Solo se activa ante una tasa que
+  // ninguna interaccion humana ni error legitimo aislado puede producir.
+  const ERROR_BREAKER_WINDOW_MS = 1000;
+  const ERROR_BREAKER_THRESHOLD = 20; // mas de 20 iguales en 1s = tormenta
+  const ERROR_BREAKER_COOLDOWN_MS = 5000; // tras activarse, silencia 5s antes de retomar
+  const errorBreaker = new Map(); // clave -> estado del circuito para ESE error especifico
+
+  /**
+   * Decide si esta ocurrencia de un error debe emitirse. Nunca descarta la
+   * PRIMERA vez que se activa el circuito (emite un evento marcado avisando
+   * que empieza a suprimir) ni la primera tras el enfriamiento (emite un
+   * evento con el conteo de lo suprimido) — la unica informacion que se
+   * pierde es la repeticion exacta byte-a-byte de un error ya reportado,
+   * nunca el hecho de que ocurrio ni cuantas veces.
+   */
+  function errorBreakerCheck(key) {
+    const now = Date.now();
+    let st = errorBreaker.get(key);
+    if (!st) {
+      st = { count: 0, windowStart: now, tripped: false, suppressed: 0, tripAt: 0 };
+      errorBreaker.set(key, st);
+    }
+    if (st.tripped) {
+      if (now - st.tripAt >= ERROR_BREAKER_COOLDOWN_MS) {
+        st.tripped = false;
+        st.count = 0;
+        st.windowStart = now;
+        const suppressed = st.suppressed;
+        st.suppressed = 0;
+        return { emit: true, suprimidosPrevios: suppressed };
+      }
+      st.suppressed++;
+      return { emit: false };
+    }
+    if (now - st.windowStart > ERROR_BREAKER_WINDOW_MS) {
+      st.windowStart = now;
+      st.count = 0;
+    }
+    st.count++;
+    if (st.count > ERROR_BREAKER_THRESHOLD) {
+      st.tripped = true;
+      st.tripAt = now;
+      st.suppressed = 0;
+      return { emit: true, circuitoActivado: true };
+    }
+    return { emit: true };
+  }
+  /**
+   * Normaliza identificadores "VM####" (Chrome los asigna de forma
+   * incremental a cada contexto evaluado dinamicamente — eval, Function,
+   * o scripts inyectados programaticamente) antes de construir la clave del
+   * circuito. Confirmado en produccion: el mismo bug repitiendose generaba
+   * un "origen" distinto en cada ocurrencia (VM1314, VM1315, VM1316...),
+   * evadiendo por completo el circuito porque cada variante nunca acumulaba
+   * las repeticiones necesarias para activarse — cada una parecia "nueva".
+   */
+  function normalizeSource(s) {
+    return String(s).replace(/VM\d+/g, "VM");
+  }
+  function errorKey(...parts) {
+    return parts.map((p) => normalizeSource(p)).join("|");
+  }
+
   // --- Herramienta 2a/4: errores globales (correlacionados con la accion) ----
   const prevOnError = window.onerror;
   window.onerror = function (message, source, line, column, error) {
-    const frames = error?.stack ? parseStack(error.stack) : source ? [{ fn: "", url: source, line, column }] : [];
-    const top = frames[0];
-    emit("error", {
-      message: String(message),
-      source,
-      line,
-      column,
-      stack: error?.stack || null,
-      frames,
-      ref: refOf(top),
-      ...actionContext(),
-    });
-    if (top) maybeEmitCodeBlock(top); // recupera el bloque de codigo del origen
+    const decision = errorBreakerCheck(errorKey("onerror", message, source, line, column));
+    if (decision.emit) {
+      const frames = error?.stack ? parseStack(error.stack) : source ? [{ fn: "", url: source, line, column }] : [];
+      const top = frames[0];
+      emit("error", {
+        message: String(message),
+        source,
+        line,
+        column,
+        stack: error?.stack || null,
+        frames,
+        ref: refOf(top),
+        ...actionContext(),
+        ...(decision.circuitoActivado ? { circuitoActivado: true, nota: "mismo error repetido a tasa extrema; se suprimen las siguientes repeticiones identicas por unos segundos" } : {}),
+        ...(decision.suprimidosPrevios ? { suprimidosPrevios: decision.suprimidosPrevios } : {}),
+      });
+      if (top) maybeEmitCodeBlock(top); // recupera el bloque de codigo del origen
+    }
     return typeof prevOnError === "function" ? prevOnError.apply(this, arguments) : false;
   };
   window.addEventListener(
@@ -333,28 +429,40 @@
     (event) => {
       const tgt = event.target;
       if (tgt && tgt !== window && (tgt.src || tgt.href)) {
-        emit("error", {
-          kind: "resource",
-          tag: tgt.tagName?.toLowerCase?.(),
-          url: tgt.src || tgt.href,
-          ...actionContext(),
-        });
+        const url = tgt.src || tgt.href;
+        const decision = errorBreakerCheck(errorKey("resource", tgt.tagName, url));
+        if (decision.emit) {
+          emit("error", {
+            kind: "resource",
+            tag: tgt.tagName?.toLowerCase?.(),
+            url,
+            ...actionContext(),
+            ...(decision.circuitoActivado ? { circuitoActivado: true } : {}),
+            ...(decision.suprimidosPrevios ? { suprimidosPrevios: decision.suprimidosPrevios } : {}),
+          });
+        }
       }
     },
     true
   );
   window.addEventListener("unhandledrejection", (event) => {
     const r = event.reason;
-    const frames = r?.stack ? parseStack(r.stack) : [];
-    const top = frames[0];
-    emit("unhandledrejection", {
-      reason: r?.message || String(r),
-      stack: r?.stack || null,
-      frames,
-      ref: refOf(top),
-      ...actionContext(),
-    });
-    if (top) maybeEmitCodeBlock(top);
+    const msg = r?.message || String(r);
+    const decision = errorBreakerCheck(errorKey("rejection", msg));
+    if (decision.emit) {
+      const frames = r?.stack ? parseStack(r.stack) : [];
+      const top = frames[0];
+      emit("unhandledrejection", {
+        reason: msg,
+        stack: r?.stack || null,
+        frames,
+        ref: refOf(top),
+        ...actionContext(),
+        ...(decision.circuitoActivado ? { circuitoActivado: true, nota: "mismo rechazo repetido a tasa extrema; se suprimen las siguientes repeticiones identicas por unos segundos" } : {}),
+        ...(decision.suprimidosPrevios ? { suprimidosPrevios: decision.suprimidosPrevios } : {}),
+      });
+      if (top) maybeEmitCodeBlock(top);
+    }
   });
 
   // --- Herramienta 2b: monkey patching de la consola -------------------------
@@ -477,23 +585,35 @@
       if (meta) {
         const start = performance.now();
         const requestId = "req-" + netSeq++;
-        this.addEventListener("loadend", () => {
-          const ok = this.status >= 200 && this.status < 400;
-          emitNetworkFull(
-            {
-              requestId,
-              type: "xhr",
-              method: meta.method,
-              url: redactUrl(meta.url),
-              status: this.status,
-              ok,
-              durationMs: Math.round(performance.now() - start),
-              ...(ok ? {} : actionContext()),
-            },
-            start
-          );
-          securityScanUrl(meta.url, "red");
-        });
+        // {once:true}: el listener se autoelimina tras dispararse. Sin esto,
+        // una pagina que reutiliza el MISMO objeto XHR para varias peticiones
+        // (patron comun de polling: open()+send() repetido sobre la misma
+        // instancia en vez de crear un XHR nuevo cada vez) acumulaba un
+        // listener nuevo por cada send() sin quitar los anteriores — la
+        // peticion N terminaba disparando los N listeners acumulados, no solo
+        // el suyo, un crecimiento cuadratico de trabajo y memoria con el
+        // numero de peticiones reenviadas sobre la misma instancia.
+        this.addEventListener(
+          "loadend",
+          () => {
+            const ok = this.status >= 200 && this.status < 400;
+            emitNetworkFull(
+              {
+                requestId,
+                type: "xhr",
+                method: meta.method,
+                url: redactUrl(meta.url),
+                status: this.status,
+                ok,
+                durationMs: Math.round(performance.now() - start),
+                ...(ok ? {} : actionContext()),
+              },
+              start
+            );
+            securityScanUrl(meta.url, "red");
+          },
+          { once: true }
+        );
       }
       return send.apply(this, arguments);
     };
@@ -798,6 +918,10 @@
         if (e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest") continue; // ya cubiertos
         // Dedup por URL+inicio: buffered:true puede reportar el mismo recurso
         // varias veces si startPerf se llama despues de la carga inicial de la pagina.
+        // Limite de tamaño ademas del temporal (30s, ver el intervalo mas abajo):
+        // una rafaga extrema (p.ej. un mapa con cientos de tiles en pocos
+        // segundos) no debe esperar al ciclo periodico para acotarse.
+        if (_resSeen.size > 2000) _resSeen.clear();
         const key = `${e.name}|${Math.round(e.startTime)}`;
         if (_resSeen.has(key)) continue;
         _resSeen.add(key);
@@ -826,6 +950,31 @@
     addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") emitVitals("hidden");
     });
+
+    // Gestion del buffer nativo de Resource Timing (v2.5.9 — fix de rendimiento,
+    // prioridad alta). Sin esto, el navegador acumula una entrada por cada
+    // recurso cargado durante TODA la sesion de grabacion sin limite propio —
+    // memoria de proceso, no solo nuestro heap de JS. Se amplia el buffer para
+    // no perder entradas entre limpiezas, y se limpia cada 30s (margen amplio
+    // sobre los 60ms que usa emitNetworkFull()/waterfallFor() para correlacionar
+    // un fetch/XHR con su entrada de Resource Timing, asi que nunca se limpia
+    // algo que todavia se necesita leer). _resSeen se vacia en el mismo
+    // momento: las entradas que ya limpiamos del navegador no van a reaparecer,
+    // asi que es seguro olvidarlas — mantiene ambas estructuras acotadas juntas.
+    try {
+      performance.setResourceTimingBufferSize(1000);
+    } catch {
+      /* API no disponible en este navegador */
+    }
+    perf._clearTimer = setInterval(() => {
+      if (!state.recording) return;
+      try {
+        performance.clearResourceTimings();
+      } catch {
+        /* no critico */
+      }
+      _resSeen.clear();
+    }, 30000);
   }
 
   // === Security: scanner pasivo ofensivo-controlado (tarea 3) =================
@@ -878,9 +1027,8 @@
     if (location.protocol === "http:") secFinding("sin-https", "alta", location.hostname, "documento");
   }
 
-  window.addEventListener("message", (event) => {
-    if (event.source !== window) return;
-    const d = event.data;
+  document.addEventListener(BRIDGE_EVENT, (event) => {
+    const d = event.detail;
     if (!d || d.__charly !== true || d.source !== FROM_CONTENT) return;
 
     switch (d.type) {
@@ -900,9 +1048,8 @@
       case "get-source":
         // Respuesta directa (no es un evento de timeline, no se gatea por recording).
         fetchSourceBlock(d.data.url, d.data.line, d.data.column || 0, d.data.ctx || 6).then((block) => {
-          window.postMessage(
-            { __charly: true, source: SOURCE, type: "source-block", data: { requestId: d.data.requestId, block } },
-            "*"
+          document.dispatchEvent(
+            new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: SOURCE, type: "source-block", data: { requestId: d.data.requestId, block } } })
           );
         });
         break;
@@ -927,8 +1074,7 @@
   });
 
   // Handshake: avisa al content script de que ya esta listo.
-  window.postMessage(
-    { __charly: true, source: SOURCE, type: "injected-ready", data: { url: location.href }, ts: Date.now() },
-    "*"
+  document.dispatchEvent(
+    new CustomEvent(BRIDGE_EVENT, { detail: { __charly: true, source: SOURCE, type: "injected-ready", data: { url: location.href }, ts: Date.now() } })
   );
 })();

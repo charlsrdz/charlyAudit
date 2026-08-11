@@ -22,7 +22,7 @@
  * Seguridad: redaccion de claves sensibles y truncado de strings.
  */
 
-import { computeKpis } from "../../qa/bundle-schema.js";
+import { computeKpis, INTERACTION_TYPES, ROUTE_TYPES } from "../../qa/bundle-schema.js";
 
 const SENSITIVE =
   /(pass|password|secret|token|apikey|api_key|authorization|auth|bearer|cookie|session|hash|firma|signature|privad|credential)/i;
@@ -31,25 +31,65 @@ const MAX_STR = 300; // tope por string incrustado
 
 /** Catalogo de ambitos de contexto que el usuario puede adjuntar. */
 export const SCOPES = [
-  { id: "metadata", label: "Resumen", desc: "URL, duracion, conteos por tipo" },
+  { id: "metadata", label: "Resumen", desc: "URL, duracion, conteos por tipo, entorno, workers detectados" },
   { id: "errors", label: "Errores", desc: "Errores JS, origen (stack) y bloque de codigo" },
-  { id: "network", label: "Red", desc: "Peticiones fallidas y mas lentas" },
-  { id: "console", label: "Consola", desc: "console.warn / console.error" },
-  { id: "routes", label: "Rutas", desc: "Cambios de ruta SPA" },
+  { id: "network", label: "Red", desc: "Todas las peticiones con su waterfall completo (fases DNS/TCP/TTFB/descarga); fallidas y mas lentas destacadas aparte" },
+  { id: "console", label: "Consola", desc: "Todos los mensajes de consola (log/info/warn/error)" },
+  { id: "routes", label: "Rutas", desc: "Cambios de ruta SPA y navegaciones completas de pagina, con timing (TTFB, DOM listo, carga, TTI aproximado)" },
   { id: "functions", label: "Funciones", desc: "Llamadas interceptadas y su duracion" },
   { id: "globals", label: "Variables", desc: "Valores de variables globales vigiladas y mutaciones" },
-  { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop e inputs + arbol" },
-  { id: "audit", label: "Estructura", desc: "Atributos HTML/CSS de elementos enfocados" },
+  { id: "interactions", label: "Interaccion", desc: "Clicks, teclas, drag&drop, inputs, scroll y resize — con INP medido y aviso si el elemento no tiene nombre accesible" },
+  { id: "audit", label: "Estructura", desc: "Atributos HTML/CSS de elementos enfocados (foco)" },
   { id: "replay", label: "Repeticion", desc: "Telemetria del ultimo replay e inconsistencias" },
-  { id: "performance", label: "Performance", desc: "Web Vitals (LCP/CLS/INP/TBT), long tasks y recursos pesados" },
+  { id: "performance", label: "Performance", desc: "Web Vitals (LCP/CLS/TBT/long tasks) y el listado completo de mediciones INP por interaccion" },
   { id: "security", label: "Seguridad", desc: "Fugas PII/tokens, mixed content, cookies y CSP" },
+  { id: "resources", label: "Recursos", desc: "Listado completo de recursos cargados (tiles, imagenes, scripts, fuentes) con tamano y tiempos" },
+  { id: "codeblocks", label: "Codigo", desc: "Todos los bloques de codigo fuente resueltos, no solo los de errores mostrados" },
+  { id: "headers", label: "Cabeceras", desc: "Cabeceras de respuesta auditadas por peticion (CSP/HSTS/X-Frame-Options/etc.)" },
 ];
 
+/**
+ * Mapa canonico: que tipos de evento del timeline pertenece a cada ambito.
+ * UNICA fuente de verdad — tanto los contadores de la pestana Auditoria
+ * (scopeCount en sidepanel.js) como los builders de contexto de aqui abajo
+ * leen de aqui, para que nunca puedan quedar desincronizados entre si. Antes
+ * cada lado tenia su propia lista hardcodeada por separado: "routes" solo
+ * contaba el tipo "route" (cambios de ruta SPA) y excluia "navigation"
+ * (cargas completas de pagina) en ambos lugares — pero cada lista se habia
+ * escrito en un momento distinto, asi que un fix en un lado no se reflejaba
+ * en el otro. No son necesariamente los mismos tipos que arma cada chip
+ * visual (metadata/replay no tienen una lista de tipos: metadata resume
+ * report.metadata directamente, replay lee la traza, no el timeline).
+ *
+ * v2.5.9c: TODOS los tipos de evento que Auditoria puede mostrar como chip
+ * (23 en TL_META) tienen ahora un ambito que los hace elegibles como
+ * contexto — antes "resource-timing", "code-block" y "response-headers"
+ * solo aparecian recortados dentro de otros ambitos (los recursos mas
+ * pesados, el codigo de errores ya mostrados, un resumen agregado), nunca
+ * como su propio listado completo y navegable.
+ */
+export const SCOPE_TYPES = {
+  errors: ["error", "unhandledrejection"],
+  network: ["network"],
+  console: ["console"],
+  routes: ROUTE_TYPES,
+  functions: ["function-call"],
+  globals: ["global-state"],
+  interactions: INTERACTION_TYPES,
+  audit: ["focus"],
+  security: ["security"],
+  performance: ["web-vitals", "interaction-timing", "resource-timing"],
+  resources: ["resource-timing"],
+  codeblocks: ["code-block"],
+  headers: ["response-headers"],
+};
+
 // Prioridad de inclusion cuando el contexto excede el presupuesto.
-const PRIORITY = ["metadata", "errors", "security", "network", "performance", "console", "routes", "functions", "globals", "interactions", "audit"];
+const PRIORITY = ["metadata", "errors", "security", "network", "performance", "console", "routes", "functions", "globals", "interactions", "audit", "resources", "headers", "codeblocks"];
 // Tope de elementos por ambito (se reduce a la mitad si no entra en el budget).
 const CAPS = {
   metadata: 1, errors: 25, security: 20, network: 25, performance: 8, console: 25, routes: 25, functions: 20, globals: 12, interactions: 35, audit: 20,
+  resources: 25, codeblocks: 15, headers: 20,
 };
 
 // ---------------------------------------------------------------------------
@@ -128,15 +168,22 @@ function readSW(action) {
 // ---------------------------------------------------------------------------
 
 const builders = {
-  metadata: (_cap, _tl, report) => {
+  metadata: (_cap, tl, report) => {
     const m = report.metadata || {};
     const ent = m.entorno || {};
     const rec = m.recording || {};
+    // Workers/service workers detectados y cabeceras de respuesta auditadas:
+    // se capturan en el timeline (tipos "worker"/"response-headers") pero
+    // ningun otro scope los representa — sin esto, esa informacion nunca
+    // llegaba al asistente aunque estuviera completa en el reporte.
+    const workers = tl.filter((e) => e.type === "worker");
+    const headers = tl.filter((e) => e.type === "response-headers");
     return {
       resumen: sanitize({
         url: m.url,
         duracionMs: m.durationMs,
         eventos: m.eventCount,
+        eventosDescartados: m.discardedEvents || undefined, // recorte por MAX_EVENTS (v2.6.1)
         conteos: m.counts,
         resolucion: m.resolution,
         viewport: m.viewport,
@@ -150,6 +197,12 @@ const builders = {
         // con el otro — se calculan aqui mismo con la misma funcion pura que usa
         // el service worker, en vez de pedirlos al SW, que solo conoce el vivo).
         kpis: computeKpis(report, { trace: [] }),
+        workers: workers.length
+          ? workers.slice(-10).map((e) => ({ clase: e.data.clase, script: e.data.script, estado: e.data.estado || null }))
+          : undefined,
+        cabeceras: headers.length
+          ? { auditadas: headers.length, conCsp: headers.filter((e) => e.data.seguridad && e.data.seguridad.csp).length }
+          : undefined,
       }),
     };
   },
@@ -188,19 +241,40 @@ const builders = {
     const net = tl.filter((e) => e.type === "network");
     const fallidas = net.filter((e) => e.data.ok === false || (e.data.status || 0) >= 400);
     const lentas = [...net].sort((a, b) => (b.data.durationMs || 0) - (a.data.durationMs || 0)).slice(0, Math.min(8, cap));
+    // Detalle completo por peticion (waterfall), igual que ve un humano en el
+    // detalle de Auditoria — antes el Asistente solo recibia fallidas y las 8
+    // mas lentas, nunca la lista completa ni las fases DNS/TCP/TTFB/descarga.
+    const detalle = (e) => ({
+      m: e.data.method,
+      url: e.data.url,
+      status: e.data.status,
+      ms: e.data.durationMs,
+      kb: e.data.kb,
+      cache: e.data.cache || undefined,
+      protocolo: e.data.protocolo || undefined,
+      fases: e.data.fases,
+      disparo: e.data.trigger,
+    });
     return {
       red: sanitize({
         total: net.length,
-        fallidas: fallidas.slice(-cap).map((e) => ({ m: e.data.method, url: e.data.url, status: e.data.status, ms: e.data.durationMs, disparo: e.data.trigger })),
-        masLentas: lentas.map((e) => ({ m: e.data.method, url: e.data.url, status: e.data.status, ms: e.data.durationMs })),
+        // Lista completa (acotada por el mismo tope que el resto de ambitos):
+        // ninguna peticion queda fuera del alcance del Asistente por diseño.
+        todas: net.slice(-cap).map(detalle),
+        fallidas: fallidas.slice(-cap).map(detalle),
+        masLentas: lentas.map(detalle),
       }),
     };
   },
 
   console: (cap, tl) => ({
+    // Todos los niveles (antes solo warn/error): el contador de Auditoria
+    // cuenta console.log/info tambien, asi que excluirlos aqui rompia la
+    // consistencia entre lo que el chip anuncia y lo que el Asistente
+    // realmente puede leer.
     consola: sanitize(
       tl
-        .filter((e) => e.type === "console" && (e.data.level === "warn" || e.data.level === "error"))
+        .filter((e) => e.type === "console")
         .slice(-cap)
         .map((e) => ({ nivel: e.data.level, txt: (e.data.args || []).join(" "), ref: e.data.ref || null }))
     ),
@@ -208,7 +282,25 @@ const builders = {
 
   routes: (cap, tl) => ({
     rutas: sanitize(
-      tl.filter((e) => e.type === "route").slice(-cap).map((e) => ({ via: e.data.method, de: e.data.from, a: e.data.to }))
+      tl
+        .filter((e) => SCOPE_TYPES.routes.includes(e.type))
+        .slice(-cap)
+        .map((e) =>
+          e.type === "navigation"
+            ? {
+                via: "navigation",
+                tipo: e.data.tipo || e.data.reason,
+                a: e.data.url,
+                referrer: e.data.referrer || undefined,
+                redirects: e.data.redirects || undefined,
+                ttfbMs: e.data.ttfbMs,
+                domListoMs: e.data.domListoMs,
+                cargaMs: e.data.cargaMs,
+                ttiApproxMs: e.data.ttiApproxMs,
+                docKb: e.data.docKb,
+              }
+            : { via: e.data.method, de: e.data.from, a: e.data.to }
+        )
     ),
   }),
 
@@ -244,6 +336,12 @@ const builders = {
     const inpP98 = inpLatencies.length
       ? inpLatencies[Math.min(inpLatencies.length - 1, Math.floor(inpLatencies.length * 0.98))]
       : null;
+    // Lista cruda de mediciones INP individuales (antes solo se usaban para
+    // calcular el p98 agregado arriba, nunca se exponia el listado — el chip
+    // "inp" de Auditoria muestra cada medicion, no solo el resumen). El
+    // conteo TOTAL se preserva aunque el detalle se acote por presupuesto.
+    const inpTodos = tl.filter((e) => e.type === "interaction-timing" && e.data && e.data.inpMs != null);
+    const inpEventos = inpTodos.slice(-cap).map((e) => ({ tipo: e.data.tipo, inpMs: e.data.inpMs }));
     // TBT por navegacion: el segmento con mas bloqueo (ruta con peor TBT).
     const peorSegmento = [...tl.filter((e) => e.type === "route" || e.type === "navigation")]
       .sort((a, b) => ((b.data && b.data.tbtSegmentMs) || 0) - ((a.data && a.data.tbtSegmentMs) || 0))[0];
@@ -278,6 +376,7 @@ const builders = {
           longTasks: peorSegmento.data.longTasksSegment,
         } : null,
         recursosPesados: recursos,
+        medicionesInp: inpTodos.length ? { total: inpTodos.length, items: inpEventos } : undefined,
       }),
     };
   },
@@ -295,7 +394,12 @@ const builders = {
   },
 
   interactions: (cap, tl) => {
-    const kinds = new Set(["click", "dblclick", "middleclick", "dragdrop", "key", "input"]);
+    const kinds = new Set(SCOPE_TYPES.interactions);
+    // Mismo criterio de "known-issue" que resalta Auditoria visualmente: un
+    // elemento interactuado SIN nombre accesible (ni name/aria-label/texto/
+    // placeholder) — antes esta señal de QA solo la veia un humano mirando
+    // el detalle de la fila, nunca llegaba al Asistente.
+    const sinNombreAccesible = (a) => !!a && !a.name && !a.aria && !a.text && !a.ph;
     return {
       interaccion: sanitize(
         tl
@@ -304,15 +408,21 @@ const builders = {
           .map((e) => {
             // Solo el selector compacto (la cola identificativa); sin duplicar
             // arbol+sel, que inflaba el contexto con cadenas enormes.
+            const base = e.data.inpMs != null ? { inpMs: e.data.inpMs } : {};
+            if (e.data.anchor && sinNombreAccesible(e.data.anchor)) base.sinNombreAccesible = true;
             switch (e.type) {
               case "input":
-                return { tipo: "input", el: shortSel(e.data.selector), val: e.data.value };
+                return { tipo: "input", el: shortSel(e.data.selector), val: e.data.value, ...base };
               case "key":
-                return { tipo: "key", el: shortSel(e.data.selector), key: e.data.masked ? "***" : (e.data.key || e.data.text) };
+                return { tipo: "key", el: shortSel(e.data.selector), key: e.data.masked ? "***" : (e.data.key || e.data.text), ...base };
               case "dragdrop":
                 return { tipo: "dragdrop", de: shortSel(e.data.from), a: shortSel(e.data.to) };
+              case "scroll":
+                return { tipo: "scroll", x: e.data.x, y: e.data.y };
+              case "resize":
+                return { tipo: "resize", w: e.data.width, h: e.data.height };
               default:
-                return { tipo: e.type, el: shortSel(e.data.selector) };
+                return { tipo: e.type, el: shortSel(e.data.selector), ...base };
             }
           })
       ),
@@ -334,6 +444,69 @@ const builders = {
       });
     }
     return { estructura: sanitize([...porSelector.values()].slice(-cap)) };
+  },
+
+  // v2.5.9c: antes "resource-timing" solo aparecia recortado a los N mas
+  // pesados dentro de "performance" — aqui va el listado COMPLETO (acotado
+  // por el mismo sistema de presupuesto que protege a los demas ambitos),
+  // igual que el chip "recurso" que ya se ve entero en Auditoria.
+  resources: (cap, tl) => {
+    const recursos = tl.filter((e) => e.type === "resource-timing");
+    if (!recursos.length) return {};
+    return {
+      recursos: sanitize({
+        total: recursos.length,
+        items: recursos.slice(-cap).map((e) => ({
+          url: shortSel(e.data.url),
+          tipo: e.data.tipo,
+          kb: e.data.kb,
+          ms: e.data.ms,
+          cache: e.data.cache || false,
+          protocolo: e.data.protocolo || undefined,
+          fases: e.data.fases,
+        })),
+      }),
+    };
+  },
+
+  // v2.5.9c: antes un bloque de codigo solo llegaba al Asistente si su `ref`
+  // coincidia con un error YA incluido en el ambito Errores (p.ej. quedaba
+  // fuera si el usuario lo resolvio bajo demanda con "Ver codigo" sobre un
+  // frame que no era un error, o si el error se recorto por el tope de cap).
+  // Aqui van TODOS los bloques resueltos durante la sesion.
+  codeblocks: (cap, tl) => {
+    const bloques = tl.filter((e) => e.type === "code-block");
+    if (!bloques.length) return {};
+    return {
+      codigo: sanitize(
+        bloques.slice(-cap).map((e) => ({
+          ref: e.data.ref,
+          fn: e.data.fn,
+          codigo: (e.data.snippet || []).map((s) => `${s.hit ? "\u203a" : " "} ${s.n}: ${s.code}`).join("\n"),
+        }))
+      ),
+    };
+  },
+
+  // v2.5.9c: antes las cabeceras de respuesta solo se resumian de forma
+  // agregada dentro de Resumen (cuantas se auditaron, cuantas con CSP). Aqui
+  // va el detalle completo por peticion — sus HALLAZGOS de seguridad ya
+  // llegaban completos via el ambito Seguridad (se reflejan como eventos
+  // "security" propios), esto agrega el registro tecnico crudo.
+  headers: (cap, tl) => {
+    const headers = tl.filter((e) => e.type === "response-headers");
+    if (!headers.length) return {};
+    return {
+      cabeceras: sanitize({
+        total: headers.length,
+        items: headers.slice(-cap).map((e) => ({
+          url: shortSel(e.data.url),
+          status: e.data.status,
+          seguridad: e.data.seguridad,
+          servidor: e.data.servidor || undefined,
+        })),
+      }),
+    };
   },
 };
 

@@ -15,7 +15,7 @@
  */
 import { OpenWebUIClient, PROVIDERS } from "./lib/openwebui-client.js";
 import { renderMarkdown, Markdown } from "./lib/markdown.js";
-import { ContextBridge, SCOPES } from "./lib/context-bridge.js";
+import { ContextBridge, SCOPES, SCOPE_TYPES } from "./lib/context-bridge.js";
 import { ChatCache } from "./lib/chat-cache.js";
 import { computeKpis } from "../qa/bundle-schema.js";
 import { Store, Poller, captureOpenRows, restoreOpenRows } from "../lib/reactive-store.js";
@@ -86,21 +86,17 @@ async function refreshConnection() {
 // --- Contexto: chips de ambito ---------------------------------------------
 function scopeCount(id) {
   const c = state.counts || {};
-  switch (id) {
-    case "metadata": return "";
-    case "errors": return (c.error || 0) + (c.unhandledrejection || 0);
-    case "network": return c.network || 0;
-    case "console": return c.console || 0;
-    case "routes": return c.route || 0;
-    case "functions": return c["function-call"] || 0;
-    case "globals": return c["global-state"] || 0;
-    case "interactions": return (c.click || 0) + (c.input || 0) + (c.key || 0) + (c.dblclick || 0) + (c.dragdrop || 0);
-    case "audit": return c.focus || 0;
-    case "security": return c.security || 0;
-    case "performance": return (c["web-vitals"] || 0) + (c["interaction-timing"] || 0) + (c["resource-timing"] || 0);
-    case "replay": return state.replayPasos || "";
-    default: return "";
-  }
+  if (id === "metadata") return "";
+  if (id === "replay") return state.replayPasos || "";
+  // Fuente unica: los mismos tipos de evento que usa el Asistente para
+  // construir el contexto de este ambito (ver SCOPE_TYPES en
+  // context-bridge.js) — antes esta funcion mantenia su propia lista de
+  // tipos por separado, y ambas listas se desincronizaban con el tiempo
+  // (p.ej. "routes" no sumaba "navigation", "interactions" no sumaba
+  // "middleclick" aunque el Asistente si los contaba).
+  const types = SCOPE_TYPES[id];
+  if (!types) return "";
+  return types.reduce((sum, t) => sum + (c[t] || 0), 0);
 }
 function renderScopes() {
   const host = $("scopes");
@@ -318,28 +314,109 @@ function wireActions() {
     $("act-cfg").setAttribute("aria-expanded", String(open));
   });
   // Perfil, dominios y telemetria: configuracion persistente, independiente de
-  // la sesion de captura — por eso vive en su propio panel con su propio boton.
-  $("act-domains").addEventListener("click", async () => {
-    const panel = $("domains-cfg");
-    const open = panel.hasAttribute("hidden");
-    if (open) {
-      const s = (await qaControl("getSettings")) || {};
-      const st = (s && s.settings) || {};
-      state.settings = st;
-      $("cfg-domains").value = arrToLines(st.allowedDomains);
-      $("cfg-prof-name").value = (st.profile && st.profile.name) || "";
-      $("cfg-prof-email").value = (st.profile && st.profile.email) || "";
-      $("cfg-wh-url").value = (st.webhook && st.webhook.url) || "";
-      $("cfg-wh-token").value = (st.webhook && st.webhook.token) || "";
-      $("cfg-wh-mode").value = (st.webhook && st.webhook.mode) || "manual";
-      $("cfg-wh-enabled").checked = !!(st.webhook && st.webhook.enabled);
-      $("cfg-autostart").checked = !!st.autoStart;
-      panel.removeAttribute("hidden");
-    } else {
-      panel.setAttribute("hidden", "");
+  // la sesion de captura — vive como tarjeta siempre visible en Reporte (2.6.0),
+  // ya no detras de un boton "Ajustes ▾" en Auditoria.
+  async function loadSettingsIntoForm() {
+    const s = (await qaControl("getSettings")) || {};
+    const st = (s && s.settings) || {};
+    state.settings = st;
+    $("cfg-domains").value = arrToLines(st.allowedDomains);
+    $("cfg-prof-name").value = (st.profile && st.profile.name) || "";
+    $("cfg-prof-email").value = (st.profile && st.profile.email) || "";
+    $("cfg-wh-url").value = (st.webhook && st.webhook.url) || "";
+    $("cfg-wh-token").value = (st.webhook && st.webhook.token) || "";
+    $("cfg-wh-mode").value = (st.webhook && st.webhook.mode) || "manual";
+    $("cfg-wh-enabled").checked = !!(st.webhook && st.webhook.enabled);
+    $("cfg-autostart").checked = !!st.autoStart;
+  }
+  window.__charlyLoadSettings = loadSettingsIntoForm;
+  loadSettingsIntoForm(); // la tarjeta vive siempre visible en Reporte: se carga una vez al iniciar
+
+  // === Icono personalizado (item 4) ==========================================
+  // Todo el redimensionado ocurre en el navegador (canvas oculto ya presente
+  // en el HTML) — nunca se sube la imagen original a ningun lado. El logo por
+  // defecto SIEMPRE es el que ya trae el <img> en el HTML (icons/icon48.png);
+  // si el dato guardado resulta corrupto (base64 truncado, formato invalido),
+  // el propio evento "error" de la imagen revierte al original sin que el
+  // usuario tenga que hacer nada.
+  const DEFAULT_LOGO_SRC = "../../icons/icon48.png";
+  function applyIconEverywhere(dataUrl) {
+    for (const id of ["bar-logo", "icon-preview"]) {
+      const img = document.getElementById(id);
+      if (!img) continue;
+      img.onerror = () => {
+        img.onerror = null; // evita un bucle si el propio default fallara
+        img.src = DEFAULT_LOGO_SRC;
+      };
+      img.src = dataUrl || DEFAULT_LOGO_SRC;
     }
-    $("act-domains").setAttribute("aria-expanded", String(open));
+  }
+  /** Redimensiona un archivo de imagen a un PNG cuadrado (recorte "cover"). */
+  function resizeImageFile(file, size) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("El archivo no es una imagen valida"));
+        img.onload = () => {
+          const canvas = $("icon-canvas");
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, size, size);
+          const scale = Math.max(size / img.width, size / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+          resolve(canvas.toDataURL("image/png"));
+        };
+        img.src = String(reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  $("icon-upload").addEventListener("click", () => $("icon-file").click());
+  $("icon-file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImageFile(file, 128);
+      const res = await qaControl("setCustomIcon", { dataUrl });
+      if (!res || !res.ok) throw new Error((res && res.error) || "no se pudo guardar");
+      applyIconEverywhere(dataUrl);
+      $("icon-msg").textContent = "Icono actualizado.";
+      $("icon-reset").disabled = false;
+      toast("Icono personalizado guardado.");
+    } catch (e) {
+      $("icon-msg").textContent = "No se pudo procesar la imagen: " + (e && e.message ? e.message : "formato invalido");
+      toast("No se pudo cargar el icono.");
+    } finally {
+      ev.target.value = "";
+    }
   });
+  $("icon-reset").addEventListener("click", async () => {
+    await qaControl("clearCustomIcon");
+    applyIconEverywhere(null);
+    $("icon-msg").textContent = "";
+    $("icon-reset").disabled = true;
+    toast("Icono restablecido al original.");
+  });
+  // Al iniciar: si hay un icono guardado, se aplica; si no existe o esta
+  // corrupto, el <img> ya trae el logo por defecto en su atributo src y el
+  // onerror (conectado dentro de applyIconEverywhere) lo garantiza.
+  (async () => {
+    try {
+      const res = await qaControl("getCustomIcon");
+      if (res && res.ok && res.dataUrl) {
+        applyIconEverywhere(res.dataUrl);
+        $("icon-reset").disabled = false;
+      }
+    } catch {
+      /* se queda con el logo por defecto que ya trae el HTML */
+    }
+  })();
+
   // Panel de KPIs (desplegable): resumen de la sesion sin recorrer el timeline.
   $("tl-kpis-toggle").addEventListener("click", () => {
     const panel = $("tl-kpis");
@@ -788,7 +865,10 @@ function wire() {
   $("cfg-save").addEventListener("click", async () => {
     const prov = $("cfg-provider").value;
     const pDef = PROVIDERS[prov] || {};
-    const base = $("cfg-base").value.trim() || pDef.baseUrl || DEFAULT_AI.baseUrl;
+    // La URL fija del proveedor (si existe) gana siempre — evita guardar un
+    // baseUrl obsoleto que quedo en el campo oculto tras cambiar de proveedor
+    // (p.ej. la URL de OpenWebUI persistiendo al cambiar a Gemini).
+    const base = pDef.baseUrl || $("cfg-base").value.trim() || DEFAULT_AI.baseUrl;
     await saveConfig({
       provider: prov,
       baseUrl: base,
@@ -811,7 +891,7 @@ function wire() {
     const pDef = PROVIDERS[prov] || {};
     const tmp = new OpenWebUIClient({
       provider: prov,
-      baseUrl: $("cfg-base").value.trim() || pDef.baseUrl || "",
+      baseUrl: pDef.baseUrl || $("cfg-base").value.trim() || "",
       model: $("cfg-model").value.trim() || pDef.defaultModel || "",
       apiKey: $("cfg-key").value.trim(),
       proxyUrl: $("cfg-proxy").value.trim(),
@@ -1232,6 +1312,7 @@ init();
     } else if (name === "report") {
       qaPoller.stop();
       renderReportTab();
+      window.__charlyLoadSettings?.();
     } else {
       qaPoller.stop();
     }
@@ -1349,9 +1430,15 @@ init();
     try {
       const res = await qaControl("getKpis");
       const k = res && res.kpis;
+      const descartados = k && k.eventosDescartados;
       liveEl.textContent = k && k.eventos
         ? `${k.eventos} eventos · ${k.errores} errores · fidelidad no aplica aqui`
         : "Aun sin eventos. Graba una sesion en la pestana Auditoria.";
+      // Aviso explicito de recorte (v2.6.1): antes de esto, una sesion que
+      // superara MAX_EVENTS perdia datos de forma completamente silenciosa.
+      if (descartados > 0) {
+        liveEl.textContent += ` · ⚠ ${descartados} eventos anteriores descartados (limite de sesion alcanzado)`;
+      }
     } catch {
       liveEl.textContent = "Sin datos disponibles.";
     }

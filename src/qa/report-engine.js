@@ -207,6 +207,11 @@ export function assembleReport(rawTimeline, meta = {}) {
       recording: meta.recording || null, // recordingId, tabId, windowId, startUrl (tarea 1)
       entorno: meta.entorno || null, // sistema, navegador, ventana, cookies (1.4/1.5)
       eventCount: sorted.length,
+      // Constancia explicita de recorte (v2.6.1): si la sesion supero
+      // MAX_EVENTS en algun momento, cuantos eventos MAS ANTIGUOS se
+      // descartaron para hacer espacio — nunca queda como una perdida
+      // silenciosa. Ausente/0 en el caso normal (la inmensa mayoria de sesiones).
+      discardedEvents: meta.discardedEvents || 0,
       counts,
     },
     timeline,

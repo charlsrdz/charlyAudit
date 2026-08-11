@@ -707,6 +707,18 @@ select { cursor: pointer; appearance: auto; }
   padding-bottom: var(--s-2);
   border-bottom: 1px solid var(--c-border);
 }
+/* Subtitulo interno (v2.6.0): agrupa visualmente varias secciones dentro de
+   UNA sola tarjeta (p.ej. "Perfil y dominios" / "Telemetria" dentro de la
+   tarjeta unica de Ajustes en Reporte) sin anidar .cfg-group completos. */
+.cfg-group__sub {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--c-text);
+  margin: var(--s-2) 0 0;
+  padding-top: var(--s-2);
+  border-top: 1px dashed var(--c-border);
+}
+.cfg-group__sub:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
 
 .capture-cfg textarea,
 .capture-cfg input[type="text"],
