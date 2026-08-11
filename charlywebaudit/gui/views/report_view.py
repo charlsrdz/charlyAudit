@@ -80,21 +80,45 @@ class ReportView(ttk.Frame):
         self.save_btn.configure(state="disabled")  # "guardar como" reexporta un CombinedReport; un archivo ya abierto ya esta guardado
 
     def _display_html(self, html: str) -> None:
-        self._raw_html = html
+        self._raw_html = html  # se guarda antes de cualquier salida temprana: "Abrir en el navegador" debe funcionar igual aunque falte tkinterweb
         self._empty_state.pack_forget()
-        self._html_container.pack(fill="both", expand=True, pady=(16, 20))
-
         if self._html_frame is None:
             # Import diferido: tkinterweb es una dependencia opcional (extra
             # "gui") — no debe fallar el resto de la app si no esta instalada,
             # y solo se paga su costo de import cuando de verdad hace falta.
-            from tkinterweb import HtmlFrame
-
+            try:
+                from tkinterweb import HtmlFrame
+            except ImportError:
+                # Bug real corregido: sin esto, faltar tkinterweb (instalacion
+                # parcial — "pip install ." sin el extra "[gui]", en un sistema
+                # que ya trae tkinter por su cuenta) dejaba arrancar la app
+                # normalmente y recien crasheaba con un traceback crudo aqui,
+                # al primer intento de ver un reporte.
+                self._show_missing_dependency("tkinterweb")
+                return
             self._html_frame = HtmlFrame(self._html_container, messages_enabled=False)
             self._html_frame.pack(fill="both", expand=True)
 
+        self._html_container.pack(fill="both", expand=True, pady=(16, 20))
         adapted = make_tkinterweb_compatible(html)
         self._html_frame.load_html(adapted)
+
+    def _show_missing_dependency(self, package: str) -> None:
+        for child in self._html_container.winfo_children():
+            child.destroy()
+        self._html_container.pack(fill="both", expand=True, pady=(16, 20))
+        tk.Label(
+            self._html_container,
+            text=f"No se pudo mostrar el reporte aquí: falta '{package}'.\n\n"
+            f'Instálalo con: pip install ".[gui]"\n\n'
+            "Mientras tanto, podés abrir el reporte en tu navegador con el botón de arriba "
+            "una vez que termine la corrida.",
+            bg=self._html_container["bg"],
+            fg="#f5b544",
+            justify="left",
+            padx=16,
+            pady=16,
+        ).pack(anchor="w")
 
     def _open_in_browser(self) -> None:
         if not self._raw_html:

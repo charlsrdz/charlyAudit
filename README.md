@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.0.6**
+**Versión actual: 0.0.7**
 
 ---
 
@@ -722,6 +722,96 @@ pedido — autor (`RedGPS`, vía las constantes centralizadas
 `AUTHOR_NAME`/`AUTHOR_DESCRIPTION` en `constants.py`), versión, y enlaces.
 Con scroll (`ScrollableFrame`) para que el contenido nunca quede
 inaccesible sin importar el tamaño de la ventana.
+
+## v0.0.7 — Bug real reportado en producción, y el escaneo que destapó
+
+Un usuario real corrió `charlywebaudit-gui` en su máquina (Linux,
+entorno virtual con `pip install .` normal) y se encontró con un
+traceback crudo de Python en vez de la interfaz gráfica. Reportó también
+el mensaje de `charlywebaudit --gui`, que decía `pip install "."` — sin
+el extra `[gui]` que sí estaba en el código fuente.
+
+### El bug reportado, diagnosticado con el error exacto que compartió
+
+```
+ModuleNotFoundError: No module named 'tkinter'
+```
+
+`charlywebaudit-gui` (el entry point directo, declarado en
+`pyproject.toml`) apuntaba a `charlywebaudit.gui.app:main` — y
+`gui/app.py` hace `import tkinter` a nivel de módulo, sin ninguna
+protección. `charlywebaudit --gui` (el flag de la CLI) sí tenía un
+try/except, pero era un camino de código *separado y distinto* —
+exactamente el tipo de duplicación que deja un hueco cuando solo se
+protege uno de los dos caminos.
+
+*Fix*: `gui/__init__.py` — un punto de entrada seguro, única fuente de
+verdad, que usan tanto `charlywebaudit-gui` (pyproject.toml) como
+`charlywebaudit --gui` (`__main__.py`). No importa nada de `gui.app`
+hasta confirmar que Tkinter está disponible. *Validado*: se simuló el
+error exacto que reportó el usuario (monkey-patching el import de
+`tkinter` para que fallara) y se confirmó `sys.exit(1)` limpio, con un
+mensaje que distingue explícitamente dos causas que antes se confundían
+en un solo mensaje genérico:
+
+- **Falta Tkinter** → instrucción por sistema operativo (`sudo apt
+  install python3-tk` en Debian/Ubuntu — el caso real del usuario —,
+  equivalentes para Fedora/Arch/Windows/macOS). Tkinter es un paquete del
+  **sistema operativo**, `pip` nunca puede instalarlo — decirle a alguien
+  "pip install X" para este error específico no solo no ayuda, es
+  directamente incorrecto.
+- **Falta una dependencia de pip** (`tkinterweb`/`pystray`/`pillow`) →
+  ahí sí, `pip install ".[gui]"`.
+
+### El segundo bug, encontrado diagnosticando el primero
+
+El mensaje que compartió el usuario —
+`Instala las dependencias con: pip install "."` — le faltaba el `[gui]`
+que sí estaba escrito en el código fuente. Causa real: ese mensaje se
+mostraba con `rich.console.Console.print()` en modo marcado (`markup`)
+activo, y **Rich interpreta `[gui]` como una etiqueta de estilo** — al no
+existir un estilo llamado "gui", lo elimina en silencio del texto
+visible. Confirmado reproduciendo el mensaje exacto y viendo `[gui]`
+desaparecer.
+
+### El escaneo de bugs que pidió el usuario — encontró algo más serio
+
+El mismo patrón (interpolar texto dinámico dentro de una cadena con
+marcado de Rich activo, sin escapar) apareció en más lugares — y en uno
+de ellos, la consecuencia es **pérdida real de información**, no solo
+cosmética:
+
+- **`Reporter.raw()`** — muestra la salida *cruda* de `npx playwright
+  test`. npm y Playwright usan corchetes en su propio formato de log
+  (`[WARN]`, nombres de test como `login [flaky]`). Con el marcado de
+  Rich activo, cualquier fragmento entre corchetes se interpretaba como
+  una etiqueta de estilo y **desaparecía en silencio** del texto
+  mostrado. *Validado*: se probó con salida realista de
+  npm/Playwright y se confirmó que `[flaky]` y `[otra-cosa]`
+  desaparecían por completo — información de diagnóstico real perdida,
+  no un detalle visual. *Fix*: `console.print(text, markup=False)` para
+  contenido no confiable/externo.
+- `ui/menu.py` (resumen de configuración: URL, ruta del script,
+  cabeceras) y `ui/forms.py` (nombre/valor de cada cabecera que el
+  usuario escribe) interpolaban texto controlado por el usuario dentro de
+  marcado de Rich sin escapar — el mismo riesgo, con datos que sí puede
+  llegar a escribir alguien (una URL con `?a[]=1`, una cabecera con
+  corchetes en el nombre). *Fix*: `rich.markup.escape()` sobre el valor
+  dinámico antes de interpolarlo.
+- **Un segundo bug de la misma familia que el original, más difícil de
+  encontrar**: `tkinterweb` y `pystray` se importan de forma perezosa —
+  recién cuando el usuario abre la pestaña Reporte o minimiza a la
+  bandeja, no al arrancar la app. Esto significa que una instalación
+  parcial (`pip install .` sin el extra `[gui]`, en un sistema que ya
+  trae Tkinter por su cuenta — el caso típico de Windows/macOS) deja
+  **arrancar la app con total normalidad**, y recién crashea con un
+  traceback crudo al primer intento de usar esas dos funciones
+  específicas — incluido desde el propio botón de cerrar la ventana
+  (que intenta minimizar a la bandeja). *Fix*: ambos puntos ahora
+  degradan con gracia — la vista de Reporte muestra un mensaje claro sin
+  perder la función de "Abrir en el navegador"; minimizar a la bandeja
+  avisa y mantiene la ventana abierta en vez de crashear. *Validado* con
+  captura de pantalla real del mensaje degradado dentro de la propia app.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

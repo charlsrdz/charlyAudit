@@ -9,16 +9,17 @@ import questionary
 from ..config import AppConfig, load_config, save_config
 from .forms import configure_assistant, configure_test
 from .theme import QUESTIONARY_STYLE, console, print_banner, print_info
+from rich.markup import escape
 
 
 def show_current_config(cfg: AppConfig) -> None:
     console.print()
     console.print("[bold]Configuración actual[/]")
-    console.print(f"  Script:    [dim]{cfg.test.spec_path or '(sin configurar)'}[/]")
-    console.print(f"  URL:       [dim]{cfg.test.url or '(sin configurar)'}[/]")
-    console.print(f"  Cabeceras: [dim]{cfg.test.headers or '(ninguna)'}[/]")
+    console.print(f"  Script:    [dim]{escape(cfg.test.spec_path or '(sin configurar)')}[/]")
+    console.print(f"  URL:       [dim]{escape(cfg.test.url or '(sin configurar)')}[/]")
+    console.print(f"  Cabeceras: [dim]{escape(str(cfg.test.headers or '(ninguna)'))}[/]")
     console.print(
-        f"  Asistente: [dim]{'configurado (' + cfg.assistant.provider + ')' if cfg.assistant.configured else 'sin configurar'}[/]"
+        f"  Asistente: [dim]{escape('configurado (' + cfg.assistant.provider + ')' if cfg.assistant.configured else 'sin configurar')}[/]"
     )
     console.print()
 

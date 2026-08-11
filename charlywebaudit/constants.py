@@ -12,7 +12,7 @@ from __future__ import annotations
 
 APP_NAME = "charlyWebAudit"
 APP_SLUG = "charlywebaudit"  # usado para rutas de config (platformdirs)
-APP_VERSION = "0.0.6"
+APP_VERSION = "0.0.7"
 APP_TAGLINE = "Orquesta CharlyAudit + Playwright en una sola corrida auditada"
 
 # --- Autor / créditos (sección Ayuda de la GUI, v0.0.6) ---------------------

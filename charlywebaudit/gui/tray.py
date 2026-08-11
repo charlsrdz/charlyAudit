@@ -81,7 +81,27 @@ class TrayController:
     def _start_icon(self) -> None:
         if self._thread is not None:
             return
-        import pystray
+        try:
+            import pystray
+        except ImportError:
+            # Bug real corregido: sin esto, faltar pystray (misma causa que
+            # con tkinterweb — instalacion parcial sin el extra "[gui]")
+            # crasheaba con un traceback crudo al intentar minimizar a la
+            # bandeja, incluido desde el propio boton X de cerrar la
+            # ventana. Se avisa y se mantiene la ventana abierta en vez de
+            # fallar silenciosa o ruidosamente.
+            self._minimized = False
+            from tkinter import messagebox
+
+            messagebox.showwarning(
+                APP_NAME,
+                "No se pudo minimizar a la bandeja: falta el paquete 'pystray'.\n\n"
+                'Instálalo con: pip install ".[gui]"\n\n'
+                "La ventana se mantiene abierta.",
+                parent=self.root,
+            )
+            self.root.deiconify()
+            return
 
         try:
             image = Image.open(_ICON_PATH)

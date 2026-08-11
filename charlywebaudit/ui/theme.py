@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import questionary
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -45,19 +46,19 @@ def print_banner() -> None:
 
 
 def print_section(title: str) -> None:
-    console.rule(f"[bold {BRAND}]{title}[/]")
+    console.rule(f"[bold {BRAND}]{escape(title)}[/]")
 
 
 def print_success(message: str) -> None:
-    console.print(f"[bold green]✓[/] {message}")
+    console.print(f"[bold green]✓[/] {escape(message)}")
 
 
 def print_info(message: str) -> None:
-    console.print(f"[bold {BRAND}]›[/] {message}")
+    console.print(f"[bold {BRAND}]›[/] {escape(message)}")
 
 
 def print_warning(message: str) -> None:
-    console.print(f"[bold yellow]⚠[/] {message}")
+    console.print(f"[bold yellow]⚠[/] {escape(message)}")
 
 
 def print_error(exc: Exception) -> None:
@@ -100,4 +101,12 @@ class CliReporter:
         print_error(exc)
 
     def raw(self, text: str) -> None:
-        console.print(text)
+        # Bug real corregido: esto muestra la salida CRUDA de `npx playwright
+        # test` — npm y Playwright usan corchetes en su propio formato de log
+        # ("[WARN]", nombres de test como "login [flaky]", etc.). Con el
+        # marcado de Rich activo, cualquier fragmento entre corchetes se
+        # interpreta como una etiqueta de estilo y se borra en silencio del
+        # texto mostrado — confirmado con un caso real antes de este fix.
+        # markup=False trata el contenido como texto literal, correcto para
+        # la salida de un proceso externo que no controlamos.
+        console.print(text, markup=False)

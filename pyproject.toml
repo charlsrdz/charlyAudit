@@ -1,6 +1,6 @@
 [project]
 name = "charlywebaudit"
-version = "0.0.6"
+version = "0.0.7"
 description = "CLI + GUI que orquesta CharlyAudit + un script Playwright real para producir un reporte de auditoria unificado (Playwright + Asistente IA, ambito por ambito)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,7 @@ gui = ["tkinterweb>=3.24.0", "pystray>=0.19.5", "pillow>=10.0.0"]
 
 [project.scripts]
 charlywebaudit = "charlywebaudit.__main__:main"
-charlywebaudit-gui = "charlywebaudit.gui.app:main"
+charlywebaudit-gui = "charlywebaudit.gui:main"
 
 [build-system]
 requires = ["setuptools>=68"]

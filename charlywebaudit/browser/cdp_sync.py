@@ -71,11 +71,6 @@ class CDPClient:
                 else:
                     await self._events.put(msg)
         except websockets.ConnectionClosed:
-            # Notificar a cualquier futuro pendiente que la conexión se cerró
-            for fut in self._pending.values():
-                if not fut.done():
-                    fut.set_exception(websockets.ConnectionClosed(None, None))
-            self._pending.clear()
             pass  # el navegador puede cerrar la conexion al terminar; no es un error
 
     async def send(self, method: str, params: dict | None = None, session_id: str | None = None, *, retries: int = 2) -> dict:
@@ -130,25 +125,18 @@ def _get_browser_ws_url(port: int) -> str:
         ) from exc
 
 
-async def wait_for_cdp_ready(port: int, timeout: float = 60) -> None:
-    """Sondea el puerto CDP hasta que responde (el navegador terminó de arrancar).
-    
-    Con extensiones cargadas, Chromium puede tardar más en estar listo para
-    responder al protocolo CDP. Se usa un timeout de 60s para dar suficiente tiempo.
-    """
+async def wait_for_cdp_ready(port: int, timeout: float = 30) -> None:
+    """Sondea el puerto CDP hasta que responde (el navegador terminó de arrancar)."""
     t0 = time.time()
-    attempts = 0
     while time.time() - t0 < timeout:
-        attempts += 1
         try:
             urllib.request.urlopen(f"http://localhost:{port}/json/version", timeout=1)
             return
-        except (urllib.error.URLError, ConnectionRefusedError) as e:
+        except (urllib.error.URLError, ConnectionRefusedError):
             await asyncio.sleep(0.15)
     raise BrowserLaunchError(
-        f"El navegador orquestado no respondió en el puerto CDP {port} tras {timeout}s (intentos: {attempts}).",
-        hint="El navegador puede estar tardando en arrancar (especialmente con extensiones cargadas), "
-             "o el puerto puede estar ocupado. Intenta cerrar otras instancias de Chrome/Chromium.",
+        f"El navegador orquestado no respondió en el puerto CDP {port} tras {timeout}s.",
+        hint="Puede que Chromium haya tardado en arrancar o que el puerto esté ocupado por otro proceso.",
     )
 
 
