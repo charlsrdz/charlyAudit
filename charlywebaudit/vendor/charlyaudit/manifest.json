@@ -1,7 +1,8 @@
 {
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAveW2wyil5sgTJaD+JzJDXMfgG/j9fUi8BJ39LIfBmgUXWli3ByGPsnhXTVdHsMre5cfr3iX+nuYGifSnHxQDK/svfBSfATheQzs+XLtC4ES0VA/NsJJaxfDfX/B1tsrd0me/WTtwfTSihOodALdtbz1CCFcWCYGwuyzrjnOycwC4qfKURw5cXDgUpkFaLGQRu4134Cvav6l75CemGFriQXQpgfmkQ6/KQA2gwYuS52ByJdyS6QHqjSGBL9gC/uqjaVzN3EczeSV38fWM1SGhGriNA15s6nSKeWpV5AK3ZA8b8/zK9EFzU4plfcROnPdkBZFfzHFFILHG4/X5xNEwJQIDAQAB",
   "manifest_version": 3,
   "name": "CharlyAudit",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Plantilla MV3 con CharlyAPI (acceso amplio al navegador, pestanas, sistema y pestana activa), suite de QA (session replay, sniffer de red, captura de consola/errores/estado, export Cypress/Playwright) y un asistente de IA en el panel lateral via Open WebUI.",
   "author": "CharlyPlugin",
   "minimum_chrome_version": "116",
@@ -83,5 +84,5 @@
       ]
     }
   ],
-  "version_name": "2.6.1a"
+  "version_name": "2.6.2"
 }

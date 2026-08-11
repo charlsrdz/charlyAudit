@@ -1,0 +1,115 @@
+"""
+gui/views/help_view.py — Sección Ayuda (v0.0.6): información del autor,
+qué hace la herramienta, y dónde encontrar más detalle.
+"""
+
+from __future__ import annotations
+
+import tkinter as tk
+import webbrowser
+from tkinter import ttk
+
+from ...constants import (
+    APP_NAME,
+    APP_TAGLINE,
+    APP_VERSION,
+    AUTHOR_DESCRIPTION,
+    AUTHOR_NAME,
+    RELATED_PROJECT,
+)
+from ..widgets import BrandHeader, Card, Header, ScrollableFrame
+
+
+class HelpView(ttk.Frame):
+    def __init__(self, parent: tk.Widget) -> None:
+        super().__init__(parent, padding=20)
+        self._build()
+
+    def _build(self) -> None:
+        Header(self, "Ayuda").pack(fill="x", pady=(0, 16))
+
+        # Contenedor con scroll: bug real de usabilidad corregido en
+        # v0.0.6 — al tamaño mínimo real de la ventana (820x600), la
+        # tarjeta "Requisitos" quedaba completamente fuera de vista, sin
+        # ninguna forma de llegar a ella.
+        scrollable = ScrollableFrame(self)
+        scrollable.pack(fill="both", expand=True)
+        body_root = scrollable.body
+
+        body = ttk.Frame(body_root)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+
+        # --- Columna izquierda: qué es, cómo funciona ---------------------
+        left = ttk.Frame(body)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+
+        about_card = Card(left, title="QUÉ ES CHARLYWEBAUDIT")
+        about_card.pack(fill="x")
+        ttk.Label(
+            about_card.body,
+            text=f"{APP_TAGLINE}.\n\n"
+            f"Corre un script real de Playwright con {RELATED_PROJECT} grabando la "
+            "sesión, y pide al Asistente de la extensión un análisis de los 15 "
+            "ámbitos de contexto sobre esa misma grabación — todo en una sola "
+            "corrida, con un reporte único al final.",
+            style="Surface.TLabel",
+            justify="left",
+            wraplength=380,
+        ).pack(anchor="w")
+
+        steps_card = Card(left, title="FLUJO DE UNA CORRIDA")
+        steps_card.pack(fill="x", pady=(12, 0))
+        for i, step in enumerate(
+            [
+                "Configurar prueba: script .spec.ts, URL, cabeceras opcionales.",
+                "Configurar Asistente IA: proveedor, modelo, API key (una vez).",
+                "Ejecutar: lanza el navegador, graba, corre el spec.",
+                "Reporte: resultado de Playwright + análisis de los 15 ámbitos.",
+            ],
+            start=1,
+        ):
+            ttk.Label(
+                steps_card.body, text=f"{i}. {step}", style="Surface.TLabel", justify="left", wraplength=380
+            ).pack(anchor="w", pady=(0, 6))
+
+        req_card = Card(left, title="REQUISITOS")
+        req_card.pack(fill="x", pady=(12, 0))
+        for req in ["Node.js + npm (para correr specs de @playwright/test)", "Chromium (se ofrece instalar solo)"]:
+            ttk.Label(req_card.body, text=f"• {req}", style="Surface.TLabel", justify="left", wraplength=380).pack(
+                anchor="w", pady=(0, 4)
+            )
+
+        # --- Columna derecha: autor, version, enlaces -----------------------
+        right = ttk.Frame(body)
+        right.grid(row=0, column=1, sticky="nsew")
+
+        author_card = Card(right, title="AUTOR")
+        author_card.pack(fill="x")
+        BrandHeader(author_card.body).pack(anchor="w", pady=(0, 10))
+        ttk.Label(author_card.body, text=AUTHOR_NAME, style="Surface.TLabel", font=("Segoe UI", 11, "bold")).pack(
+            anchor="w"
+        )
+        ttk.Label(
+            author_card.body, text=AUTHOR_DESCRIPTION, style="SurfaceMuted.TLabel", justify="left", wraplength=380
+        ).pack(anchor="w", pady=(6, 0))
+
+        version_card = Card(right, title="VERSIÓN")
+        version_card.pack(fill="x", pady=(12, 0))
+        ttk.Label(version_card.body, text=f"{APP_NAME} v{APP_VERSION}", style="Surface.TLabel").pack(anchor="w")
+
+        links_card = Card(right, title="MÁS INFORMACIÓN")
+        links_card.pack(fill="x", pady=(12, 0))
+        self._link(links_card.body, "Documentación (README del proyecto)", "readme")
+        self._link(links_card.body, "nodejs.org — instalar Node.js", "https://nodejs.org")
+
+    def _link(self, parent: tk.Widget, text: str, target: str) -> None:
+        label = ttk.Label(parent, text=text, style="Link.TLabel", cursor="hand2")
+        label.pack(anchor="w", pady=(0, 6))
+        if target.startswith("http"):
+            label.bind("<Button-1>", lambda e: webbrowser.open(target))
+        # target == "readme": el README vive junto al codigo fuente, no como
+        # una URL — se deja como texto informativo, sin acción de clic (no
+        # tiene sentido fingir un enlace que no lleva a ningún lado en un
+        # binario empaquetado, donde el README no viaja incluido).

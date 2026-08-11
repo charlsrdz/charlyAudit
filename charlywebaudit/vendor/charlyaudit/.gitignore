@@ -1,0 +1,16 @@
+# Dependencias
+node_modules/
+
+# Empaquetado
+*.zip
+*.crx
+*.pem
+
+# Entorno / editores
+.env
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log

@@ -927,7 +927,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             await stopRecordingBound("manual");
             sendResponse({ ok: true, isRecording: false, profileId: null });
           } else {
-            const res = await startRecordingBound(sender.tab);
+            // tabId explicito opcional (v2.6.2): por defecto sigue usando
+            // sender.tab (la pestana que envio el mensaje), pero una
+            // herramienta externa que controla el panel lateral como una
+            // pestana comun por CDP puede especificar CUAL pestana grabar,
+            // sin depender de que sea la misma que envia el mensaje.
+            const tab = message.tabId != null ? await chrome.tabs.get(message.tabId).catch(() => null) : sender.tab;
+            const res = await startRecordingBound(tab);
             sendResponse(res);
           }
           break;
