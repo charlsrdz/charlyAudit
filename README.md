@@ -1,6 +1,6 @@
 # CharlyAudit
 
-**Versión actual: 2.6.1a**
+**Versión actual: 2.6.2**
 
 Suite de QA, session replay y auditoría de seguridad para Chrome (MV3).
 Convierte cada sesión real de usuario en evidencia accionable y verificable
@@ -267,6 +267,7 @@ done
 
 | Versión | Foco principal |
 |---|---|
+| **2.6.2** | Compatibilidad con herramientas externas: `toggle` acepta un `tabId` explícito opcional (con `sender.tab` como comportamiento por defecto sin cambios) — necesario para que una herramienta que controla el panel lateral como una pestaña común (los popups nativos de extensión no son automatizables por CDP) pueda grabar una pestaña distinta a la que envía el mensaje |
 | **2.6.1a** | Causa raíz real de la tormenta de errores: nuestra propia comunicación interna (`postMessage` sin restricción) activaba un listener de terceros en la página que fallaba al procesarla, y el error resultante lo capturábamos y reenviábamos nosotros mismos — bucle auto-sostenido. Reemplazado por un canal `CustomEvent` dedicado, invisible para cualquier otro script de la página. Circuito de protección endurecido contra identificadores `VM####` cambiantes |
 | **2.6.1** | Fix crítico confirmado con datos reales de producción: una tormenta de errores idénticos (5,000 en 624ms, un mismo error repetido) agotaba el límite de eventos de toda la sesión de un golpe — circuito de protección que agrega en vez de emitir cada repetición · corregido un leak real de listeners acumulados en peticiones XHR reutilizadas · aviso explícito cuando una sesión pierde eventos por límite alcanzado |
 | **2.6.0** | Ajustes migrados a Reporte (Perfil/Dominios/Telemetría) · fix real de responsividad del botón Detener (esperas internas que ignoraban la solicitud hasta 3.7s por paso) · botón Reproducir en el popup · icono personalizado con redimensionado y fallback garantizado · paleta de colores ahora compartida con el popup |
@@ -294,6 +295,34 @@ done
 
 Detalle completo de cada versión desde 2.5.1 (documentación exhaustiva empezó
 en ese punto; versiones anteriores solo tienen el resumen de la tabla).
+
+---
+
+### v2.6.2 — `tabId` explícito en `toggle`, para herramientas externas
+
+Surgió al construir **charlyWebAudit**, una CLI separada que orquesta
+CharlyAudit junto con un script real de `@playwright/test` para producir un
+reporte unificado. Los popups nativos de extensión no son automatizables
+por CDP/Playwright (limitación conocida del propio protocolo) — la única
+forma real de controlar el panel lateral desde una herramienta externa es
+navegando a su URL (`chrome-extension://<id>/src/sidepanel/sidepanel.html`)
+como si fuera una pestaña común.
+
+Eso expuso un supuesto implícito en el código: la acción `toggle` grababa
+`sender.tab` — la pestaña que **envía** el mensaje — asumiendo que
+siempre coincide con la pestaña que el usuario quiere grabar. Es cierto
+cuando el panel lateral vive en su superficie real (asociada a una pestaña
+por la propia API de Chrome), pero deja de serlo en cuanto una herramienta
+externa aloja el panel en una pestaña propia para poder controlarlo por
+CDP: `sender.tab` termina siendo esa pestaña "anfitriona", no la que
+realmente interesa grabar.
+
+*Fix:* `toggle` acepta un `tabId` explícito opcional en el mensaje;
+`sender.tab` sigue siendo el comportamiento por defecto si no se manda
+(cero cambio para el uso normal de la extensión). *Validado con evidencia
+real*: se disparó `toggle` con un `tabId` explícito desde una pestaña
+distinta a la pestaña objetivo, y se confirmó que la grabación quedó en la
+pestaña correcta — no en la que envió el mensaje.
 
 ---
 
