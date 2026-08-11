@@ -45,7 +45,6 @@ CDP_PORT = 9333
 DEFAULT_ASSISTANT_CONFIG = {
     "provider": "gemini",
     "model": "gemini-flash-latest",
-     "apiKey": "",
 }
 
 DEFAULT_PALETTE = {
