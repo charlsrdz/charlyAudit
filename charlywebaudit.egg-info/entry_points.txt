@@ -1,3 +1,3 @@
 [console_scripts]
 charlywebaudit = charlywebaudit.__main__:main
-charlywebaudit-gui = charlywebaudit.gui.app:main
+charlywebaudit-gui = charlywebaudit.gui:main

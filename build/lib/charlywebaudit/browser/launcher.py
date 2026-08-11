@@ -40,7 +40,6 @@ class LaunchedRun:
     paused_target: PausedTarget
     work_dir: Path
     report_json_path: Path
-    config_path: Path
 
 
 class RunOrchestrator:
@@ -69,11 +68,7 @@ class RunOrchestrator:
     async def launch(self) -> LaunchedRun:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         report_json_path = self.work_dir / "playwright-report.json"
-        # IMPORTANTE: escribir config en el directorio del spec para que Node
-        # pueda resolver @playwright/test correctamente. Usar un nombre único
-        # para evitar colisiones si corren múltiples auditorías en paralelo.
-        config_name = f".charlywebaudit-config-{id(self)}.ts"
-        config_path = self.spec_path.parent / config_name
+        config_path = self.work_dir / "playwright.config.ts"
         write_playwright_config(
             config_path,
             spec_path=self.spec_path,
@@ -135,7 +130,6 @@ class RunOrchestrator:
             paused_target=paused_target,
             work_dir=self.work_dir,
             report_json_path=report_json_path,
-            config_path=config_path,
         )
 
     async def _wait_for_correct_tab(self, sync: BrowserSync, process: subprocess.Popen) -> PausedTarget:

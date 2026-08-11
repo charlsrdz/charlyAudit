@@ -244,31 +244,7 @@ async def run_audit(
             await run.sync.close()
             if run.process.poll() is None:
                 run.process.kill()
-            # Limpiar el archivo de config generado
-            if run.config_path.exists():
-                run.config_path.unlink()
         shutil.rmtree(work_dir, ignore_errors=True)
-
-
-def _run_audit_sync(cfg: AppConfig) -> CombinedReport:
-    """Ejecuta run_audit de forma sincrónica, manejando correctamente el event
-    loop incluso si ya existe uno activo (CLI vs GUI vs Jupyter/IPython)."""
-    try:
-        # Intenta obtener el event loop actual
-        asyncio.get_running_loop()
-        # Si llegamos aquí, ya hay un loop activo (GUI, Jupyter, etc.)
-        raise RuntimeError(
-            "Ya hay un event loop activo. Esto puede ocurrir si ejecutas desde "
-            "la GUI, Jupyter, IPython, o similar. Intenta ejecutar desde una "
-            "terminal normal: python -m charlywebaudit"
-        )
-    except RuntimeError as e:
-        if "no running event loop" in str(e).lower():
-            # No hay loop activo, podemos crear uno
-            return asyncio.run(run_audit(cfg))
-        else:
-            # Hay un loop activo o es otro error, esto es un problema
-            raise
 
 
 def _default_ask_save_path(default_name: str) -> str | None:
@@ -302,20 +278,14 @@ def main() -> None:
     ns = _parse_args(sys.argv[1:])
 
     if ns.gui:
-        try:
-            from .gui.app import main as gui_main
-        except ImportError as exc:
-            console.print(
-                f"[bold red]La interfaz gráfica no está disponible:[/] {exc}\n"
-                "[dim]Instala las dependencias con: pip install \".[gui]\"[/]"
-            )
-            sys.exit(1)
+        from .gui import main as gui_main  # punto de entrada seguro (ver gui/__init__.py) — misma logica que usa el entry point charlywebaudit-gui, una sola fuente de verdad
+
         gui_main()
         return
 
     def _on_run(cfg: AppConfig) -> None:
         try:
-            _run_audit_sync(cfg)
+            asyncio.run(run_audit(cfg))
         except CharlyWebAuditError as exc:
             print_error(exc)
         except KeyboardInterrupt:

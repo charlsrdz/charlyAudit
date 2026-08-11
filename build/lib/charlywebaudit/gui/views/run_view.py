@@ -17,11 +17,7 @@ from __future__ import annotations
 
 import queue
 import tkinter as tk
-import os
-
 from tkinter import ttk
-
-from pathlib import Path
 
 from ...config import AppConfig
 from ...errors import CharlyWebAuditError
@@ -31,22 +27,6 @@ from ..widgets import Header
 
 _PLACEHOLDER = "El registro de la corrida aparecerá aquí una vez que le des a \"Correr prueba\"."
 
-# Detectar el ejecutable sin usar Snap
-def setup_chrome_env():
-    chrome_paths = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser"
-    ]
-    for path in chrome_paths:
-        if Path(path).exists():
-            # Playwright y Node respetan esta variable de entorno automáticamente
-            os.environ["PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"] = path
-            return path
-    return None
-
-setup_chrome_env()
 
 class RunView(ttk.Frame):
     def __init__(self, parent: tk.Widget, cfg: AppConfig, bridge: AsyncBridge, on_report_ready=None) -> None:

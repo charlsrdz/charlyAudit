@@ -14,6 +14,7 @@ import questionary
 
 from ..config import AppConfig
 from .theme import QUESTIONARY_STYLE, console, print_info, print_warning
+from rich.markup import escape
 
 _KNOWN_PROVIDERS = {
     "gemini": "Google Gemini",
@@ -69,7 +70,7 @@ def _edit_headers(headers: dict[str, str]) -> dict[str, str]:
         if headers:
             console.print("\n[dim]Cabeceras actuales:[/]")
             for k, v in headers.items():
-                console.print(f"  [bold]{k}[/]: {v}")
+                console.print(f"  [bold]{escape(k)}[/]: {escape(v)}")
         else:
             console.print("\n[dim]Sin cabeceras personalizadas.[/]")
 

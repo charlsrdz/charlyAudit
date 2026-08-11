@@ -9,8 +9,6 @@ usuario quiera.
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +19,6 @@ from playwright.sync_api import sync_playwright
 from ..errors import ChromiumInstallFailedError, ChromiumNotInstalledError
 from ..ui.theme import QUESTIONARY_STYLE, console, print_error, print_info, print_success, print_warning
 from .platform_utils import find_xvfb_run, needs_virtual_display
-
 
 
 def _warn_if_missing_display() -> None:
@@ -45,45 +42,25 @@ def _warn_if_missing_display() -> None:
         )
 
 
-def get_chromium_executable_path() -> str | None:
-    """Retorna la ruta absoluta al ejecutable de Chromium o Google Chrome."""
-    # 1. Variable de entorno personalizada
-    custom = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-    if custom and Path(custom).exists():
-        return custom
-
-    # 2. Caché nativa de Playwright (buscar primero, prioriza Chromium puro)
-    cache_dir = Path.home() / ".cache" / "ms-playwright"
-    if cache_dir.exists():
-        # Buscar en chrome-linux64 (más reciente) y chrome-linux
-        for path in cache_dir.glob("chromium-*/chrome-linux64/chrome"):
-            if path.exists():
-                return str(path)
-        for path in cache_dir.glob("chromium-*/chrome-linux/chrome"):
-            if path.exists():
-                return str(path)
-
-    # 3. Rutas conocidas (Google Chrome / Chromium en Linux)
-    system_paths = [
-        Path("/usr/bin/google-chrome"),
-        Path("/usr/bin/google-chrome-stable"),
-        Path("/usr/bin/chromium"),
-        Path("/usr/bin/chromium-browser"),
-        Path("/snap/bin/chromium"),
-    ]
-    for path in system_paths:
-        if path.exists():
-            return str(path)
-
-    # 4. PATH del sistema
-    found = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
-    if found:
-        return found
-
-    return None
-
 def is_chromium_installed() -> bool:
-    return get_chromium_executable_path() is not None
+    """Verifica que exista en disco el binario exacto que la app usará en la
+    práctica — sin lanzar un navegador completo.
+
+    Bug real corregido en v0.0.2: la versión anterior comprobaba lanzando
+    Chromium con `headless=True` — pero la app SIEMPRE usa `headless=False`
+    (las extensiones de Chrome no cargan de forma fiable en modo headless
+    puro). En versiones recientes de Playwright, `headless=True` puede
+    resolver a un binario DISTINTO (`chrome-headless-shell`), separado del
+    que usa `headless=False` — es decir, la verificación podía decir "sí
+    está instalado" cuando en realidad faltaba el binario que la corrida
+    real necesita, o viceversa. Comprobar `executable_path` directamente
+    verifica el binario correcto, es más rápido (no lanza ni cierra un
+    proceso completo), y no depende de tener un display disponible."""
+    try:
+        with sync_playwright() as p:
+            return Path(p.chromium.executable_path).exists()
+    except Exception:
+        return False
 
 
 def _run_playwright_install() -> tuple[bool, str]:
