@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.0.7**
+**Versión actual: 0.0.8**
 
 ---
 
@@ -812,6 +812,68 @@ cosmética:
   perder la función de "Abrir en el navegador"; minimizar a la bandeja
   avisa y mantiene la ventana abierta en vez de crashear. *Validado* con
   captura de pantalla real del mensaje degradado dentro de la propia app.
+
+## v0.0.8 — Bug arquitectónico real: la GUI heredaba prompts de terminal
+
+Un usuario corrió `charlywebaudit --gui` sobre v0.0.7 y compartió este log:
+
+```
+⚠ No se encontró un Chromium funcional gestionado por Playwright.
+/usr/lib/python3.12/tkinter/__init__.py:861: RuntimeWarning: coroutine 'Application.run_async' was never awaited
+  func(*args)
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+⚠ No se encontró un Chromium funcional gestionado por Playwright.
+⚠ No se encontró un Chromium funcional gestionado por Playwright.
+
+── Prerrequisitos ──
+✕ La corrida terminó con un error: asyncio.run() cannot be called from a running event loop
+```
+
+### Diagnóstico
+
+`ensure_chromium()` (`browser/chromium.py`) llamaba directamente a
+`questionary.confirm().ask()` para preguntar si instalar Chromium — un
+prompt de **terminal**, pensado para la CLI. `run_audit()` (el motor
+compartido entre CLI y GUI) llama a `ensure_chromium()` sin pasar por la
+abstracción `Reporter` que sí se usa para el resto de los mensajes — un
+hueco real que quedó del refactor de v0.0.5.
+
+Cuando la GUI corre una prueba, `run_audit()` se ejecuta dentro del hilo
+en segundo plano de `AsyncBridge`, que **ya tiene su propio event loop de
+asyncio corriendo** (`loop.run_forever()`). `questionary` (construido
+sobre `prompt_toolkit`) detecta ese loop activo e intenta usar su propio
+camino asíncrono (`Application.run_async()`) — pero `ensure_chromium()`
+lo llama de forma síncrona (`.ask()`, sin `await`), así que esa corrutina
+interna de `prompt_toolkit` nunca se espera (de ahí el
+`RuntimeWarning`), y más adentro, el intento de `prompt_toolkit` de
+resolverlo de todas formas termina llamando `asyncio.run()` — que revienta
+porque ya hay un loop corriendo en ese hilo. *Validado*: se reprodujo el
+error **exacto** del usuario (mismo `RuntimeWarning`, mismo `RuntimeError`)
+armando a mano un hilo con su propio event loop y llamando
+`ensure_chromium()` dentro, antes de tocar una sola línea de código.
+
+### Fix
+
+`ensure_chromium()` ya no sabe nada de `questionary` ni de `rich`
+directamente — recibe un `Reporter` (para su salida) y una función
+`confirm(pregunta) -> bool` (para la decisión interactiva), ambos
+intercambiables. La CLI pasa la versión de `questionary` de siempre
+(comportamiento idéntico, cero cambios visibles). La GUI pasa una nueva
+función construida en `gui/dialogs.py`: agenda un diálogo nativo de
+Tkinter en el hilo principal con `root.after(0, ...)` y bloquea —
+mediante un `threading.Event`— únicamente el hilo en segundo plano que
+preguntó, nunca el de Tkinter, hasta que el usuario responde. Es el mismo
+patrón de cruce de hilos que `tray.py` ya usaba (validado en v0.0.5) para
+las acciones del menú de bandeja, aplicado aquí a una pregunta que
+necesita una respuesta de vuelta, no solo notificar algo.
+
+*Validado*: con `ensure_chromium()` real, un hilo real con su propio event
+loop, y un `mainloop()` de Tkinter real corriendo — se confirmó que la
+pregunta se resuelve correctamente en el hilo principal y que el resultado
+es la excepción esperada (`ChromiumNotInstalledError`, simulando que el
+usuario responde que no), **no** el crash original. También se confirmó
+que la CLI, sin pasar ningún override, sigue funcionando exactamente
+igual que antes de este cambio.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

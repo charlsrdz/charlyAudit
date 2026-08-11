@@ -23,6 +23,7 @@ charlywebaudit/browser/platform_utils.py
 charlywebaudit/gui/__init__.py
 charlywebaudit/gui/app.py
 charlywebaudit/gui/async_bridge.py
+charlywebaudit/gui/dialogs.py
 charlywebaudit/gui/report_render.py
 charlywebaudit/gui/theme.py
 charlywebaudit/gui/tray.py

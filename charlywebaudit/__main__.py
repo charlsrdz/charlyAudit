@@ -128,24 +128,32 @@ async def run_audit(
     *,
     reporter: Reporter | None = None,
     ask_save_path=None,
+    confirm_install=None,
 ) -> CombinedReport:
     """Motor de orquestación completo — ya no sabe nada de `rich` ni de
-    cómo se pregunta dónde guardar el reporte: eso vive detrás de
-    `reporter` (ver reporter.py) y `ask_save_path`, para que la GUI (v0.0.5)
-    pueda reusar este mismo motor sin duplicar nada.
+    cómo se pregunta dónde guardar el reporte, ni cómo se confirma instalar
+    Chromium: todo eso vive detrás de `reporter` (ver reporter.py),
+    `ask_save_path` y `confirm_install`, para que la GUI (v0.0.5) pueda
+    reusar este mismo motor sin duplicar nada.
 
     `ask_save_path(default_name: str) -> str | None`: por defecto (CLI) usa
     el mismo prompt de `questionary` de siempre. La GUI puede pasar su
     propio diálogo de "Guardar como", o `None`/una función que devuelve
     `None` para no guardar y solo quedarse con el `CombinedReport` devuelto
     (para mostrarlo en pantalla, por ejemplo).
+
+    `confirm_install(question: str) -> bool`: por defecto (CLI) un prompt de
+    `questionary`. Bug real corregido en v0.0.8: `questionary` no es seguro
+    de llamar desde el hilo en segundo plano de `AsyncBridge` (ver
+    `browser/chromium.py`) — la GUI DEBE pasar su propia versión thread-safe
+    (ver `gui/dialogs.py`), nunca dejar el valor por defecto.
     """
     reporter = reporter or CliReporter()
     if ask_save_path is None:
         ask_save_path = _default_ask_save_path
 
     reporter.section("Prerrequisitos")
-    ensure_chromium()
+    ensure_chromium(reporter=reporter, confirm=confirm_install)
     node_v, npm_v = ensure_node()
     reporter.success(f"Node {node_v} · npm {npm_v} detectados.")
 

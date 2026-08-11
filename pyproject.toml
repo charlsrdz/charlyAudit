@@ -1,6 +1,6 @@
 [project]
 name = "charlywebaudit"
-version = "0.0.7"
+version = "0.0.8"
 description = "CLI + GUI que orquesta CharlyAudit + un script Playwright real para producir un reporte de auditoria unificado (Playwright + Asistente IA, ambito por ambito)."
 readme = "README.md"
 requires-python = ">=3.11"

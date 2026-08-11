@@ -131,9 +131,16 @@ class RunView(ttk.Frame):
             return None
 
         from ...__main__ import run_audit  # import diferido: evita ciclos (run_audit importa desde gui indirectamente en algunos flujos)
+        from ..dialogs import make_thread_safe_confirm
+
+        # Bug real corregido en v0.0.8: sin esto, ensure_chromium() usaba su
+        # confirmacion por defecto (questionary, pensada para terminal) —
+        # incompatible con el hilo en segundo plano de AsyncBridge, donde
+        # esta corrida realmente se ejecuta. Ver gui/dialogs.py.
+        confirm_install = make_thread_safe_confirm(self.winfo_toplevel())
 
         self.bridge.submit(
-            run_audit(self.cfg, reporter=reporter, ask_save_path=_ask_save_path),
+            run_audit(self.cfg, reporter=reporter, ask_save_path=_ask_save_path, confirm_install=confirm_install),
             on_done=self._on_run_done,
         )
         self._poll_queue()

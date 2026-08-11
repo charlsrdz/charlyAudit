@@ -5,6 +5,26 @@ Valida si el Chromium que gestiona Playwright está instalado; si no, ofrece
 instalarlo (nunca lo hace sin preguntar) y no permite continuar sin él —
 reintentando el proceso de instalación si falla, tantas veces como el
 usuario quiera.
+
+v0.0.8 — bug arquitectónico real corregido, reportado en producción: esta
+función llamaba directamente a `questionary.confirm().ask()` y a los
+`print_*` de la CLI (`rich.console`) — funcionaba bien para la CLI, pero
+`run_audit()` (el motor compartido, ver `__main__.py`) también la llama
+cuando corre desde la GUI, dentro del hilo en segundo plano de
+`AsyncBridge`, que YA tiene su propio event loop de asyncio corriendo.
+`questionary`/`prompt_toolkit` no puede usarse de forma segura ahí — lo
+confirmó exactamente el error reportado: `RuntimeWarning: coroutine
+'Application.run_async' was never awaited` seguido de `asyncio.run()
+cannot be called from a running event loop`. Se reprodujo el error exacto
+en un hilo con su propio loop antes de corregir esto.
+
+Ahora `ensure_chromium()` no sabe nada de `questionary` ni de `rich`
+directamente — recibe un `Reporter` (la misma interfaz compartida
+CLI/GUI, ver `reporter.py`) para su salida, y una función `confirm` para
+la decisión interactiva de instalar/reintentar. La CLI pasa la versión
+basada en `questionary` (comportamiento idéntico al de antes); la GUI
+pasa una versión que muestra un diálogo nativo de Tkinter de forma
+segura entre hilos (ver `gui/dialogs.py`).
 """
 
 from __future__ import annotations
@@ -12,16 +32,26 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 import questionary
 from playwright.sync_api import sync_playwright
 
 from ..errors import ChromiumInstallFailedError, ChromiumNotInstalledError
-from ..ui.theme import QUESTIONARY_STYLE, console, print_error, print_info, print_success, print_warning
+from ..reporter import Reporter
+from ..ui.theme import CliReporter, QUESTIONARY_STYLE
 from .platform_utils import find_xvfb_run, needs_virtual_display
 
+ConfirmFn = Callable[[str], bool]
 
-def _warn_if_missing_display() -> None:
+
+def _cli_confirm(question: str) -> bool:
+    """Confirmación interactiva por terminal (comportamiento original,
+    preservado tal cual para la CLI) — nunca se llama desde la GUI."""
+    return bool(questionary.confirm(question, default=True, style=QUESTIONARY_STYLE).ask())
+
+
+def _warn_if_missing_display(reporter: Reporter) -> None:
     """CharlyAudit necesita `headless: false` (las extensiones de Chrome no
     cargan de forma fiable en modo headless puro) — en Linux, eso requiere
     un entorno gráfico real o uno virtual (Xvfb). En macOS/Windows correr
@@ -30,12 +60,12 @@ def _warn_if_missing_display() -> None:
     if not needs_virtual_display():
         return
     if find_xvfb_run():
-        print_info(
+        reporter.info(
             "No se detectó un entorno gráfico ($DISPLAY vacío), pero 'xvfb-run' está disponible — "
             "charlyWebAudit lo usará automáticamente."
         )
     else:
-        print_warning(
+        reporter.warning(
             "No se detectó un entorno gráfico ($DISPLAY vacío) ni 'xvfb-run' instalado. "
             "CharlyAudit necesita un navegador con interfaz (las extensiones no cargan en modo headless puro) — "
             "instala un paquete de Xvfb (p. ej. 'apt install xvfb') o corre charlyWebAudit desde un entorno con pantalla."
@@ -77,23 +107,29 @@ def _run_playwright_install() -> tuple[bool, str]:
         return False, str(exc)
 
 
-def ensure_chromium() -> None:
+def ensure_chromium(*, reporter: Reporter | None = None, confirm: ConfirmFn | None = None) -> None:
     """Punto de entrada: garantiza que Chromium esté instalado antes de
-    continuar, o lanza ChromiumNotInstalledError si el usuario declina."""
-    _warn_if_missing_display()
+    continuar, o lanza ChromiumNotInstalledError si el usuario declina.
+
+    `reporter`: por defecto `CliReporter()` (mismo comportamiento que
+    antes de existir esta abstracción). `confirm`: por defecto un prompt
+    de `questionary` (mismo comportamiento CLI de siempre) — la GUI DEBE
+    pasar su propia versión (ver `gui/dialogs.py`), nunca usar la
+    por defecto, porque `questionary` no es seguro de llamar desde el
+    hilo en segundo plano de `AsyncBridge` (ver docstring del módulo)."""
+    reporter = reporter or CliReporter()
+    confirm = confirm or _cli_confirm
+
+    _warn_if_missing_display(reporter)
 
     if is_chromium_installed():
-        print_success("Chromium detectado.")
+        reporter.success("Chromium detectado.")
         return
 
-    print_warning("No se encontró un Chromium funcional gestionado por Playwright.")
+    reporter.warning("No se encontró un Chromium funcional gestionado por Playwright.")
 
     while True:
-        proceed = questionary.confirm(
-            "¿Instalar Chromium ahora? (requerido para continuar)",
-            default=True,
-            style=QUESTIONARY_STYLE,
-        ).ask()
+        proceed = confirm("¿Instalar Chromium ahora? (requerido para continuar)")
         if not proceed:
             raise ChromiumNotInstalledError(
                 "Chromium es obligatorio para ejecutar cualquier prueba.",
@@ -101,19 +137,19 @@ def ensure_chromium() -> None:
                 "o vuelve a intentarlo desde este menú.",
             )
 
-        print_info("Instalando Chromium (puede tardar varios minutos)…")
+        reporter.info("Instalando Chromium (puede tardar varios minutos)…")
         ok, err = _run_playwright_install()
         if ok and is_chromium_installed():
-            print_success("Chromium instalado correctamente.")
+            reporter.success("Chromium instalado correctamente.")
             return
 
-        print_error(
+        reporter.error(
             ChromiumInstallFailedError(
                 "La instalación de Chromium falló." + (f" Detalle: {err}" if err else ""),
                 hint="Revisa tu conexión a internet y espacio en disco. Puedes reintentar ahora mismo.",
             )
         )
-        retry = questionary.confirm("¿Reintentar la instalación?", default=True, style=QUESTIONARY_STYLE).ask()
+        retry = confirm("¿Reintentar la instalación?")
         if not retry:
             raise ChromiumNotInstalledError(
                 "Chromium sigue sin instalarse; no se puede continuar.",
