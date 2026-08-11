@@ -1,0 +1,839 @@
+Metadata-Version: 2.4
+Name: charlywebaudit
+Version: 0.0.6
+Summary: CLI + GUI que orquesta CharlyAudit + un script Playwright real para producir un reporte de auditoria unificado (Playwright + Asistente IA, ambito por ambito).
+Author: RedGPS
+License: Proprietary
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: questionary>=2.0.1
+Requires-Dist: rich>=13.7.1
+Requires-Dist: playwright>=1.45.0
+Requires-Dist: jinja2>=3.1.4
+Requires-Dist: platformdirs>=4.2.2
+Requires-Dist: websockets>=12.0
+Provides-Extra: build
+Requires-Dist: pyinstaller>=6.10.0; extra == "build"
+Provides-Extra: gui
+Requires-Dist: tkinterweb>=3.24.0; extra == "gui"
+Requires-Dist: pystray>=0.19.5; extra == "gui"
+Requires-Dist: pillow>=10.0.0; extra == "gui"
+
+# charlyWebAudit
+
+CLI + GUI en Python 3.11+ que orquesta [CharlyAudit](../CharlyPlugin) junto
+con un script real de `@playwright/test` (TypeScript, tal cual lo
+escribiría cualquier equipo de QA) para producir un único reporte HTML: el
+resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
+ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
+grabada.
+
+**Versión actual: 0.0.6**
+
+---
+
+## Por qué existe
+
+CharlyAudit es una extensión de Chrome — pensada para que una persona la
+use manualmente. charlyWebAudit existe para automatizar ese mismo flujo:
+correr un spec real de Playwright con CharlyAudit grabando la sesión, y
+que el propio Asistente de la extensión analice lo que grabó, sin que
+nadie tenga que hacerlo a mano cada vez.
+
+## Instalación
+
+### Prerrequisitos
+
+charlyWebAudit orquesta dos motores externos que **no instala por ti**
+(salvo Chromium, ver más abajo) — conviene confirmarlos antes de instalar
+nada de este proyecto:
+
+| Requisito | Por qué hace falta | Verificar |
+|---|---|---|
+| **Python 3.11+** | Es el lenguaje del propio proyecto. | `python3 --version` |
+| **Node.js + npm** (LTS recomendado) | Los specs que corre charlyWebAudit son de `@playwright/test`, el framework de pruebas *real* de Node — no la librería `playwright` de Python. Ver "Decisiones de arquitectura" más abajo para el porqué. | `node --version` y `npm --version` |
+| **Chromium** (gestionado por Playwright) | El navegador donde se carga la extensión y corre el spec. | No hace falta instalarlo a mano — charlyWebAudit lo detecta al arrancar y **ofrece instalarlo** si falta (con reintento si la instalación falla). |
+| **Linux únicamente: un entorno gráfico o `xvfb-run`** | La extensión necesita `headless: false` — en un servidor/CI Linux sin sesión gráfica hace falta un display virtual. | charlyWebAudit detecta esto solo y envuelve el comando con `xvfb-run` automáticamente si está disponible; si no, te avisa con la instrucción exacta (`apt install xvfb` en Debian/Ubuntu). |
+
+Si no tienes Node.js instalado: descárgalo de
+[nodejs.org](https://nodejs.org) (versión LTS) — es un instalador estándar
+en Windows/macOS, o el gestor de paquetes de tu distribución en Linux
+(`apt install nodejs npm`, etc.). charlyWebAudit **no** intenta instalar
+Node automáticamente (a diferencia de Chromium): se instala de formas muy
+distintas según el sistema operativo, y automatizarlo sería más frágil que
+útil — si falta, charlyWebAudit se detiene con un mensaje claro de dónde
+conseguirlo.
+
+### Cómo instalar
+
+**Opción A — binario standalone (recomendado si no quieres instalar Python):**
+
+Descarga el ejecutable de tu sistema operativo (ver "Construir el
+instalador binario" en la sección Desarrollo) y corrélo directamente — no
+necesita `pip install` ni Python instalado en la máquina que lo ejecuta.
+Sigue necesitando Node.js/npm (ver tabla arriba) — eso no se empaqueta
+dentro del binario.
+
+```bash
+./charlywebaudit            # Linux/macOS
+charlywebaudit.exe           # Windows
+```
+
+**Opción B — desde código fuente, solo CLI:**
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # opcional pero recomendado; en Windows: .venv\Scripts\activate
+pip install .
+playwright install chromium   # opcional: charlyWebAudit lo ofrece solo si falta, pero instalarlo ahora evita el paso interactivo la primera vez
+```
+
+**Opción C — desde código fuente, con interfaz gráfica:**
+
+```bash
+pip install ".[gui]"
+```
+
+El extra `[gui]` agrega `tkinterweb` (visor del reporte embebido),
+`pystray` (bandeja del sistema) y `pillow` — Tkinter en sí ya viene con
+Python en la instalación estándar de Windows/macOS. **Excepción real en
+Linux**: varias distribuciones (Debian/Ubuntu incluidas) separan Tkinter
+del intérprete base — si `pip install ".[gui]"` corre bien pero
+`charlywebaudit --gui` falla con `ModuleNotFoundError: No module named
+'tkinter'`, instala el paquete de sistema correspondiente antes de
+reintentar (`sudo apt install python3-tk` en Debian/Ubuntu, `sudo dnf
+install python3-tkinter` en Fedora) — no hay forma de resolver esto solo
+con `pip`, es un paquete del sistema operativo, no de PyPI.
+
+### Primer arranque
+
+```bash
+charlywebaudit          # menú de terminal
+charlywebaudit --gui    # interfaz gráfica (si instalaste el extra [gui])
+```
+
+La primera vez, te va a pedir dos cosas una sola vez cada una (después
+quedan recordadas en tu configuración local — ver `config.py`):
+
+1. **Chromium**, si no lo instalaste ya con `playwright install chromium`
+   — confirma con "sí" cuando te lo ofrezca.
+2. **El Asistente IA** (proveedor, modelo, API key) — se guarda localmente
+   y de ahí en adelante solo se ofrece *actualizar*, nunca se vuelve a
+   pedir desde cero.
+
+La extensión CharlyAudit ya viaja empaquetada dentro de charlyWebAudit
+(`charlywebaudit/vendor/charlyaudit/`) — no hace falta descargarla ni
+configurar su ruta a mano; solo se te pregunta si esa copia interna no
+aparece (por ejemplo, si estás corriendo un checkout de código fuente
+incompleto).
+
+## Uso
+
+```bash
+charlywebaudit          # menu de terminal (CLI)
+charlywebaudit --gui    # interfaz grafica
+charlywebaudit-gui      # equivalente directo a --gui
+```
+
+Abre un menú interactivo (o, con `--gui`, la ventana correspondiente):
+
+- **Correr prueba** — la corrida completa (ver flujo abajo).
+- **Configurar prueba** — ruta del script `.spec.ts`, URL, cabeceras HTTP
+  personalizadas. Se recuerda entre corridas.
+- **Configurar Asistente IA** — proveedor, modelo, API key. Se pide una
+  sola vez; después solo se ofrece actualizar.
+
+La GUI es una interfaz alternativa sobre el **mismo motor** — no hay dos
+implementaciones del flujo de corrida, `run_audit()` es idéntico para
+ambas (ver "Interfaz gráfica" más abajo, sección "Cómo se comparte el
+motor con la CLI").
+
+## El flujo de una corrida
+
+1. Verifica Chromium (lo instala si falta, con reintento) y Node/npm (si
+   falta, bloquea con instrucciones — no se instala automáticamente).
+2. Genera un `playwright.config.ts` que carga CharlyAudit vía
+   `launchOptions.args` y expone un puerto de depuración remota — sin
+   tocar ni una línea del `.spec.ts` del usuario.
+3. Lanza `npx playwright test` como subproceso de Node — el mismo camino
+   que el usuario correría a mano.
+4. Se conecta por CDP en paralelo y arma un mecanismo de sincronización:
+   la pestaña que el spec está a punto de usar queda **congelada** en el
+   instante de su creación (no navega, no ejecuta nada) hasta que
+   charlyWebAudit libera la pausa explícitamente.
+5. Abre el panel lateral de CharlyAudit como una pestaña propia (los
+   popups nativos de extensión no son automatizables por CDP — se navega
+   a su URL como cualquier página), aplica la configuración de captura
+   (variables globales vigiladas), libera la pausa, identifica la pestaña
+   del spec y activa la grabación apuntando explícitamente a ella.
+6. Espera a que el spec termine, detiene la grabación.
+7. Activa cada uno de los 15 ámbitos del Asistente **uno a la vez**, pide
+   un análisis de cada uno, y desactiva ese ámbito antes de pasar al
+   siguiente — aislado, no todos juntos.
+8. Une el resultado de Playwright + las 15 respuestas en un solo reporte
+   HTML y ofrece guardarlo.
+
+## Decisiones de arquitectura (y por qué)
+
+### El script del usuario es un spec real de `@playwright/test`
+
+No una función que reciba una `page` ya abierta — un archivo TypeScript
+completo con `import { test, expect } from '@playwright/test'`, corrido
+por el CLI de Node, exactamente como cualquier equipo de QA ya lo hace.
+Esto es lo que hace falta Node/npm como prerrequisito además de Chromium.
+
+### La extensión tiene un ID fijo
+
+`manifest.json` de CharlyAudit incluye una `key` RSA (par de claves en
+`../CharlyPlugin` — la clave privada no se distribuye, solo determina el
+ID). Sin esto, el ID de una extensión cargada sin publicar cambia en cada
+carga, y no habría forma estable de construir la URL del panel lateral
+(`chrome-extension://<id>/...`) de antemano.
+
+### El perfil de Chromium es efímero — no persistente
+
+Un spec con el `import` estándar usa las fixtures por defecto de
+Playwright Test, que crean un perfil nuevo en cada corrida. No hay forma
+de forzar un perfil persistente sin que el spec importe un fixture propio
+— y eso violaría la regla de no tocar el script del usuario. Por eso la
+"memoria" de la configuración de la extensión no vive en el perfil del
+navegador: vive en el `config.json` de charlyWebAudit, y se re-aplica
+sobre la extensión al inicio de cada corrida (`runner/seed.py`).
+
+### El mecanismo de sincronización (pausa CDP)
+
+`Target.setAutoAttach` con `waitForDebuggerOnStart: true` congela
+cualquier pestaña nueva en el instante de su creación. Esto es lo que
+garantiza que la grabación esté activa antes de que el spec navegue —
+sin esto, hay una ventana real donde el primer `page.goto()` del spec
+podría ocurrir sin que nadie lo esté grabando todavía.
+
+**Restricción real descubierta en validación**: mientras la pestaña sigue
+congelada, `chrome.tabs.query()` no la ve — Chrome no la registra como
+pestaña "consultable" hasta que empieza a ejecutar algo. Además,
+Playwright Test tiene un mecanismo interno de paciencia limitada: si el
+navegador queda sin responder demasiado tiempo, lo da por colgado y lo
+cierra. Por eso el diseño final libera la pausa **primero**, y de
+inmediato (sin esperas artificiales) identifica la pestaña y activa la
+grabación — la ventana de riesgo se redujo de "indefinida" a
+"milisegundos de ida y vuelta CDP", muy por debajo del tiempo real que
+toma cargar cualquier página (DNS/TCP/TLS), así que en la práctica no se
+pierde contenido real. No es una garantía matemática perfecta como el
+diseño original con el que arrancamos, pero es el punto más cercano a eso
+que el comportamiento real de Playwright Test permite.
+
+Por la misma razón, la configuración se aplica en dos fases: solo lo que
+de verdad afecta qué se captura (variables vigiladas) se aplica **antes**
+de liberar la pausa — rápido, a propósito. El Asistente IA y la paleta de
+colores (que no afectan la grabación, solo el análisis posterior y la
+apariencia) se aplican **después** de confirmar que la grabación está
+activa, sin ninguna presión de tiempo.
+
+### Comunicación MAIN↔ISOLATED del panel lateral por JS inyectado, no CDP de alto nivel
+
+Toda la interacción con el panel lateral (clics, llenado de campos, lectura
+de resultados) se hace vía `Runtime.evaluate` sobre la **misma** conexión
+CDP cruda que arma el mecanismo de pausa — no se abre una segunda conexión
+con Playwright de alto nivel, que competiría por el control de
+`Target.setAutoAttach` sobre el mismo navegador.
+
+## Desarrollo
+
+### Preparar el entorno
+
+```bash
+git clone <este-repo>
+cd charlyWebAudit
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[gui,build]"                         # editable + GUI + herramientas de empaquetado
+playwright install chromium
+```
+
+`pip install -e .` (modo editable) es lo correcto **para desarrollar** —
+los cambios en `charlywebaudit/*.py` se reflejan de inmediato sin
+reinstalar. **Importante**: ese modo editable es *solo* para desarrollo —
+`build/build_installer.py` exige explícitamente una instalación normal
+(`pip install .`, sin `-e`) antes de construir el binario, porque una
+instalación editable confunde el análisis estático de PyInstaller y
+produce un ejecutable que compila pero falla al arrancar (ver "Bugs reales
+corregidos" en v0.0.2 más abajo — es un problema real que se encontró
+construyendo esta misma herramienta, no una precaución teórica).
+
+### Estructura del proyecto
+
+```
+charlywebaudit/
+  __main__.py          Punto de entrada CLI; run_audit() es el motor
+                        completo de orquestación (compartido con la GUI)
+  config.py             Configuración persistente (platformdirs)
+  constants.py           Branding, valores por defecto, ID fijo de la extensión
+  errors.py               Excepciones propias con mensaje + consejo accionable
+  reporter.py              Interfaz Reporter — desacopla el progreso de CÓMO se muestra
+  browser/                Todo lo relacionado con lanzar y controlar el navegador
+    launcher.py             Orquesta: genera config, lanza Node, conecta CDP
+    cdp_sync.py               Mecanismo de pausa de sincronización (cliente CDP crudo)
+    extension_page.py          Interactúa con páginas de la extensión (panel lateral)
+    config_gen.py               Genera playwright.config.ts dinámicamente
+    chromium.py                  Detecta/instala Chromium
+    node_check.py                 Detecta Node/npm/@playwright-test
+    platform_utils.py              Helpers multiplataforma (Windows/macOS/Linux)
+  runner/                  Lo que pasa DURANTE una corrida
+    seed.py                  Aplica la configuración a la extensión
+    recorder.py                Inicia/detiene la grabación
+    assistant.py                 Pide análisis de los 15 ámbitos, uno a la vez
+    test_exec.py                  Parsea el reporte JSON de Playwright
+  report/                   Construye y renderiza el reporte final
+  ui/                        La CLI (questionary + rich)
+  gui/                        La interfaz gráfica (Tkinter) — ver v0.0.5/v0.0.6 abajo
+    theme.py                    Branding: paleta, fuentes, estilos ttk
+    widgets.py                   Componentes reutilizables (Header/Card/etc — v0.0.6)
+    assets/                       Íconos reales de la extensión (branding compartido)
+    views/                         Las seis pantallas (formularios, ejecución, reporte, ayuda)
+  vendor/charlyaudit/       Copia empaquetada de la extensión CharlyAudit
+build/
+  build_installer.py       Script de build del binario (mismo en los 3 SO)
+  entrypoint.py               Wrapper que PyInstaller necesita (ver nota abajo)
+```
+
+### Correr desde código fuente durante el desarrollo
+
+```bash
+python3 -m charlywebaudit          # CLI
+python3 -m charlywebaudit --gui    # GUI
+```
+
+No hay una suite de pruebas automatizadas en este proyecto — la validación
+se hizo, en cada versión, corriendo la pieza real (navegador real,
+extensión real, llamadas reales a la API del Asistente) y confirmando el
+resultado con evidencia verificable (capturas de pantalla para la GUI,
+lectura directa de `chrome.storage.local`/`localStorage` para confirmar
+que una configuración se aplicó, inspección de archivos extraídos para
+confirmar que un binario empaqueta lo que debe). Si vas a modificar algo,
+el estándar de este proyecto es: **antes de dar un cambio por bueno,
+ejecutá el camino real que ejercita, no solo confirmés que compila** — las
+secciones "Qué está validado con evidencia real" y los bloques de cada
+versión más abajo muestran ejemplos concretos de qué tipo de prueba
+cuenta como suficiente aquí.
+
+En Linux sin entorno gráfico (este mismo repo se desarrolló así), un
+patrón útil para probar la GUI manualmente:
+
+```bash
+Xvfb :99 -screen 0 980x680x24 &
+export DISPLAY=:99
+python3 -m charlywebaudit --gui
+```
+
+### Construir el instalador binario
+
+```bash
+pip install ".[build]"
+pip install .              # SIN -e — ver nota en "Preparar el entorno"
+python build/build_installer.py
+# o los wrappers de conveniencia:
+#   ./build/build_unix.sh       (Linux/macOS)
+#   build\build_windows.bat     (Windows)
+```
+
+Produce `dist/charlywebaudit` (Linux/macOS) o `dist/charlywebaudit.exe`
+(Windows). Es el **mismo script**, sin ninguna diferencia, el que produce
+el binario correcto en cada sistema operativo — PyInstaller no compila
+cruzado: hay que correr este script *en* cada SO objetivo para obtener su
+binario nativo (ver el detalle completo, con lo ya validado y lo
+pendiente, en "Instalador binario multiplataforma" dentro de v0.0.2 más
+abajo).
+
+### Convención de versiones
+
+`APP_VERSION` vive en dos lugares que deben coincidir siempre:
+`pyproject.toml` (`[project].version`) y
+`charlywebaudit/constants.py` (`APP_VERSION`) — no hay un mecanismo
+automático que los sincronice, así que al subir versión hay que tocar
+ambos. `charlywebaudit --version` es la forma más rápida de confirmar cuál
+quedó activa en un entorno instalado o en un binario ya construido.
+
+## v0.0.2 — Bugs, oportunidades, compatibilidad multiplataforma e instalador binario
+
+### Bugs reales corregidos (encontrados releyendo el código, no reportados por nadie)
+
+- **`finally` enmascarando el error real con un `NameError`.** En
+  `run_audit()`, si `orchestrator.launch()` fallaba, el bloque `finally`
+  intentaba limpiar una variable `run` que nunca llegó a asignarse —
+  ocultando el error original detrás de un `NameError` confuso, y dejando
+  el directorio temporal de la corrida sin limpiar. *Validado*: se simuló
+  el fallo y se confirmó que ahora se propaga la excepción real, con
+  `work_dir` limpio de todas formas.
+- **Fuga de la conexión CDP en fallos parciales de `launch()`.** Si el
+  navegador conectaba pero un paso posterior fallaba (p. ej. no se
+  encontraba la pestaña del spec), la conexión websocket nunca se cerraba
+  explícitamente. Corregido con limpieza garantizada en cualquier camino
+  de fallo dentro de `launch()`.
+- **`is_chromium_installed()` verificaba el binario equivocado.** Lanzaba
+  Chromium con `headless=True` para comprobar la instalación, pero la app
+  siempre usa `headless=False` en la práctica (las extensiones no cargan
+  de forma fiable en modo headless puro) — en versiones recientes de
+  Playwright, `headless=True` puede resolver a un binario *distinto*
+  (`chrome-headless-shell`). La comprobación podía decir "instalado" con
+  el binario equivocado, o "no instalado" teniendo el correcto. *Fix*:
+  comprobar la existencia del binario exacto (`executable_path`) en disco,
+  sin lanzar ningún proceso — de paso, ~780ms en vez de varios segundos.
+- **`"npx"` sin resolver en `launcher.py` — bug real de Windows.** Pasar el
+  nombre desnudo a `subprocess.Popen` sin `shell=True` puede fallar en
+  Windows: los ejecutables de npm son en realidad scripts `.cmd`, y
+  `CreateProcess` no resuelve la extensión igual que `cmd.exe`. *Fix*: un
+  helper compartido (`resolve_executable`) que siempre usa la ruta
+  completa que devuelve `shutil.which()`.
+- **`os.chmod` podía abortar todo el guardado de configuración.** Si el
+  ajuste de permisos fallaba (posible en Windows, donde el modelo de
+  permisos es distinto), el `except OSError` envolvente lo trataba como si
+  el archivo entero no se hubiera guardado — aunque sí se hubiera escrito
+  correctamente. Separado en un intento best-effort independiente.
+- **Bug real de empaquetado (PyInstaller), encontrado construyendo el
+  instalador**: apuntar PyInstaller directo a `charlywebaudit/__main__.py`
+  lo ejecuta como script suelto, sin paquete padre — sus imports relativos
+  internos fallan. Resuelto con `build/entrypoint.py`, un wrapper fuera del
+  paquete. Un segundo bug relacionado: una instalación editable
+  (`pip install -e .`) confunde el análisis estático de PyInstaller y
+  produce un binario que *compila* pero falla al *arrancar* con
+  `ModuleNotFoundError` — sin ningún aviso durante el build en sí. Ahora
+  `build_installer.py` verifica esto explícitamente antes de invocar
+  PyInstaller, con un mensaje claro de qué corregir.
+- Limpieza de código muerto (`profile_dir`, `seeded`,
+  `default_profile_dir()`) — residuos del diseño original de perfil
+  persistente, abandonado en v0.0.1 al descubrir la restricción real de
+  perfiles efímeros.
+
+### Oportunidades implementadas
+
+- **La extensión CharlyAudit viaja empaquetada dentro de charlyWebAudit**
+  (`charlywebaudit/vendor/charlyaudit/`) — en v0.0.1 había que localizarla
+  y configurar su ruta manualmente en cada instalación nueva; ahora se usa
+  automáticamente si no hay una ruta personalizada configurada. *Validado*:
+  wheel real instalado en un entorno virtual limpio, extensión completa
+  (con su `key` fija) disponible sin ninguna configuración manual.
+- **`--version`/`--help`** — CLI mínima estándar (vía `argparse`, sin
+  dependencias nuevas), útil para scripts y para confirmar qué versión
+  corresponde a un binario instalado.
+- **Auto-detección y uso de `xvfb-run` en Linux sin entorno gráfico.**
+  CharlyAudit necesita `headless: false` — en un servidor/CI Linux sin
+  `$DISPLAY`, eso fallaría en cada corrida. Ahora se detecta y se envuelve
+  el comando automáticamente si `xvfb-run` está disponible (o se avisa
+  claramente si no lo está). *Validado*: corrida completa sin `$DISPLAY`
+  ni envolver nada manualmente — antes había que anteponer `xvfb-run -a`
+  a mano en cada prueba.
+
+### Compatibilidad Windows/macOS (análisis, sin poder ejecutar en esos SO)
+
+Este proyecto se desarrolló y validó en Linux — todo lo de esta sección es
+**análisis de código, no ejecución real** en Windows/macOS. Se documenta
+así de manera explícita en vez de dar por sentado que "debería funcionar".
+
+- **Rutas**: todo el proyecto usa `pathlib.Path` y `platformdirs` — ambos
+  ya manejan las diferencias de SO internamente, no hay lógica de rutas
+  hecha a mano en ningún lado.
+- **`subprocess` con ejecutables de npm**: corregido (ver bugs arriba) —
+  ahora siempre se usa la ruta resuelta por `shutil.which()`, nunca el
+  nombre desnudo, en las tres plataformas.
+- **Permisos del archivo de configuración**: `chmod 600` funciona tal cual
+  en Linux/macOS. En Windows, `os.chmod` con banderas POSIX no ofrece la
+  misma protección — el modelo de permisos de Windows es por ACLs, no bits
+  rwx; `os.chmod` ahí solo puede aproximar alternando el atributo de
+  solo-lectura. Documentado como limitación conocida, no se intentó
+  implementar el equivalente en ACLs de Windows (fuera de alcance de esta
+  versión).
+- **Consola con colores (`rich`/`questionary`)**: ambas librerías manejan
+  la compatibilidad con terminales de Windows internamente (`rich` recurre
+  a `colorama` cuando hace falta) — no se necesitó código propio para esto.
+- **Firma de código**: los binarios que produce PyInstaller no están
+  firmados. En Windows, un `.exe` sin firmar dispara la advertencia de
+  SmartScreen ("Windows protegió su PC"); en macOS, un binario transferido
+  sin notarización queda marcado por Gatekeeper y no se abre con doble clic
+  sin un paso adicional (clic derecho → Abrir, o `xattr -d
+  com.apple.quarantine`). Firmar correctamente requiere un certificado de
+  desarrollador de cada plataforma — fuera de alcance de esta versión;
+  documentado aquí para que no sea una sorpresa al distribuir el binario.
+
+### Instalador binario multiplataforma (punto 4 del pedido)
+
+`build/build_installer.py` construye un ejecutable standalone (PyInstaller,
+`--onefile`) que no necesita Python instalado para correr. Es el **mismo
+script**, sin ninguna diferencia, el que produce el binario correcto en
+cada sistema operativo — PyInstaller no compila cruzado: hay que correr
+este script *en* cada SO objetivo para obtener su binario nativo. Eso es
+lo que lo hace "multiplataforma": el sistema de build es idéntico en los
+tres SO, no que un solo comando produzca los tres binarios a la vez.
+
+```bash
+pip install ".[build]"
+pip install .              # NO -e (ver nota de compatibilidad abajo)
+python build/build_installer.py
+# o los wrappers de conveniencia:
+#   ./build/build_unix.sh       (Linux/macOS)
+#   build\build_windows.bat     (Windows)
+```
+
+Produce `dist/charlywebaudit` (Linux/macOS) o `dist/charlywebaudit.exe`
+(Windows).
+
+**Validado de verdad, no solo construido**: el binario Linux se construyó y
+se probó de forma aislada — copiado a un directorio limpio, con el paquete
+`charlywebaudit` **desinstalado** de pip, confirmando que el binario corre
+sin ninguna instalación de Python activa. `pyi-archive_viewer` confirmó los
+26 archivos de la extensión embebidos completos (`manifest.json` con su
+`key`, cada script de `src/`). En tiempo de ejecución, se confirmó que
+PyInstaller extrae la extensión a la ruta exacta que `bundled_extension_path()`
+espera. `--version`/`--help` responden correctamente; la corrida completa
+hacia el menú interactivo renderiza el banner real y la configuración
+persistida, fallando únicamente donde es *esperado* que falle (sin una
+terminal real conectada — `questionary` necesita un TTY genuino, no es una
+limitación del binario).
+
+**No construido ni probado en esta sesión** (Linux, sin acceso a Windows ni
+macOS): los binarios de esas dos plataformas. El script es idéntico y no
+tiene ninguna rama de código específica de Linux que pudiera fallar en
+otro SO, pero "el código no debería fallar" no es lo mismo que "se probó y
+funcionó" — esa validación queda pendiente de correr en cada plataforma
+real.
+
+## v0.0.5 — Interfaz gráfica (Tkinter), branding, modo segundo plano y visualización completa
+
+### 1 — Interfaz gráfica multiplataforma (Tkinter)
+
+`charlywebaudit/gui/` — una GUI de escritorio construida sobre Tkinter
+(incluida en la librería estándar de Python en Windows/macOS/Linux, sin
+dependencias de sistema adicionales más allá de lo que ya trae Python en
+la mayoría de instalaciones — en este entorno de desarrollo Linux hizo
+falta instalar el paquete `python3-tk` a nivel de sistema, algo a tener en
+cuenta al documentar requisitos para usuarios Linux).
+
+**El problema de arquitectura central**: todo el motor de orquestación
+(`browser/`, `runner/`, `__main__.run_audit`) está construido sobre
+`asyncio` — corre corrutinas, espera conexiones CDP, procesos de Node,
+etc. El bucle principal de Tkinter es síncrono y de un solo hilo: no puede
+bloquearse esperando una corrida que tarda minutos sin congelar toda la
+interfaz. `gui/async_bridge.py` resuelve esto con un event loop de asyncio
+corriendo en un hilo dedicado, sometiendo corrutinas con
+`asyncio.run_coroutine_threadsafe()` y devolviendo el progreso a Tkinter
+por una `queue.Queue` (la única forma segura de cruzar la frontera
+hilo-a-interfaz — tocar un widget de Tkinter directamente desde otro hilo
+no es seguro).
+
+**Cómo se comparte el motor con la CLI**: se extrajo `reporter.py`, una
+interfaz mínima (`Reporter`) con métodos como `.info()`/`.success()`/
+`.error()` — antes `run_audit()` llamaba directamente a los `print_*` de
+`rich` (acoplado a terminal). Ahora `run_audit()` solo conoce esta
+interfaz; la CLI implementa `CliReporter` (envuelve los mismos `print_*`
+de siempre, comportamiento idéntico) y la GUI implementa `QueueReporter`
+(empuja a la cola thread-safe). **Un solo motor, dos superficies** — no
+hay una segunda implementación de la lógica de corrida para la GUI.
+
+*Validado con evidencia real*: con el `mainloop()` real de Tkinter
+corriendo (no simulado), se confirmó que la interfaz procesó 35
+actualizaciones de progreso mientras una corrutina de 0.5 segundos corría
+en paralelo en el hilo de fondo — nunca se congeló. Se confirmó también
+que el refactor de `run_audit()` para aceptar un `Reporter` no cambió en
+absoluto el comportamiento existente de la CLI (mismo error se propaga
+igual que antes del refactor).
+
+### 2 — Branding (mismo diseño que la extensión)
+
+`gui/theme.py` toma como base la paleta real de CharlyAudit — el mismo
+naranja de marca (`#b87619`, la misma constante `DEFAULT_PALETTE` que ya
+se siembra en la configuración de la extensión desde v0.0.1) y los mismos
+tokens oscuros que usa `sidepanel.css` de la extensión
+(`--c-bg`/`--c-surface`/`--c-border`/etc.) — la CLI, la extensión y ahora
+la GUI comparten una sola identidad visual, ninguna inventada por
+separado. Los íconos de la GUI y de la bandeja del sistema son los mismos
+PNG reales de `vendor/charlyaudit/icons/`.
+
+*Validado*: capturas de pantalla reales (bajo Xvfb) de la ventana
+renderizada, confirmando fondo oscuro, naranja de marca en títulos y
+botones primarios, y la paleta completa aplicada de forma consistente en
+las cinco pantallas de la app.
+
+### 3 — Modo segundo plano (bandeja del sistema / barra de estado)
+
+`gui/tray.py` — minimizar la ventana a un ícono de bandeja (Windows/Linux)
+o barra de menú (macOS) en vez de cerrar la app, vía `pystray`. Se eligió
+`pystray` porque ya declara sus propias dependencias nativas condicionales
+por sistema operativo en su propio paquete (`pyobjc-framework-Quartz` en
+macOS, `python-xlib` en Linux, API Win32 nativa en Windows) — no hace
+falta lógica propia de detección de plataforma para instalar lo correcto
+en cada una.
+
+**Nota de UX honesta sobre macOS**: a diferencia de Windows/Linux, lo
+convencional en macOS es que una app minimizada siga viviendo en el Dock,
+no solo en la barra de menú — pystray coloca el ícono en la barra de menú
+(NSStatusBar) igual que en los otros dos sistemas, funcionalmente
+equivalente a "estado de visibilidad mínima" mientras que se aparta un
+poco de la convención más común de macOS (integración nativa de Dock,
+fuera de alcance de esta versión).
+
+El botón de cerrar de la ventana (y un botón explícito "Minimizar a la
+bandeja", por si el gesto de cerrar-para-minimizar no es descubrible en
+algunos gestores de ventanas) ocultan la ventana (`withdraw()`) y arrancan
+el ícono; el menú del ícono ofrece "Abrir", "Correr prueba ahora" (dispara
+una corrida sin necesidad de restaurar la ventana primero) y "Salir" (cierre
+real, no minimizado).
+
+*Validado*: ciclo de vida completo probado con la ventana Tk real —
+visible → minimizado (`withdraw` confirmado) → ícono de bandeja activo →
+restaurado (`deiconify` confirmado) → ícono detenido. 5/5 aserciones
+correctas, repetido en dos corridas independientes.
+
+### 4 — Visualización completa: reporte, configuraciones, formularios
+
+Las cinco pantallas de la GUI (`gui/views/`):
+
+- **Inicio** — resumen del estado de configuración (script/URL/Asistente)
+  y accesos directos.
+- **Configurar prueba** — formulario completo: selector de archivo para el
+  script (`.spec.ts`), campo de URL, editor de cabeceras HTTP
+  personalizadas (agregar/quitar filas dinámicamente).
+- **Asistente IA** — proveedor (selector), modelo, API key (con
+  mostrar/ocultar).
+- **Ejecutar** — la corrida en vivo: progreso en tiempo real (la misma
+  información que vería la CLI, coloreada por tipo — sección/info/éxito/
+  advertencia/error), conectado al motor real vía `async_bridge.py`.
+- **Reporte** — el hallazgo técnico más importante de esta versión:
+  **`tkinterweb` (el renderizador HTML embebido) no soporta variables CSS**
+  (`var(--token)`) — confirmado comparando capturas de pantalla antes/después:
+  con variables, el texto queda invisible (mismo color que el fondo,
+  porque ninguno de los dos resuelve la variable); con colores literales,
+  renderiza correctamente. En vez de mantener una plantilla HTML duplicada
+  solo para la GUI, `gui/report_render.py` post-procesa el mismo HTML que
+  ya genera `report/html.py` (una sola fuente de verdad para el CSS),
+  sustituyendo cada `var(--token)` por su valor literal antes de
+  entregárselo a `tkinterweb`. El botón "Abrir en el navegador" sirve el
+  HTML **sin adaptar** (con las variables CSS intactas) para la fidelidad
+  visual completa que un navegador real sí soporta.
+
+*Validado*: reporte real (con casos de Playwright pasando/fallando y
+respuestas reales de ámbitos del Asistente) renderizado dentro de la
+ventana — capturas de pantalla confirmando colores correctos (verde real
+para "passed", rojo real para "failed", naranja de marca en títulos). Flujo
+de punta a punta confirmado: correr una prueba navega automáticamente a la
+pestaña Reporte con el resultado ya cargado. Formulario de configuración
+probado de forma interactiva real (no solo visual): llenar campos, hacer
+clic en Guardar, y confirmar que la configuración se persistió en disco y
+se reflejó en la pantalla de Inicio.
+
+### El instalador binario ahora incluye la GUI
+
+`build/build_installer.py` se actualizó para empaquetar también los
+recursos de la GUI: los íconos propios, los datos internos de
+`tkinterweb` (trae su propia hoja de estilos en `.tcl` que PyInstaller no
+detecta por análisis estático de código Python), y los hidden-imports de
+`pystray` correspondientes a la plataforma donde se construye (pystray
+elige su backend en tiempo de ejecución; PyInstaller no siempre sigue esa
+selección dinámica por análisis estático).
+
+*Validado con el mismo rigor que en v0.0.2*: el binario completo (~115MB,
+con Tkinter/tkinterweb/pystray/Pillow empaquetados) se probó de forma
+aislada — sin ninguna instalación de Python activa — y `charlywebaudit
+--gui` mostró la ventana completa, idéntica a la versión de código
+fuente. Nota honesta sobre el proceso de validación: en un primer intento,
+el binario pareció no mostrar ninguna ventana — tras diagnosticar
+metódicamente (aislando pieza por pieza: Tkinter solo, Tkinter+
+async_bridge, la app completa con impresión de cada paso), se confirmó que
+no era un bug — un binario de ese tamaño (con NumPy/PIL/cryptography
+empaquetados como dependencias transitivas) tarda varios segundos en
+autoextraerse antes de que el código Python arranque, y las primeras
+comprobaciones no esperaron lo suficiente. Se documenta el diagnóstico
+aquí porque forma parte de la validación real, no para ocultar que hubo
+una falsa alarma en el camino.
+
+## v0.0.6 — Auditoría de usabilidad, branding real, estructura para mantenibilidad, Ayuda
+
+Esta versión arrancó con una auditoría real, no con suposiciones: antes de
+tocar código, se capturaron las seis pantallas de la GUI tal como estaban
+(bajo Xvfb, con datos de muestra reales) y se revisaron con el mismo
+criterio con el que se validó todo lo demás en este proyecto — mirar el
+resultado real, no asumir que "debería verse bien". Esa auditoría encontró
+9 problemas concretos, dos de ellos serios.
+
+### Bugs de usabilidad reales, encontrados con evidencia visual
+
+- **El combobox "Proveedor" era prácticamente ilegible** — texto lavado
+  sobre fondo claro, rompiendo por completo el tema oscuro. Causa real:
+  con el tema `ttk` "clam", `style.configure()` no alcanza para el estado
+  `readonly` (el que usa este combobox) — hace falta un `style.map()`
+  explícito por estado, o el widget cae a colores del sistema. El listado
+  desplegable (al hacer clic en la flecha) es además un widget de Tk
+  aparte que `ttk.Style` **no cubre en absoluto** — necesita
+  `root.option_add()` por separado.
+- **El checkbox "mostrar" (junto a la API key) no mostraba ningún texto.**
+  Misma causa raíz: `TCheckbutton` con "clam" necesita `style.map()` para
+  el color del texto en todos los estados, no basta con `configure()`.
+- **Sin ícono de ventana/barra de tareas** — nunca se llamó
+  `root.iconphoto()`. La ventana mostraba la pluma genérica de Tk en vez
+  de la marca de CharlyAudit.
+- **Barra de progreso confusa en reposo** — un `Progressbar` en modo
+  indeterminado sin iniciar muestra un pequeño segmento fijo por diseño de
+  `ttk` — visualmente parecía una corrida a medio completar aunque no
+  hubiera ninguna corrida activa. Ahora solo aparece mientras corre algo.
+- **Contraste insuficiente en botones deshabilitados** — el color usado
+  para el estado `disabled` estaba muy cerca del color normal del botón.
+- **Espacio vacío desproporcionado** en Inicio, Configurar prueba y
+  Asistente IA — más de la mitad de la ventana sin ningún contenido en
+  Inicio, sin ningún logo ni guía para alguien que abre la app por primera
+  vez.
+- **Regresión introducida durante el propio refactor de esta versión**: al
+  consolidar el patrón de encabezado (título + subtítulo) en un solo
+  componente (`Header`), un subtítulo largo se cortaba sin ajustar línea —
+  la versión original de cada vista tenía un salto de línea manual
+  (`\n`) que se perdió al unificar el texto en una sola cadena. Se
+  encontró en la misma pasada de validación visual que confirmó el resto
+  de los arreglos, antes de darlo por terminado.
+- **Contenido inaccesible al tamaño mínimo real de la ventana** (820×600):
+  la tarjeta "Requisitos" de la nueva sección Ayuda quedaba completamente
+  fuera de vista, sin ninguna forma de llegar a ella — encontrado
+  probando la ventana en su tamaño mínimo documentado, no solo en el
+  tamaño por defecto (980×680) donde el problema no era visible.
+- **`AssistantConfigView` no tenía `refresh()`** — a diferencia de
+  `HomeView` (que sí lo tenía desde v0.0.5), si la configuración cambiaba
+  desde otra vista el estado "Configurado/Sin configurar" podía quedar
+  desactualizado sin ninguna forma de refrescarlo salvo reabrir la app.
+
+*Todos y cada uno de estos, corregidos y confirmados con captura de
+pantalla real antes/después — no solo revisados en el código.*
+
+### Branding real (punto 2 del pedido)
+
+- `apply_window_icon()` (`gui/theme.py`) aplica el ícono real de
+  CharlyAudit (16/48/128px) a la ventana — título, barra de tareas,
+  alt-tab.
+- `BrandHeader` (`gui/widgets.py`) muestra el logo real **dentro** de la
+  propia ventana (Inicio, Ayuda) — antes de esta versión, ninguna pantalla
+  mostraba el ícono real más que en la barra de título.
+- El combobox y el checkbox corregidos (arriba) también son, en el fondo,
+  un problema de branding: un tema oscuro con un widget que se cae a
+  colores claros del sistema rompe la identidad visual tanto como un color
+  equivocado a propósito.
+
+### Estructura del proyecto para mantenibilidad
+
+`gui/widgets.py` — nuevo módulo con los componentes que las seis vistas
+repetían cada una a su manera, con pequeñas inconsistencias entre sí:
+
+- `Header` — título + subtítulo + acciones alineadas a la derecha.
+- `Card` — contenedor con borde y título, mismo lenguaje visual que las
+  tarjetas del reporte HTML (para que la GUI y el reporte se sientan parte
+  de la misma familia visual).
+- `StatusRow` — fila "Etiqueta: valor" con color según si el valor
+  representa un estado resuelto o pendiente.
+- `EmptyState` — estado vacío consistente, con acción opcional.
+- `ScrollableFrame` — contenedor con scroll vertical (ver el fix de
+  "Requisitos" arriba); reutilizable en cualquier vista futura cuyo
+  contenido pueda crecer más que la ventana.
+- `BrandHeader`, `logo_image()` — el logo real, listo para usar en
+  cualquier pantalla.
+
+Las seis vistas se reescribieron sobre estos componentes — un cambio de
+diseño (por ejemplo, el espaciado de un encabezado) se hace una vez en
+`widgets.py`, no en seis archivos por separado. Esto es lo que hizo
+posible, de paso, encontrar y corregir la regresión del subtítulo cortado
+antes de que llegara a producción: el bug estaba en un solo lugar
+(`Header`), no replicado con variaciones sutiles en cada vista.
+
+### Sección Ayuda, con información del autor
+
+Sexta pestaña (`gui/views/help_view.py`): qué es la herramienta, el flujo
+de una corrida paso a paso, los requisitos, y — el punto explícito del
+pedido — autor (`RedGPS`, vía las constantes centralizadas
+`AUTHOR_NAME`/`AUTHOR_DESCRIPTION` en `constants.py`), versión, y enlaces.
+Con scroll (`ScrollableFrame`) para que el contenido nunca quede
+inaccesible sin importar el tamaño de la ventana.
+
+## Qué está validado con evidencia real (no solo revisado)
+
+- El mecanismo de pausa CDP: confirmado que una pestaña congelada no
+  navega, y que al liberarla el propio test runner de Playwright completa
+
+  la prueba con éxito.
+- La extensión carga correctamente con el ID fijo esperado (confirmado
+  leyendo el target real del service worker por CDP).
+- Un clic real sobre el botón "Grabar" del panel cambia el estado real
+  (`aria-pressed`).
+- El `tabId` explícito graba la pestaña correcta, no la que envía el
+  mensaje (ver v2.6.2 en el README de CharlyAudit).
+- `seed_pre_release`/`seed_post_release` aplican correctamente la
+  configuración, verificado leyendo directamente `chrome.storage.local` y
+  `localStorage` de la extensión (las fuentes de verdad reales).
+- El flujo completo de preguntarle al Asistente y recibir una respuesta
+  real: validado con una llamada real a Gemini, sobre una sesión con un
+  evento real grabado — la respuesta fue correcta y coherente con lo
+  grabado.
+- El parseo del reporte JSON de Playwright: validado contra un reporte
+  real generado por `@playwright/test`, con un caso que pasa y uno que
+  falla.
+- La generación del reporte HTML final: validada con datos reales de las
+  pruebas anteriores — incluye los 15 ámbitos, el caso fallido completo, y
+  la respuesta real del Asistente.
+- El spec de ejemplo adjuntado por el usuario corrió contra el sitio real
+  de producción y encontró una discrepancia genuina en el propio spec
+  (diferencia de mayúscula en una aserción de texto) — prueba de que la
+  ejecución orquestada es auténtica, no simulada.
+
+## Lo que NO está validado con la misma certeza
+
+**El flujo completo de principio a fin, en una sola corrida continua sin
+interrupciones, no se logró confirmar de forma consistente en el entorno
+de desarrollo usado para esta validación.** Cada pieza individual se
+validó por separado con éxito repetido — pero al encadenar todo (lanzar
++ pausar + abrir panel + sembrar + liberar + identificar + grabar + correr
+Playwright + analizar 15 ámbitos + generar reporte) en una sola ejecución,
+se observaron desconexiones intermitentes de la conexión CDP en distintos
+puntos de la secuencia, sin un patrón consistente que apunte a una causa
+específica en el código — los recursos del sistema (memoria, descriptores
+de archivo) estaban sanos en cada caso. La hipótesis más plausible es
+contención de recursos/programación en el entorno compartido donde se hizo
+esta validación (una única sesión con decenas de lanzamientos de Chromium
+consecutivos), no un defecto de diseño — pero no se pudo confirmar con
+certeza, y por eso se documenta aquí en vez de darlo por resuelto.
+
+Se agregó reintento con backoff en el cliente CDP (`browser/cdp_sync.py`)
+para tolerar mejor este tipo de latencia transitoria, pero no se llegó a
+confirmar que esto sea suficiente en todos los casos.
+
+**Antes del primer uso real, se recomienda correr el flujo completo en una
+máquina con recursos dedicados (no un entorno compartido/contenedor bajo
+uso intensivo) para confirmar la estabilidad de principio a fin.**
+
+## Pendientes conocidos
+
+- No se validó el flujo con cabeceras HTTP personalizadas activas ni con
+  cabeceras erróneas/vacías.
+- No se probaron specs con múltiples `test()` en el mismo archivo, ni
+  specs que fallan por completo (error de sintaxis, timeout global).
+- **GUI en macOS/Windows**: al igual que el instalador binario de v0.0.2,
+  todo lo de la GUI se construyó y probó en Linux (bajo Xvfb) — no se
+  ejecutó en macOS ni Windows reales. Tkinter/pystray/tkinterweb son
+  multiplataforma por diseño y no tienen ninguna rama de código específica
+  de Linux en este proyecto, pero eso es análisis, no ejecución confirmada.
+- La bandeja del sistema no se probó con una sesión de escritorio completa
+  (notificaciones, D-Bus) — solo con los servicios mínimos que hacen
+  falta para que el ícono en sí funcione. El comportamiento de
+  notificaciones emergentes del propio `pystray` no se ejercitó.
+- El botón "Correr prueba ahora" del menú de bandeja dispara la corrida
+  real (mismo camino que el botón de la vista Ejecutar) pero no se validó
+  específicamente ese camino de principio a fin — solo el ciclo de
+  minimizar/restaurar del ícono en sí.
+- La vista de Reporte, al abrir un archivo `.html` externo (no generado en
+  esta sesión), no vuelve a aplicar `make_tkinterweb_compatible()` de
+  forma diferenciada si ese archivo ya tiene sus propias variables CSS con
+  nombres distintos a los de `gui/theme.py` — funciona para reportes
+  generados por esta misma herramienta, no se probó con HTML arbitrario
+  de otro origen.
+- El manejo de errores de red durante la fase de Asistente (proveedor
+  caído, API key inválida a mitad de la corrida) no se ejercitó
+  específicamente — existe manejo básico (`AssistantError` por ámbito, sin
+  abortar el resto), pero no se confirmó con una API key inválida real.
+- Los binarios de Windows y macOS no se construyeron ni probaron en esta
+  sesión (sin acceso a esos sistemas operativos) — ver "Instalador binario
+  multiplataforma" arriba.
+- Los binarios no están firmados/notarizados — SmartScreen (Windows) y
+  Gatekeeper (macOS) van a advertir al abrirlos. No se abordó en esta
+  versión (requiere certificados de desarrollador de cada plataforma).
+- El endurecimiento de permisos del archivo de configuración (`chmod 600`)
+  no tiene equivalente real en Windows — se documentó como limitación
+  conocida en vez de implementar el equivalente en ACLs.

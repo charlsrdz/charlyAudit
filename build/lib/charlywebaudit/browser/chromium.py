@@ -23,6 +23,7 @@ from ..ui.theme import QUESTIONARY_STYLE, console, print_error, print_info, prin
 from .platform_utils import find_xvfb_run, needs_virtual_display
 
 
+
 def _warn_if_missing_display() -> None:
     """CharlyAudit necesita `headless: false` (las extensiones de Chrome no
     cargan de forma fiable en modo headless puro) — en Linux, eso requiere
@@ -81,12 +82,7 @@ def get_chromium_executable_path() -> str | None:
 
     return None
 
-
 def is_chromium_installed() -> bool:
-    """Verifica que exista en disco el binario exacto que la app usará.
-    
-    Se verifica el executable_path sin lanzar un navegador (evita crear
-    un event loop que cause conflictos cuando se ejecuta desde la GUI)."""
     return get_chromium_executable_path() is not None
 
 

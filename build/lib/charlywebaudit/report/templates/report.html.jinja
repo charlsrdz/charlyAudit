@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>charlyWebAudit — Reporte de {{ report.url }}</title>
+<style>
+  :root {
+    --brand: #b87619;
+    --bg: #0e1020;
+    --surface: #171a2e;
+    --surface2: #1f2440;
+    --border: #2a2f4c;
+    --text: #e7e9f5;
+    --muted: #8a90b5;
+    --ok: #34d399;
+    --err: #ff6b5e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.55;
+  }
+  header {
+    padding: 24px 32px; background: var(--surface); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header .meta { color: var(--muted); font-size: 13px; }
+  header .meta code { color: var(--brand); }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 32px 80px; }
+  section { margin-bottom: 32px; }
+  h2 {
+    font-size: 15px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--brand); border-bottom: 1px solid var(--border); padding-bottom: 8px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; margin-bottom: 12px;
+  }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  }
+  .badge--ok { background: rgba(52,211,153,.15); color: var(--ok); }
+  .badge--fail { background: rgba(255,107,94,.15); color: var(--err); }
+  .badge--skip { background: rgba(138,144,181,.15); color: var(--muted); }
+  .case__title { font-weight: 600; margin-bottom: 4px; }
+  .case__meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  pre {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-word;
+  }
+  .scope-card summary {
+    cursor: pointer; font-weight: 600; padding: 4px 0; list-style: none;
+  }
+  .scope-card summary::-webkit-details-marker { display: none; }
+  .scope-card summary::before { content: "▸ "; color: var(--brand); }
+  .scope-card[open] summary::before { content: "▾ "; }
+  .scope-card .body { padding-top: 10px; border-top: 1px solid var(--border); margin-top: 10px; }
+  .scope-card .body :is(p, li) { color: var(--text); }
+  .scope-card .body code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .summary-grid .num { font-size: 22px; font-weight: 700; }
+  .summary-grid .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Reporte de auditoría — charlyWebAudit</h1>
+  <div class="meta">
+    URL: <code>{{ report.url }}</code> · Spec: <code>{{ report.spec_path }}</code><br>
+    Generado: {{ report.generated_at }}
+  </div>
+</header>
+<main>
+
+  <section>
+    <h2>Resumen de Playwright</h2>
+    <div class="card summary-grid">
+      <div><div class="num" style="color:var(--ok)">{{ report.playwright.passed }}</div><div class="lbl">Pasaron</div></div>
+      <div><div class="num" style="color:var(--err)">{{ report.playwright.failed }}</div><div class="lbl">Fallaron</div></div>
+      <div><div class="num">{{ report.playwright.skipped }}</div><div class="lbl">Omitidos</div></div>
+      <div><div class="num">{{ "%.1f"|format(report.playwright.duration_ms / 1000) }}s</div><div class="lbl">Duración</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Casos de Playwright</h2>
+    {% for case in report.playwright.cases %}
+    <div class="card">
+      <div class="case__title">
+        {{ case.title }}
+        {% if case.status == "passed" %}<span class="badge badge--ok">passed</span>
+        {% elif case.status == "skipped" %}<span class="badge badge--skip">skipped</span>
+        {% else %}<span class="badge badge--fail">{{ case.status }}</span>{% endif %}
+      </div>
+      <div class="case__meta">{{ case.duration_ms }} ms</div>
+      {% for err in case.errors %}
+      <pre>{{ err }}</pre>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card">
+      <p>No se pudo generar el reporte estructurado de Playwright. Salida cruda del proceso:</p>
+      <pre>{{ report.playwright.raw_stdout }}</pre>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section>
+    <h2>Análisis del Asistente IA — por ámbito (15/15)</h2>
+    {% for scope in report.assistant_scopes %}
+    <details class="card scope-card" {% if loop.index <= 3 %}open{% endif %}>
+      <summary>{{ scope.label }}</summary>
+      <div class="body">{{ scope.html | safe }}</div>
+    </details>
+    {% endfor %}
+  </section>
+
+</main>
+<footer>Generado por charlyWebAudit v{{ app_version }}</footer>
+</body>
+</html>

@@ -108,14 +108,31 @@ class RunOrchestrator:
             text=True,
         )
 
-        # NOTA: Se removió el mecanismo CDP porque Playwright monopoliza la conexión
-        # y CDP no puede usarse mientras Playwright ejecuta el spec.
-        # La arquitectura anterior de "pausar la pestaña por CDP" no es viable.
-        # En su lugar, confiamos en que la extensión comience automáticamente.
-        
-        # Estructura simplificada: solo devolvemos el proceso y el camino del reporte
+        sync = BrowserSync(self.cdp_port)
+        try:
+            await sync.connect()
+        except Exception as exc:
+            process.kill()
+            raise BrowserLaunchError(
+                "No se pudo conectar al navegador orquestado por CDP.",
+                hint="Revisa que el puerto no esté en uso por otro proceso.",
+            ) from exc
+
+        try:
+            paused_target = await self._wait_for_correct_tab(sync, process)
+        except Exception:
+            # _wait_for_correct_tab ya mata el proceso en su propio camino de
+            # fallo, pero la conexion CDP (sync) quedaba abierta — fuga real
+            # corregida en v0.0.2.
+            await sync.close()
+            if process.poll() is None:
+                process.kill()
+            raise
+
         return LaunchedRun(
             process=process,
+            sync=sync,
+            paused_target=paused_target,
             work_dir=self.work_dir,
             report_json_path=report_json_path,
             config_path=config_path,
