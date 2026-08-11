@@ -68,7 +68,9 @@ class RunOrchestrator:
     async def launch(self) -> LaunchedRun:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         report_json_path = self.work_dir / "playwright-report.json"
-        config_path = self.work_dir / "playwright.config.ts"
+        # La configuración se genera en la carpeta del propio spec
+        # para que Node/Playwright puedan resolver los módulos instalados allí (@playwright/test).
+        config_path = self.spec_path.parent / "charlyaudit.config.ts"
         write_playwright_config(
             config_path,
             spec_path=self.spec_path,

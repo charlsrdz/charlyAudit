@@ -53,7 +53,7 @@ def resolve_executable(name: str, *, hint: str | None = None) -> str:
 def resolve_npx() -> str:
     return resolve_executable(
         "npx",
-        hint="charlyWebAudit necesita 'npx' (viene con Node.js) para correr specs de @playwright/test — "
+        hint="RedGpsWebAudit necesita 'npx' (viene con Node.js) para correr specs de @playwright/test — "
         "instala Node.js desde https://nodejs.org y vuelve a intentarlo.",
     )
 

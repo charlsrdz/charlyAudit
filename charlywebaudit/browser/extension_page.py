@@ -134,4 +134,8 @@ class ExtensionPage:
         raise RecordingError(f"El elemento '{selector}' nunca apareció en la extensión.")
 
     async def close(self) -> None:
-        await self.client.send("Target.closeTarget", {"targetId": self.target_id})
+        try:
+            await self.client.send("Target.closeTarget", {"targetId": self.target_id})
+        except Exception:
+            # Si la conexión ya está cerrada, no hay nada que cerrar.
+            pass

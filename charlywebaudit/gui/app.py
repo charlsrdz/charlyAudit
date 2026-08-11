@@ -1,5 +1,5 @@
 """
-gui/app.py — Ventana principal de charlyWebAudit.
+gui/app.py — Ventana principal de RedGpsWebAudit.
 
 Ata todo lo demás:
   - `theme.py` + `widgets.py` (branding, punto 2 del pedido; endurecido en v0.0.6)

@@ -15,6 +15,11 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+from ..reporter import Reporter
+
+if TYPE_CHECKING:
+    pass # No need for explicit TYPE_CHECKING if importing directly
 
 
 @dataclass
@@ -74,17 +79,24 @@ def _walk_suite(suite: dict, out: list[TestCaseResult]) -> None:
         _walk_suite(child, out)
 
 
-async def wait_for_process(process: subprocess.Popen, *, timeout: float = 600) -> tuple[int, str]:
+async def wait_for_process(process: subprocess.Popen, *, reporter: Reporter, timeout: float = 600) -> tuple[int, str]:
     """Espera a que el subproceso de Node termine, capturando toda su salida
     (ya combinada stdout+stderr desde browser/launcher.py)."""
     loop = asyncio.get_event_loop()
 
     def _wait() -> tuple[int, str]:
         try:
+            # Observar la salida y el código de salida
             stdout, _ = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            reporter.error(Exception("Proceso de Playwright expiró el timeout"))
             process.kill()
             stdout, _ = process.communicate()
+        
+        # Detectar cierre prematuro
+        if process.returncode is not None and process.returncode != 0:
+            reporter.warning(f"Proceso de Playwright terminó con código {process.returncode}")
+            
         return process.returncode, stdout or ""
 
     return await loop.run_in_executor(None, _wait)

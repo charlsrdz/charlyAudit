@@ -19,6 +19,7 @@ from .theme import BG, BORDER, BRAND, DANGER, MUTED, SUCCESS, SURFACE, SURFACE_2
 
 # Mismo mapeo de tokens que usa report/templates/report.html.jinja — si esa
 # plantilla agrega una variable nueva, se agrega aca tambien.
+# BRAND ahora es #5b6cff (azul índigo oficial de sidepanel.css v2.5.0).
 _TOKEN_MAP = {
     "--brand": BRAND,
     "--bg": BG,

@@ -1,7 +1,7 @@
 [project]
 name = "charlywebaudit"
 version = "0.0.9"
-description = "CLI + GUI que orquesta CharlyAudit + un script Playwright real para producir un reporte de auditoria unificado (Playwright + Asistente IA, ambito por ambito)."
+description = "CLI + GUI que orquesta CharlyAudit + un script Playwright real para producir un reporte de auditoria unificado (Playwright + Asistente IA, ambito por ambito). Anteriormente llamado charlyWebAudit, ahora distribuido como RedGpsWebAudit."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }

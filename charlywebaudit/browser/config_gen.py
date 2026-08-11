@@ -11,7 +11,7 @@ sin que el spec importe un fixture personalizado — y eso violaría la regla
 de no modificar el script del usuario. Por eso la extensión se carga vía
 `launchOptions.args` (que sí aplica al perfil efímero de cada corrida), y la
 "memoria" de la configuración de la extensión (Asistente/paleta/variables
-vigiladas) la resuelve charlyWebAudit por su cuenta, re-aplicándola sobre la
+vigiladas) la resuelve RedGpsWebAudit por su cuenta, re-aplicándola sobre la
 extensión al inicio de cada corrida (ver runner/seed.py) en vez de confiar
 en que el perfil del navegador la recuerde.
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 from ..constants import CDP_PORT
 
 _TEMPLATE = """\
-// Generado automaticamente por charlyWebAudit — no editar a mano.
+// Generado automaticamente por RedGpsWebAudit — no editar a mano.
 // Se regenera en cada corrida; cualquier cambio manual se perderia.
 import {{ defineConfig }} from '@playwright/test';
 

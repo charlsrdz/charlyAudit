@@ -1,5 +1,5 @@
 """
-__main__.py — Punto de entrada de charlyWebAudit.
+__main__.py — Punto de entrada de RedGpsWebAudit.
 
 Ata todo lo demás en el orden que importa:
 
@@ -58,7 +58,7 @@ from .ui.theme import CliReporter, QUESTIONARY_STYLE, console, print_error, prin
 
 
 def bundled_extension_path() -> Path:
-    """Ruta de la copia de CharlyAudit empaquetada dentro de charlyWebAudit
+    """Ruta de la copia de CharlyAudit empaquetada dentro de RedGpsWebAudit
     (`vendor/charlyaudit/`) — funciona tanto corriendo desde código fuente
     (pip install) como desde un binario armado con PyInstaller, que extrae
     los datos empaquetados a un directorio temporal (`sys._MEIPASS`) en vez
@@ -115,7 +115,7 @@ async def _identify_tab_id(sidepanel: ExtensionPage, *, timeout: float = 10) -> 
         if len(candidates) > 1:
             raise CharlyWebAuditError(
                 f"Hay más de una pestaña candidata ({candidates}) — no se puede identificar sin ambigüedad.",
-                hint="Cierra otras pestañas/ventanas de Chrome antes de correr charlyWebAudit.",
+                hint="Cierra otras pestañas/ventanas de Chrome antes de correr RedGpsWebAudit.",
             )
     raise CharlyWebAuditError(
         f"No se pudo identificar la pestaña del spec tras liberar la pausa (vistas: {last_all}).",
@@ -213,14 +213,20 @@ async def run_audit(
         reporter.success("Configuración completa.")
 
         reporter.section("Ejecutando el spec de Playwright")
-        exit_code, raw_stdout = await wait_for_process(run.process, timeout=600)
+        exit_code, raw_stdout = await wait_for_process(run.process, reporter=reporter, timeout=600)
         reporter.raw(raw_stdout)
 
         pw_result = parse_report(run.report_json_path, exit_code, raw_stdout)
         if pw_result.all_passed:
             reporter.success(f"Playwright: {pw_result.passed} caso(s) pasaron.")
         else:
-            reporter.warning(f"Playwright: {pw_result.failed} caso(s) fallaron, {pw_result.passed} pasaron.")
+            msg = f"Playwright: {pw_result.failed} caso(s) fallaron, {pw_result.passed} pasaron."
+            reporter.warning(msg)
+            # Si hay errores específicos, enviarlos como mensaje de error para que la GUI los resalte
+            for case in pw_result.cases:
+                if case.status != "passed":
+                    for err in case.errors:
+                        reporter.error(Exception(f"Falla en '{case.title}': {err}"))
 
         await stop_recording(sidepanel)
         reporter.success("Grabación detenida.")
@@ -246,12 +252,24 @@ async def run_audit(
         return report
 
     finally:
-        if sidepanel:
-            await sidepanel.close()
+        # 1. Primero intentar cerrar recursos de navegador/CDP limpiamente
         if run is not None:
-            await run.sync.close()
             if run.process.poll() is None:
                 run.process.kill()
+            
+            # Cierre de CDP y recursos asociados
+            try:
+                await run.sync.close()
+            except Exception:
+                pass
+        
+        # 2. Finalmente cerrar el panel lateral (que depende de la conexión CDP)
+        if sidepanel:
+            try:
+                await sidepanel.close()
+            except Exception:
+                pass
+        
         shutil.rmtree(work_dir, ignore_errors=True)
 
 

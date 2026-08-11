@@ -1,5 +1,5 @@
 """
-runner/seed.py — Aplica la configuración de charlyWebAudit sobre la
+runner/seed.py — Aplica la configuración de RedGpsWebAudit sobre la
 extensión al inicio de cada corrida (Asistente IA, paleta de colores,
 variables globales vigiladas).
 
@@ -7,10 +7,10 @@ Dado que el perfil de Chromium es efímero por corrida (ver la nota de
 diseño en browser/config_gen.py — un spec con `import { test } from
 '@playwright/test'` estándar no admite forzar un perfil persistente sin que
 el spec importe un fixture propio), la "memoria" de la configuración de la
-extensión no vive en el navegador: vive en el config.json de charlyWebAudit,
+extensión no vive en el navegador: vive en el config.json de RedGpsWebAudit,
 y se re-aplica aquí sobre la extensión recién cargada, cada vez. El efecto
 para el usuario es el mismo que pidió (se configura una vez, se reutiliza
-después) — solo que la reutilización ocurre a nivel de charlyWebAudit, no
+después) — solo que la reutilización ocurre a nivel de RedGpsWebAudit, no
 del perfil del navegador.
 """
 

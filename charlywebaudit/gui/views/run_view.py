@@ -22,7 +22,7 @@ from tkinter import ttk
 from ...config import AppConfig
 from ...errors import CharlyWebAuditError
 from ..async_bridge import AsyncBridge, ProgressMessage, QueueReporter
-from ..theme import BORDER, DANGER, MUTED, SUCCESS, SURFACE, TEXT, WARNING
+from ..theme import BORDER, BRAND, DANGER, MUTED, SUCCESS, SURFACE, TEXT, WARNING
 from ..widgets import Header
 
 _PLACEHOLDER = "El registro de la corrida aparecerá aquí una vez que le des a \"Correr prueba\"."
@@ -81,7 +81,7 @@ class RunView(ttk.Frame):
         self.log_text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        self.log_text.tag_configure("section", foreground="#b87619", font=("Consolas", 9, "bold"))
+        self.log_text.tag_configure("section", foreground=BRAND, font=("Consolas", 9, "bold"))
         self.log_text.tag_configure("info", foreground=MUTED)
         self.log_text.tag_configure("success", foreground=SUCCESS)
         self.log_text.tag_configure("warning", foreground=WARNING)

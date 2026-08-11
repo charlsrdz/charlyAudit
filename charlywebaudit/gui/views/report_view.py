@@ -125,7 +125,7 @@ class ReportView(ttk.Frame):
             return
         # Un archivo temporal con el HTML SIN adaptar (var() intactas) — el
         # navegador real si soporta CSS variables, a diferencia de tkinterweb.
-        tmp = Path(tempfile.gettempdir()) / "charlywebaudit-report-preview.html"
+        tmp = Path(tempfile.gettempdir()) / "redgpswebaudit-report-preview.html"
         tmp.write_text(self._raw_html, encoding="utf-8")
         webbrowser.open(tmp.as_uri())
 

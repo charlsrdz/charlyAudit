@@ -64,13 +64,13 @@ def _warn_if_missing_display(reporter: Reporter) -> None:
     if find_xvfb_run():
         reporter.info(
             "No se detectó un entorno gráfico ($DISPLAY vacío), pero 'xvfb-run' está disponible — "
-            "charlyWebAudit lo usará automáticamente."
+            "RedGpsWebAudit lo usará automáticamente."
         )
     else:
         reporter.warning(
             "No se detectó un entorno gráfico ($DISPLAY vacío) ni 'xvfb-run' instalado. "
             "CharlyAudit necesita un navegador con interfaz (las extensiones no cargan en modo headless puro) — "
-            "instala un paquete de Xvfb (p. ej. 'apt install xvfb') o corre charlyWebAudit desde un entorno con pantalla."
+            "instala un paquete de Xvfb (p. ej. 'apt install xvfb') o corre RedGpsWebAudit desde un entorno con pantalla."
         )
 
 

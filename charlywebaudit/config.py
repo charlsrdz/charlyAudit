@@ -1,5 +1,5 @@
 """
-config.py — Configuración persistente de charlyWebAudit.
+config.py — Configuración persistente de RedGpsWebAudit.
 
 Vive como un único archivo JSON en la ruta estándar de configuración del
 sistema operativo (via `platformdirs`) — no se inventa una ubicación propia.
@@ -112,7 +112,7 @@ def load_config() -> AppConfig:
     except (json.JSONDecodeError, OSError) as exc:
         raise ConfigError(
             f"No se pudo leer la configuración guardada en {CONFIG_FILE}: {exc}",
-            hint="Si el archivo se corrompió, puedes eliminarlo y charlyWebAudit "
+            hint="Si el archivo se corrompió, puedes eliminarlo y RedGpsWebAudit "
             "volverá a pedir la configuración desde cero.",
         ) from exc
     return AppConfig.from_dict(data)
