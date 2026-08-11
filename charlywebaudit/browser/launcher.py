@@ -47,7 +47,7 @@ class RunOrchestrator:
         self,
         *,
         spec_path: Path,
-        extension_path: Path,
+        extension_path: Path | None,
         target_url: str,
         headers: dict[str, str],
         work_dir: Path,
@@ -55,7 +55,7 @@ class RunOrchestrator:
     ) -> None:
         if not spec_path.is_file():
             raise SpecNotFoundError(f"No se encontró el spec: {spec_path}")
-        if not extension_path.is_dir():
+        if extension_path and not extension_path.is_dir():
             raise BrowserLaunchError(f"No se encontró el build de la extensión en: {extension_path}")
 
         self.spec_path = spec_path

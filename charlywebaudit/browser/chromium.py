@@ -37,12 +37,11 @@ from pathlib import Path
 from typing import Callable
 
 import questionary
-from playwright.sync_api import sync_playwright
 
 from ..errors import ChromiumInstallFailedError, ChromiumNotInstalledError
 from ..reporter import Reporter
 from ..ui.theme import CliReporter, QUESTIONARY_STYLE
-from .platform_utils import find_xvfb_run, needs_virtual_display, resolve_npx
+from .platform_utils import default_playwright_browsers_path, find_xvfb_run, needs_virtual_display, resolve_npx
 
 ConfirmFn = Callable[[str], bool]
 
@@ -74,37 +73,25 @@ def _warn_if_missing_display(reporter: Reporter) -> None:
         )
 
 
-def _check_chromium_executable_exists() -> bool:
-    try:
-        with sync_playwright() as p:
-            return Path(p.chromium.executable_path).exists()
-    except Exception:
-        return False
-
-
 def is_chromium_installed() -> bool:
-    """Verifica que exista en disco el binario exacto que la app usará en la
-    práctica — sin lanzar un navegador completo.
-
-    Bug real corregido: si `is_chromium_installed()` se llama desde un hilo
-    donde ya hay un event loop de asyncio corriendo (como ocurre en la GUI a
-    través de `AsyncBridge` o en flujos asíncronos), `sync_playwright()` lanza
-    un `Error: Playwright Sync API cannot be used inside an asyncio event loop`.
-    La excepción era capturada por `except Exception:` devolviendo `False`
-    falsamente incluso cuando Chromium sí estaba instalado.
-    Ejecutar la comprobación en un `ThreadPoolExecutor` secundario evita el
-    conflicto con el event loop y devuelve el estado real.
-    """
+    """Verifica que exista en disco la instalación de Chromium gestionada por Playwright,
+    comprobando la existencia del directorio de navegadores y el marcador de instalación
+    o binarios, sin necesidad de invocar la API de Python de Playwright (evitando así
+    conflictos con event loops de asyncio o fugas del proceso driver)."""
+    browsers_dir = default_playwright_browsers_path()
+    if not browsers_dir or not browsers_dir.is_dir():
+        return False
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(_check_chromium_executable_exists).result()
-
-    return _check_chromium_executable_exists()
+        for entry in browsers_dir.iterdir():
+            if entry.is_dir() and (entry.name.startswith("chromium") or entry.name.startswith("chrome")):
+                if (entry / "INSTALLATION_COMPLETE").exists() or any(
+                    sub.is_dir() and ("chrome" in sub.name.lower() or "chromium" in sub.name.lower())
+                    for sub in entry.iterdir()
+                ):
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _exec_command(cmd: list[str], reporter: Reporter) -> tuple[bool, str]:

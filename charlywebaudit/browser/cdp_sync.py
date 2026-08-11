@@ -55,20 +55,19 @@ class CDPClient:
         self._reader_task = asyncio.create_task(self._reader())
 
     async def close(self) -> None:
-        if self._ws:
-            try:
-                # El problema de 'no close frame' ocurre cuando intentamos hacer un cierre limpio
-                # (handshake de websocket) con un navegador que ya cerró el socket por su cuenta
-                # al morir. Cerramos el socket sin esperar handshake para evitar esto.
-                await self._ws.close(code=1000) # Cierre normal
-            except Exception:
-                pass
-        
         if self._reader_task:
             self._reader_task.cancel()
             try:
                 await self._reader_task
             except asyncio.CancelledError:
+                pass
+        if self._ws:
+            try:
+                if hasattr(self._ws, "transport") and self._ws.transport:
+                    self._ws.transport.close()
+                else:
+                    await self._ws.close()
+            except Exception:
                 pass
 
     async def _reader(self) -> None:

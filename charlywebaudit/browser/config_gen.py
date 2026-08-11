@@ -47,26 +47,28 @@ export default defineConfig({{
 def generate_playwright_config(
     *,
     spec_path: Path,
-    extension_path: Path,
+    extension_path: Path | None,
     headers: dict[str, str],
     cdp_port: int = CDP_PORT,
     timeout_ms: int = 120_000,
     json_report_path: Path,
 ) -> str:
-    """Devuelve el contenido de playwright.config.ts como texto. Todo valor
-    dinámico se serializa con json.dumps (nunca interpolación de string
-    cruda) — es la forma segura de incrustar valores arbitrarios del usuario
-    (URLs, nombres de cabeceras, rutas con espacios) dentro de código TS/JS
-    válido, sin arriesgarse a romper la sintaxis generada."""
+    """Devuelve el contenido de playwright.config.ts como texto."""
     launch_args = [
-        f"--disable-extensions-except={extension_path}",
-        f"--load-extension={extension_path}",
         f"--remote-debugging-port={cdp_port}",
         # Perfil efimero pero aislado: evita que el estado de OTRO Chrome del
         # sistema (perfil por defecto del usuario) interfiera con la corrida.
         "--no-first-run",
         "--no-default-browser-check",
+        # Intento de asegurar que el navegador no se cierre al cerrar la pestaña
+        "--no-sandbox",
+        "--disable-background-networking",
     ]
+    if extension_path:
+        launch_args.extend([
+            f"--disable-extensions-except={extension_path}",
+            f"--load-extension={extension_path}",
+        ])
     return _TEMPLATE.format(
         test_dir=json.dumps(str(spec_path.parent)),
         test_match=json.dumps(spec_path.name),

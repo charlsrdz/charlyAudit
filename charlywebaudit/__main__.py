@@ -36,6 +36,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+import argparse
 
 import questionary
 
@@ -126,28 +127,12 @@ async def _identify_tab_id(sidepanel: ExtensionPage, *, timeout: float = 10) -> 
 async def run_audit(
     cfg: AppConfig,
     *,
+    no_extension: bool = False,
     reporter: Reporter | None = None,
     ask_save_path=None,
     confirm_install=None,
 ) -> CombinedReport:
-    """Motor de orquestación completo — ya no sabe nada de `rich` ni de
-    cómo se pregunta dónde guardar el reporte, ni cómo se confirma instalar
-    Chromium: todo eso vive detrás de `reporter` (ver reporter.py),
-    `ask_save_path` y `confirm_install`, para que la GUI (v0.0.5) pueda
-    reusar este mismo motor sin duplicar nada.
-
-    `ask_save_path(default_name: str) -> str | None`: por defecto (CLI) usa
-    el mismo prompt de `questionary` de siempre. La GUI puede pasar su
-    propio diálogo de "Guardar como", o `None`/una función que devuelve
-    `None` para no guardar y solo quedarse con el `CombinedReport` devuelto
-    (para mostrarlo en pantalla, por ejemplo).
-
-    `confirm_install(question: str) -> bool`: por defecto (CLI) un prompt de
-    `questionary`. Bug real corregido en v0.0.8: `questionary` no es seguro
-    de llamar desde el hilo en segundo plano de `AsyncBridge` (ver
-    `browser/chromium.py`) — la GUI DEBE pasar su propia versión thread-safe
-    (ver `gui/dialogs.py`), nunca dejar el valor por defecto.
-    """
+    """Motor de orquestación completo."""
     reporter = reporter or CliReporter()
     if ask_save_path is None:
         ask_save_path = _default_ask_save_path
@@ -157,7 +142,8 @@ async def run_audit(
     node_v, npm_v = ensure_node()
     reporter.success(f"Node {node_v} · npm {npm_v} detectados.")
 
-    extension_path = _resolve_extension_path(cfg)
+    # extension_path = _resolve_extension_path(cfg)
+    extension_path = None if no_extension else _resolve_extension_path(cfg)
     spec_path = Path(cfg.test.spec_path)
 
     work_dir = Path(tempfile.mkdtemp(prefix="charlywebaudit-"))
@@ -175,42 +161,44 @@ async def run_audit(
     )
 
     sidepanel: ExtensionPage | None = None
-    run = None  # bug real corregido en v0.0.2: si launch() fallaba, el finally
-    # de abajo intentaba usar `run` sin haberse asignado nunca, enmascarando
-    # el error original con un NameError y dejando work_dir sin limpiar.
+    run = None
     try:
         reporter.section("Lanzando navegador + spec")
         run = await orchestrator.launch()
         reporter.success("Pestaña del spec detectada y pausada — todavía no ha navegado.")
 
-        sidepanel = await ExtensionPage.open(run.sync.client, SIDEPANEL_URL, timeout=30)
-        reporter.success("Panel lateral abierto.")
+        if extension_path:
+            sidepanel = await ExtensionPage.open(run.sync.client, SIDEPANEL_URL, timeout=30)
+            reporter.success("Panel lateral abierto.")
 
-        reporter.info("Aplicando configuración de captura (variables vigiladas)…")
-        await seed.seed_pre_release(sidepanel, cfg)
+            reporter.info("Aplicando configuración de captura (variables vigiladas)…")
+            await seed.seed_pre_release(sidepanel, cfg)
 
-        # A partir de aqui, la ventana de riesgo es de milisegundos (ver nota
-        # de diseño al inicio de este archivo): se libera la pausa y de
-        # inmediato se identifica la pestana + se activa la grabacion, sin
-        # esperas artificiales entre pasos. seed_pre_release se mantiene
-        # deliberadamente minimo (un campo, un boton) porque Playwright Test
-        # tiene un vigilante interno de paciencia limitada sobre la pestana
-        # pausada.
+        # Liberar la pausa
         reporter.info("Liberando la pausa — el spec empieza a ejecutar ahora.")
         await run.paused_target.release()
 
-        target_tab_id = await _identify_tab_id(sidepanel)
-        reporter.info(f"Pestaña del spec identificada (tabId={target_tab_id}).")
+        # Dar un respiro breve a Chromium para que termine de procesar la liberación
+        # y estabilice la conexión antes de realizar la consulta intensiva.
+        await asyncio.sleep(0.5)
 
-        await start_recording(sidepanel, target_tab_id)
-        await wait_until_recording(sidepanel)
-        reporter.success("Grabación activa.")
+        if sidepanel:
+            # Identificar la pestaña mediante el panel lateral
+            target_tab_id = await _identify_tab_id(sidepanel)
+            reporter.info(f"Pestaña del spec identificada (tabId={target_tab_id}).")
 
-        # El resto de la configuracion (Asistente IA, paleta) no afecta que
-        # se captura durante la grabacion — se aplica ahora, sin presion.
-        reporter.info("Aplicando configuración del Asistente IA y la paleta…")
-        await seed.seed_post_release(sidepanel, cfg)
-        reporter.success("Configuración completa.")
+            await start_recording(sidepanel, target_tab_id)
+            await wait_until_recording(sidepanel)
+            reporter.success("Grabación activa.")
+
+            # El resto de la configuracion (Asistente IA, paleta) no afecta que
+            # se captura durante la grabacion — se aplica ahora, sin presion.
+            reporter.info("Aplicando configuración del Asistente IA y la paleta…")
+            await seed.seed_post_release(sidepanel, cfg)
+            reporter.success("Configuración completa.")
+        else:
+            reporter.info("Corriendo sin extensión: omitiendo grabación y asistente.")
+            assistant_responses = {}
 
         reporter.section("Ejecutando el spec de Playwright")
         exit_code, raw_stdout = await wait_for_process(run.process, reporter=reporter, timeout=600)
@@ -228,12 +216,15 @@ async def run_audit(
                     for err in case.errors:
                         reporter.error(Exception(f"Falla en '{case.title}': {err}"))
 
-        await stop_recording(sidepanel)
-        reporter.success("Grabación detenida.")
+        if sidepanel:
+            await stop_recording(sidepanel)
+            reporter.success("Grabación detenida.")
 
-        reporter.section("Análisis del Asistente IA (15 ámbitos, uno a la vez)")
-        assistant_responses = await analyze_all_scopes(sidepanel, source="live")
-        reporter.success("Los 15 ámbitos fueron analizados.")
+            reporter.section("Análisis del Asistente IA (15 ámbitos, uno a la vez)")
+            assistant_responses = await analyze_all_scopes(sidepanel, source="live")
+            reporter.success("Los 15 ámbitos fueron analizados.")
+        else:
+            assistant_responses = {}
 
         report = build_combined_report(
             url=cfg.test.url,
@@ -288,11 +279,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     argparse (librería estándar). No reemplaza el menú interactivo — cubre
     los casos donde alguien espera una respuesta no interactiva (scripts,
     verificar versión) o quiere la interfaz gráfica en vez del menú."""
-    import argparse
-
     parser = argparse.ArgumentParser(prog=APP_NAME.lower(), add_help=True)
     parser.add_argument("--version", action="store_true", help="Muestra la versión y termina.")
     parser.add_argument("--gui", action="store_true", help="Abre la interfaz gráfica en vez del menú de terminal.")
+    parser.add_argument("--no-extension", action="store_true", help="Corre sin cargar la extensión CharlyAudit.")
     ns = parser.parse_args(argv)
     if ns.version:
         console.print(f"{APP_NAME} v{APP_VERSION}")
@@ -311,7 +301,7 @@ def main() -> None:
 
     def _on_run(cfg: AppConfig) -> None:
         try:
-            asyncio.run(run_audit(cfg))
+            asyncio.run(run_audit(cfg, no_extension=ns.no_extension))
         except CharlyWebAuditError as exc:
             print_error(exc)
         except KeyboardInterrupt:
