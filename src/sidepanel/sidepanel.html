@@ -97,8 +97,6 @@
       <section class="actions" aria-label="Acciones de captura">
         <button id="act-record" class="act act--rec" type="button"
                 title="Grabar / Detener grabacion" aria-pressed="false">● Grabar</button>
-        <button id="act-play-pw" class="act act--brand" type="button"
-                title="Reproducir el Playwright importado" hidden>▶ Playwright</button>
         <span class="act__sep"></span>
         <button id="act-cfg" class="act act--ghost" type="button"
                 title="Que capturar durante la grabacion" aria-expanded="false"
@@ -313,22 +311,6 @@
               o quieres conservar el estado actual de la sesion.
             </small>
           </label>
-        </section>
-
-        <!-- Playwright importado: interpreta un subconjunto de pasos
-             (goto/click/fill/type/press) y los reproduce con nuestro propio
-             motor — no ejecuta Playwright/Node real (imposible dentro de una
-             extension). Ver src/qa/playwright-import.js. -->
-        <section class="cfg-group">
-          <span class="cfg-group__title">Playwright importado</span>
-          <p id="report-pw-summary" class="cfg-msg">Sin Playwright importado.</p>
-          <div class="capture-cfg__row">
-            <button id="rep-import-pw" class="act act--brand" type="button">Importar .spec.js</button>
-            <button id="rep-clear-pw" class="act" type="button" disabled>Vaciar</button>
-          </div>
-          <input id="rep-import-pw-file" type="file"
-                 accept=".js,.spec.js,text/javascript" hidden />
-          <span id="report-pw-msg" class="cfg-msg" role="status" aria-live="polite"></span>
         </section>
 
       </div>

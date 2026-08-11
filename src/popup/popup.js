@@ -202,31 +202,6 @@ async function refresh() {
   }
 }
 
-// Item 3: boton "Reproducir Playwright" — visible solo si hay un script
-// importado (desde la pestana Reporte del panel lateral; el popup no
-// importa, solo reproduce). Se refresca por cambio real de storage, no en
-// cada poll — mismo estandar reactivo del panel lateral (v2.5.8a).
-async function refreshPlaywrightButton() {
-  try {
-    const res = await control("getPlaywrightScript");
-    const script = res && res.script;
-    const has = !!(script && script.parsed && script.parsed.steps.length);
-    $("play-pw").hidden = !has;
-  } catch {
-    /* sin cambios visibles si falla */
-  }
-}
-$("play-pw").addEventListener("click", async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || tab.id == null) return toast("Sin pestana activa.");
-  // Preferencia de recarga (item 4): comparte localStorage con el panel
-  // lateral (mismo origen de extension) — se configura desde Reporte.
-  const reloadOnReplay = localStorage.getItem("charlyaudit:reloadOnReplay") !== "false";
-  const res = await control("startPlaywrightReplay", { tabId: tab.id, options: { speed: 1 }, reloadOnReplay });
-  if (res && res.ok) toast(`Reproduciendo Playwright (${res.steps} pasos)…`);
-  else toast("No se pudo reproducir: " + ((res && res.error) || "error desconocido"));
-});
-
 let configFilled = false;
 function fillConfig(config) {
   if (configFilled || !config) return; // no pisar lo que el usuario escribe
@@ -358,7 +333,6 @@ async function renderWebhookPending() {
 }
 refresh();
 renderWebhookPending();
-refreshPlaywrightButton();
 popupPoller.start();
 // Sincronia popup<->panel<->SW: reacciona al estado compartido para que grabar/
 // detener desde el panel lateral (o el SW) se refleje aqui, y viceversa.
@@ -367,7 +341,6 @@ try {
     if (area !== "local") return;
     if (changes["qa:isRecording"] || changes["qa:timeline"] || changes["qa:meta"]) refresh();
     if (changes["qa:webhookPending"]) renderWebhookPending();
-    if (changes["qa:playwright"]) refreshPlaywrightButton();
   });
 } catch {
   /* sin storage */
