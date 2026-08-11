@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.0.8**
+**Versión actual: 0.0.9**
 
 ---
 
@@ -874,6 +874,82 @@ es la excepción esperada (`ChromiumNotInstalledError`, simulando que el
 usuario responde que no), **no** el crash original. También se confirmó
 que la CLI, sin pasar ningún override, sigue funcionando exactamente
 igual que antes de este cambio.
+
+## v0.0.9 — La instalación de Chromium fallaba sin ningún diagnóstico real
+
+Un usuario compartió este log, ya sin el crash de v0.0.8 (esa parte quedó
+resuelta — el diálogo de confirmación funcionó correctamente):
+
+```
+BEWARE: your OS is not officially supported by Playwright; downloading fallback build for ubuntu24.04-x64.
+(repetido 9 veces)
+
+── Prerrequisitos ──
+⚠ No se encontró un Chromium funcional gestionado por Playwright.
+› Instalando Chromium (puede tardar varios minutos)…
+✕ La instalación de Chromium falló.
+› Instalando Chromium (puede tardar varios minutos)…
+✕ La instalación de Chromium falló.
+› Instalando Chromium (puede tardar varios minutos)…
+✕ La instalación de Chromium falló.
+✕ La corrida terminó con un error: Chromium sigue sin instalarse; no se puede continuar.
+```
+
+### Diagnóstico
+
+`_run_playwright_install()` corría `python -m playwright install chromium`
+con `subprocess.run(..., check=False)` **sin capturar su salida** — el
+proceso hijo heredaba directamente los descriptores de la terminal. Para
+alguien usando la CLI desde una terminal, esto significa que sí *veía* la
+salida real (de ahí las líneas "BEWARE" en el log compartido) — pero esa
+salida nunca pasaba por nuestro propio sistema de reporte, así que:
+
+- El mensaje de error final (`"La instalación de Chromium falló."`) nunca
+  incluía ningún detalle real — la variable `err` quedaba **siempre
+  vacía** en el caso de fallo genuino (proceso terminó con código
+  distinto de cero, no una excepción al lanzarlo), y el único consejo
+  mostrado era un genérico "revisa tu conexión a internet y espacio en
+  disco" que no reflejaba la causa real.
+- Alguien usando la GUI **sin una terminal abierta** (el caso más común —
+  lanzar la app desde un ícono, no desde una consola) no vería *ninguna*
+  información de la salida real de Playwright, ni siquiera las líneas
+  "BEWARE" — el panel de la vista Ejecutar se quedaba con el mismo
+  mensaje genérico y nada más, sin ninguna pista de qué estaba fallando
+  de verdad.
+
+Tres reintentos sin ningún cambio de información entre uno y otro es
+exactamente el patrón que describió el usuario — no hay forma de
+diagnosticar ni de saber si vale la pena seguir reintentando cuando cada
+intento es una caja negra idéntica.
+
+### Fix
+
+`_run_playwright_install()` ahora captura la salida real línea por línea
+(`subprocess.Popen` con las tuberías conectadas) y la transmite en vivo a
+través de `reporter.raw()` — la misma interfaz compartida que ya usa el
+resto del proyecto, así que la salida real aparece tanto en la terminal
+de la CLI como en el panel de la vista Ejecutar de la GUI, en tiempo real,
+no solo al final. Las últimas líneas de esa salida (donde casi siempre
+vive el motivo real del fallo) se incluyen textualmente en el mensaje de
+error, reemplazando el "Detalle:" vacío de antes.
+
+Además, se agregó una sugerencia específica: si la salida real contiene
+"not officially supported" (el caso exacto reportado — Ubuntu 24.04 es
+demasiado reciente para la lista de sistemas operativos que Playwright
+prueba oficialmente, así que usa un "build de reserva"), el consejo
+mostrado deja de ser el genérico de conexión/disco y pasa a sugerir
+`npx playwright install-deps chromium` — el comando que el propio
+Playwright provee para instalar las bibliotecas de sistema que Chromium
+necesita en tiempo de ejecución, la causa más común de que un build de
+reserva descargue bien pero no logre ejecutarse.
+
+*Validado*: se simuló el patrón exacto del log compartido (una
+instalación que imprime la advertencia de SO no soportado y termina con
+código de error) y se confirmó que la salida real se captura y transmite
+línea por línea a través de `reporter.raw()` — funciona igual para
+`QueueReporter` (GUI) que para `CliReporter` — y que el mensaje de error
+final incluye tanto el detalle real como la sugerencia específica de
+`install-deps`, en vez del mensaje genérico sin información de antes.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

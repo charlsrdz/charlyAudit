@@ -93,16 +93,42 @@ def is_chromium_installed() -> bool:
         return False
 
 
-def _run_playwright_install() -> tuple[bool, str]:
+def _run_playwright_install(reporter: Reporter) -> tuple[bool, str]:
     """Corre `python -m playwright install chromium` como subproceso,
-    mostrando su salida en vivo (la instalación puede tardar minutos y el
-    usuario debe ver que sigue avanzando, no una pantalla congelada)."""
+    transmitiendo su salida real en vivo a través de `reporter` (funciona
+    igual para la CLI y para el panel de la GUI — antes, la salida solo se
+    heredaba directamente a la terminal, invisible para quien corre la GUI
+    sin una consola abierta, y descartada por completo del mensaje de
+    error).
+
+    Bug real corregido: antes, cuando la instalación fallaba de verdad
+    (proceso termina con código distinto de cero, no una excepción al
+    lanzarlo), el detalle devuelto era un string vacío — el mensaje de
+    error mostrado ("La instalación de Chromium falló.") no tenía ninguna
+    información real de la causa, solo un consejo genérico ("revisa tu
+    conexión a internet"). Ahora se capturan las últimas líneas reales de
+    la salida del propio Playwright (que suelen contener el motivo real:
+    fallo de red, biblioteca de sistema faltante, etc.) y se incluyen en
+    el mensaje de error."""
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
-        return proc.returncode == 0, ""
+        lines: list[str] = []
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if line:
+                reporter.raw(line)
+                lines.append(line)
+        proc.wait()
+        # Las ultimas lineas suelen contener el motivo real del fallo (el
+        # resto suele ser progreso de descarga, menos util como detalle).
+        tail = "\n".join(lines[-8:])
+        return proc.returncode == 0, tail
     except OSError as exc:
         return False, str(exc)
 
@@ -138,15 +164,32 @@ def ensure_chromium(*, reporter: Reporter | None = None, confirm: ConfirmFn | No
             )
 
         reporter.info("Instalando Chromium (puede tardar varios minutos)…")
-        ok, err = _run_playwright_install()
+        ok, err = _run_playwright_install(reporter)
         if ok and is_chromium_installed():
             reporter.success("Chromium instalado correctamente.")
             return
 
+        # Sugerencia especifica cuando la salida real de Playwright avisa que
+        # el sistema operativo no esta oficialmente soportado (usa un build
+        # "de reserva") — un patron real observado en produccion (Ubuntu
+        # 24.04, demasiado reciente para la lista de SO probados de
+        # Playwright) que muy seguido significa que faltan bibliotecas de
+        # sistema que el propio binario de Chromium necesita en tiempo de
+        # ejecucion, no que la descarga en si haya fallado.
+        hint = "Revisa tu conexión a internet y espacio en disco. Puedes reintentar ahora mismo."
+        if "not officially supported" in err.lower():
+            hint = (
+                "Tu sistema operativo no está en la lista de SO probados por Playwright "
+                "(usa un build de reserva) — esto suele significar que faltan bibliotecas de "
+                "sistema que Chromium necesita en tiempo de ejecución, no que la descarga haya "
+                "fallado en sí. Corre este comando y luego reintentá:\n"
+                "  npx playwright install-deps chromium"
+            )
+
         reporter.error(
             ChromiumInstallFailedError(
-                "La instalación de Chromium falló." + (f" Detalle: {err}" if err else ""),
-                hint="Revisa tu conexión a internet y espacio en disco. Puedes reintentar ahora mismo.",
+                "La instalación de Chromium falló." + (f"\n\nDetalle (salida real de Playwright):\n{err}" if err else ""),
+                hint=hint,
             )
         )
         retry = confirm("¿Reintentar la instalación?")
