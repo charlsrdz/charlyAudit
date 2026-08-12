@@ -43,7 +43,21 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 @dataclass
+class TestCase:
+    name: str
+    spec_path: str
+    url: str
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class TestConfig:
+    # Mantenemos esto para compatibilidad si es necesario, 
+    # pero el catálogo es el nuevo estándar.
+    current_test_index: int = 0
+    test_cases: list[TestCase] = field(default_factory=list)
+    
+    # Legacy support
     spec_path: str | None = None
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
@@ -86,16 +100,25 @@ class AppConfig:
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "AppConfig":
         cfg = AppConfig()
+        
+        # Carga manual para asegurar correcta instanciación de dataclasses anidadas
+        test_data = data.get("test", {})
+        test_cases = [TestCase(**tc) for tc in test_data.get("test_cases", [])]
+        cfg.test = TestConfig(
+            current_test_index=test_data.get("current_test_index", 0),
+            test_cases=test_cases,
+            spec_path=test_data.get("spec_path"),
+            url=test_data.get("url"),
+            headers=test_data.get("headers", {})
+        )
+
         for section_name, section_cls in (
-            ("test", TestConfig),
             ("assistant", AssistantConfig),
             ("browser", BrowserConfig),
             ("palette", PaletteConfig),
             ("capture", CaptureConfig),
         ):
             raw = data.get(section_name) or {}
-            # Filtra claves desconocidas en vez de fallar — una version futura
-            # puede agregar campos sin romper un config.json ya existente.
             known = {k: v for k, v in raw.items() if k in section_cls.__dataclass_fields__}
             setattr(cfg, section_name, section_cls(**known))
         return cfg

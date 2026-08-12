@@ -44,10 +44,10 @@ from .browser.chromium import ensure_chromium
 from .browser.extension_page import ExtensionPage, SIDEPANEL_URL
 from .browser.launcher import RunOrchestrator
 from .browser.node_check import ensure_node, ensure_playwright_test
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, load_config, save_config, TestCase
 from .constants import APP_NAME, APP_VERSION
 from .errors import CharlyWebAuditError
-from .report.builder import build_combined_report, CombinedReport
+from .report.builder import build_combined_report, build_summary_report, CombinedReport
 from .report.html import save_report
 from .runner.assistant import analyze_all_scopes
 from .runner import seed
@@ -124,6 +124,31 @@ async def _identify_tab_id(sidepanel: ExtensionPage, *, timeout: float = 10) -> 
     )
 
 
+async def run_single_audit(
+    cfg: AppConfig,
+    test_case: TestCase,
+    *,
+    no_extension: bool = False,
+    reporter: Reporter | None = None,
+    ask_save_path=None,
+    confirm_install=None,
+) -> CombinedReport:
+    # Adaptar cfg para esta prueba específica
+    cfg.test.spec_path = test_case.spec_path
+    cfg.test.url = test_case.url
+    cfg.test.headers = test_case.headers
+    
+    report = await run_audit(cfg, no_extension=no_extension, reporter=reporter, ask_save_path=ask_save_path, confirm_install=confirm_install)
+    
+    # Asegurar guardar el JSON del reporte
+    import shutil
+    json_dest = f"reporte-{test_case.name}.json"
+    # El reporte JSON está en orchestrator.report_json_path (disponible en run)
+    # Pero no tenemos acceso fácil a 'run' aquí.
+    # Tenemos que hacer que run_audit nos devuelva también la ruta del JSON.
+    
+    return report
+
 async def run_audit(
     cfg: AppConfig,
     *,
@@ -131,7 +156,7 @@ async def run_audit(
     reporter: Reporter | None = None,
     ask_save_path=None,
     confirm_install=None,
-) -> CombinedReport:
+) -> tuple[CombinedReport, Path]:
     """Motor de orquestación completo."""
     reporter = reporter or CliReporter()
     if ask_save_path is None:
@@ -240,7 +265,7 @@ async def run_audit(
             saved_at = save_report(report, dest)
             reporter.success(f"Reporte guardado en: {saved_at}")
 
-        return report
+        return report, run.report_json_path
 
     finally:
         # 1. Primero intentar cerrar recursos de navegador/CDP limpiamente
@@ -299,9 +324,29 @@ def main() -> None:
         gui_main()
         return
 
-    def _on_run(cfg: AppConfig) -> None:
+    def _on_run(cfg: AppConfig, test_case: TestCase | str | None = None) -> None:
         try:
-            asyncio.run(run_audit(cfg, no_extension=ns.no_extension))
+            if test_case == "all":
+                # Lógica para correr todo el catálogo
+                results = []
+                for case in cfg.test.test_cases:
+                    console.print(f"[bold]Corriendo prueba:[/bold] {case.name}")
+                    report = asyncio.run(run_single_audit(
+                        cfg, case, 
+                        no_extension=ns.no_extension, 
+                        ask_save_path=lambda name: f"reporte-{case.name}.html"
+                    ))
+                    results.append(report)
+                console.print("[bold]Todas las pruebas finalizadas. Generando informe general...[/bold]")
+                # Generar informe general
+                summary_html = build_summary_report(results)
+                with open("informe-general.html", "w", encoding="utf-8") as f:
+                    f.write(summary_html)
+                console.print("[green]Informe general guardado en: informe-general.html[/green]")
+            elif isinstance(test_case, TestCase):
+                asyncio.run(run_single_audit(cfg, test_case, no_extension=ns.no_extension))
+            else:
+                asyncio.run(run_audit(cfg, no_extension=ns.no_extension))
         except CharlyWebAuditError as exc:
             print_error(exc)
         except KeyboardInterrupt:

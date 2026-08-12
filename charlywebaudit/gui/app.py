@@ -19,15 +19,17 @@ from .async_bridge import AsyncBridge
 from .theme import MUTED, apply_theme, apply_window_icon, window_title
 from .tray import TrayController
 from .views.assistant_config_view import AssistantConfigView
+from .views.catalog_view import CatalogView
 from .views.help_view import HelpView
 from .views.home_view import HomeView
 from .views.report_view import ReportView
 from .views.run_view import RunView
 from .views.test_config_view import TestConfigView
 
-_TAB_ORDER = ["home", "test", "assistant", "run", "report", "help"]
+_TAB_ORDER = ["home", "catalog", "test", "assistant", "run", "report", "help"]
 _TAB_LABELS = {
     "home": "Inicio",
+    "catalog": "Catálogo",
     "test": "Configurar prueba",
     "assistant": "Asistente IA",
     "run": "Ejecutar",
@@ -64,7 +66,8 @@ class App:
         self.views: dict[str, ttk.Frame] = {}
 
         self.views["home"] = HomeView(self.notebook, self.cfg, on_navigate=self.show_view)
-        self.views["test"] = TestConfigView(self.notebook, self.cfg, on_change=self._on_config_changed)
+        self.views["catalog"] = CatalogView(self.notebook, self.cfg, on_change=self._on_config_changed)
+        self.views["test"] = TestConfigView(self.notebook, self.cfg, on_change=self._on_config_changed, on_navigate=self.show_view)
         self.views["assistant"] = AssistantConfigView(self.notebook, self.cfg, on_change=self._on_config_changed)
         self.views["run"] = RunView(self.notebook, self.cfg, self.bridge, on_report_ready=self._on_report_ready)
         self.views["report"] = ReportView(self.notebook)

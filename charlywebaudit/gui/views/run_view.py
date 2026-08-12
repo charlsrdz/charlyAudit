@@ -51,6 +51,14 @@ class RunView(ttk.Frame):
             actions=[_run_button],
         ).pack(fill="x", pady=(0, 12))
 
+        # Modo de ejecución: simple o catálogo
+        self.mode = tk.StringVar(value="simple")
+        
+        mode_frame = ttk.Frame(self)
+        mode_frame.pack(fill="x", pady=5)
+        ttk.Radiobutton(mode_frame, text="Prueba única", variable=self.mode, value="simple").pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Catálogo completo", variable=self.mode, value="catalog").pack(side="left", padx=5)
+
         status_row = ttk.Frame(self)
         status_row.pack(fill="x", pady=(0, 4))
         self.status_label = ttk.Label(status_row, text="● Listo para correr", style="Muted.TLabel")
@@ -106,8 +114,11 @@ class RunView(ttk.Frame):
     def _start_run(self) -> None:
         if self._running:
             return
-        if not self.cfg.test.spec_path or not self.cfg.test.url:
+        if self.mode.get() == "simple" and (not self.cfg.test.spec_path or not self.cfg.test.url):
             self._append_log("⚠ Configura primero el script y la URL en 'Configurar prueba'.", "warning")
+            return
+        if self.mode.get() == "catalog" and not self.cfg.test.test_cases:
+            self._append_log("⚠ El catálogo está vacío. Agrega pruebas primero.", "warning")
             return
         if not self.cfg.assistant.configured:
             self._append_log("⚠ Configura primero el Asistente IA.", "warning")
@@ -123,26 +134,39 @@ class RunView(ttk.Frame):
         self.log_text.configure(state="disabled")
 
         reporter = QueueReporter(self._queue)
+        
+        from ...__main__ import run_audit, run_single_audit, build_summary_report
+        from ..dialogs import make_thread_safe_confirm, make_thread_safe_save_path
 
-        async def _ask_save_path(default_name: str):
-            # La GUI no pregunta por consola — devuelve None para NO guardar
-            # automaticamente; el usuario guarda desde la vista de Reporte
-            # (con su propio dialogo nativo) una vez que ve el resultado.
-            return None
-
-        from ...__main__ import run_audit  # import diferido: evita ciclos (run_audit importa desde gui indirectamente en algunos flujos)
-        from ..dialogs import make_thread_safe_confirm
-
-        # Bug real corregido en v0.0.8: sin esto, ensure_chromium() usaba su
-        # confirmacion por defecto (questionary, pensada para terminal) —
-        # incompatible con el hilo en segundo plano de AsyncBridge, donde
-        # esta corrida realmente se ejecuta. Ver gui/dialogs.py.
         confirm_install = make_thread_safe_confirm(self.winfo_toplevel())
+        ask_save_path = make_thread_safe_save_path(self.winfo_toplevel())
 
-        self.bridge.submit(
-            run_audit(self.cfg, reporter=reporter, ask_save_path=_ask_save_path, confirm_install=confirm_install),
-            on_done=self._on_run_done,
-        )
+        async def _run_sequence():
+            results = []
+            for tc in self.cfg.test.test_cases:
+                reporter.info(f"Corriendo prueba: {tc.name}")
+                try:
+                    report, _ = await run_single_audit(self.cfg, tc, reporter=reporter, confirm_install=confirm_install, ask_save_path=ask_save_path)
+                    results.append(report)
+                except Exception as e:
+                    reporter.error(f"Falla en la prueba '{tc.name}': {e}")
+            
+            # Generar reporte general
+            summary_html = build_summary_report(results)
+            with open("informe-general.html", "w", encoding="utf-8") as f:
+                f.write(summary_html)
+            reporter.success("Informe general guardado en: informe-general.html")
+            
+            # Devolver el primer reporte si existe para compatibilidad, o un objeto dummy
+            return results[0] if results else None, None
+
+        if self.mode.get() == "catalog":
+            self.bridge.submit(_run_sequence(), on_done=self._on_run_done)
+        else:
+            self.bridge.submit(
+                run_audit(self.cfg, reporter=reporter, ask_save_path=ask_save_path, confirm_install=confirm_install),
+                on_done=self._on_run_done,
+            )
         self._poll_queue()
 
     def _on_run_done(self, result, exc) -> None:

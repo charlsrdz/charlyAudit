@@ -46,3 +46,13 @@ def build_combined_report(
         playwright=playwright_result,
         assistant_scopes=scopes,
     )
+
+
+def build_summary_report(reports: list[CombinedReport]) -> str:
+    """Genera un reporte resumen HTML a partir de una lista de reportes."""
+    html = "<h1>Informe General de Pruebas</h1><ul>"
+    for r in reports:
+        status = "✅ Pasó" if r.playwright.all_passed else "❌ Falló"
+        html += f"<li>{r.spec_path}: {status}</li>"
+    html += "</ul>"
+    return html
