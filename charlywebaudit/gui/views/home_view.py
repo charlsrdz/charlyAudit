@@ -42,14 +42,14 @@ class HomeView(ttk.Frame):
 
         quick_card = Card(left, title="ACCESOS RÁPIDOS")
         quick_card.pack(fill="x", pady=(12, 0))
-        
-        # Grid para organizar los botones
         quick = ttk.Frame(quick_card.body)
         quick.pack(anchor="w")
-        
-        ttk.Button(quick, text="Gestionar catálogo", style="Ghost.TButton", command=lambda: self._go("catalog")).pack(
+        ttk.Button(quick, text="Configurar prueba", style="Ghost.TButton", command=lambda: self._go("test")).pack(
             side="left", padx=(0, 8)
         )
+        ttk.Button(
+            quick, text="Configurar Asistente IA", style="Ghost.TButton", command=lambda: self._go("assistant")
+        ).pack(side="left", padx=(0, 8))
         ttk.Button(quick, text="▶ Correr prueba", style="Brand.TButton", command=lambda: self._go("run")).pack(
             side="left"
         )
@@ -79,25 +79,21 @@ class HomeView(ttk.Frame):
 
     def _render_status(self) -> None:
         for child in self._status_card.body.winfo_children():
+            if isinstance(child, tk.Label) and child.cget("text") == "ESTADO DE LA CONFIGURACIÓN":
+                continue  # conserva el titulo de la tarjeta, solo limpia las filas
             child.destroy()
 
-        if self.cfg.test.test_cases:
-            StatusRow(self._status_card.body, "Catálogo", f"{len(self.cfg.test.test_cases)} prueba(s) configurada(s)", ok=True).pack(anchor="w", pady=2)
-        else:
-            rows = [
-                ("Script", self.cfg.test.spec_path or "(sin configurar)"),
-                ("URL", self.cfg.test.url or "(sin configurar)"),
-            ]
-            for label, value in rows:
-                ok = "sin configurar" not in value
-                StatusRow(self._status_card.body, label, value, ok=ok).pack(anchor="w", pady=2)
-
-        StatusRow(
-            self._status_card.body,
-            "Asistente IA",
-            f"configurado ({self.cfg.assistant.provider})" if self.cfg.assistant.configured else "sin configurar",
-            ok=self.cfg.assistant.configured,
-        ).pack(anchor="w", pady=2)
+        rows = [
+            ("Script", self.cfg.test.spec_path or "(sin configurar)"),
+            ("URL", self.cfg.test.url or "(sin configurar)"),
+            (
+                "Asistente IA",
+                f"configurado ({self.cfg.assistant.provider})" if self.cfg.assistant.configured else "sin configurar",
+            ),
+        ]
+        for label, value in rows:
+            ok = "sin configurar" not in value
+            StatusRow(self._status_card.body, label, value, ok=ok).pack(anchor="w", pady=2)
 
     def refresh(self) -> None:
         self._render_status()

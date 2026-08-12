@@ -1,5 +1,5 @@
 """
-config.py — Configuración persistente de RedGpsWebAudit.
+config.py — Configuración persistente de charlyWebAudit.
 
 Vive como un único archivo JSON en la ruta estándar de configuración del
 sistema operativo (via `platformdirs`) — no se inventa una ubicación propia.
@@ -43,23 +43,24 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 @dataclass
-class TestCase:
-    name: str
-    spec_path: str
-    url: str
+class TestConfig:
+    spec_path: str | None = None
+    url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
-class TestConfig:
-    # Mantenemos esto para compatibilidad si es necesario, 
-    # pero el catálogo es el nuevo estándar.
-    current_test_index: int = 0
-    test_cases: list[TestCase] = field(default_factory=list)
-    
-    # Legacy support
-    spec_path: str | None = None
-    url: str | None = None
+class TestCase:
+    """Una prueba GUARDADA y nombrada — punto 5 del pedido v0.1.0a: el
+    catálogo. A diferencia de `TestConfig` (la prueba "activa/rápida" de
+    siempre, sin cambios), un `TestCase` vive en una lista con nombre
+    propio, pensado para correr una y otra vez y comparar resultados en
+    el tiempo (ver `history.py` para el registro de cada corrida)."""
+
+    id: str
+    name: str
+    spec_path: str
+    url: str
     headers: dict[str, str] = field(default_factory=dict)
 
 
@@ -93,6 +94,9 @@ class AppConfig:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     palette: PaletteConfig = field(default_factory=PaletteConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    test_catalog: list[TestCase] = field(default_factory=list)
+    """Punto 5 del pedido v0.1.0a: pruebas guardadas con nombre, para
+    correr repetidamente y comparar resultados en el dashboard."""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, ensure_ascii=False)
@@ -100,27 +104,22 @@ class AppConfig:
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "AppConfig":
         cfg = AppConfig()
-        
-        # Carga manual para asegurar correcta instanciación de dataclasses anidadas
-        test_data = data.get("test", {})
-        test_cases = [TestCase(**tc) for tc in test_data.get("test_cases", [])]
-        cfg.test = TestConfig(
-            current_test_index=test_data.get("current_test_index", 0),
-            test_cases=test_cases,
-            spec_path=test_data.get("spec_path"),
-            url=test_data.get("url"),
-            headers=test_data.get("headers", {})
-        )
-
         for section_name, section_cls in (
+            ("test", TestConfig),
             ("assistant", AssistantConfig),
             ("browser", BrowserConfig),
             ("palette", PaletteConfig),
             ("capture", CaptureConfig),
         ):
             raw = data.get(section_name) or {}
+            # Filtra claves desconocidas en vez de fallar — una version futura
+            # puede agregar campos sin romper un config.json ya existente.
             known = {k: v for k, v in raw.items() if k in section_cls.__dataclass_fields__}
             setattr(cfg, section_name, section_cls(**known))
+        cfg.test_catalog = [
+            TestCase(**{k: v for k, v in tc.items() if k in TestCase.__dataclass_fields__})
+            for tc in data.get("test_catalog", [])
+        ]
         return cfg
 
 
@@ -135,7 +134,7 @@ def load_config() -> AppConfig:
     except (json.JSONDecodeError, OSError) as exc:
         raise ConfigError(
             f"No se pudo leer la configuración guardada en {CONFIG_FILE}: {exc}",
-            hint="Si el archivo se corrompió, puedes eliminarlo y RedGpsWebAudit "
+            hint="Si el archivo se corrompió, puedes eliminarlo y charlyWebAudit "
             "volverá a pedir la configuración desde cero.",
         ) from exc
     return AppConfig.from_dict(data)

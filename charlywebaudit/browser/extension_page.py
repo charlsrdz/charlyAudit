@@ -48,6 +48,23 @@ class ExtensionPage:
         # pierden silenciosamente) — en su lugar, creamos el target y
         # esperamos el evento attachedToTarget que el propio auto-attach
         # dispara para el, y liberamos SU pausa antes de navegar.
+        #
+        # Nota de diseño importante (investigado a fondo en v0.1.0a): a
+        # proposito NO se especifica un browserContextId al crear este
+        # target — eso hace que la pagina termine en el contexto de
+        # navegador POR DEFECTO. Se probo explícitamente forzarla al MISMO
+        # contexto que la pestana del spec (donde vive Playwright Test) para
+        # lograr "una sola ventana con dos pestañas", y el resultado fue que
+        # la extension DEJO DE CARGAR ahí (chrome-error://chromewebdata/,
+        # confirmado con captura del estado real de la pagina) — Chrome solo
+        # habilita las extensiones cargadas por línea de comandos
+        # (--load-extension) en el contexto POR DEFECTO; un contexto
+        # adicional creado por Playwright Test (que es un contexto de
+        # navegador genuinamente separado, no solo una pestaña más) no
+        # hereda esa extensión. Es una restricción real de Chrome, no un
+        # bug de este proyecto — por eso CharlyAudit abre en una ventana
+        # separada de la del spec (ver README, sección "Por qué hay dos
+        # ventanas", para la explicación completa y qué se intentó).
         res = await client.send("Target.createTarget", {"url": "about:blank"})
         target_id = res["result"]["targetId"]
 
@@ -134,8 +151,4 @@ class ExtensionPage:
         raise RecordingError(f"El elemento '{selector}' nunca apareció en la extensión.")
 
     async def close(self) -> None:
-        try:
-            await self.client.send("Target.closeTarget", {"targetId": self.target_id})
-        except Exception:
-            # Si la conexión ya está cerrada, no hay nada que cerrar.
-            pass
+        await self.client.send("Target.closeTarget", {"targetId": self.target_id})

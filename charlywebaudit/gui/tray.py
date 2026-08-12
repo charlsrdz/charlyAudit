@@ -119,7 +119,7 @@ class TrayController:
             pystray.MenuItem("Salir", lambda: self._trigger_quit()),
         )
         self._icon = pystray.Icon(APP_NAME, image, APP_NAME, menu)
-        self._thread = threading.Thread(target=self._icon.run, daemon=True, name="redgpswebaudit-tray")
+        self._thread = threading.Thread(target=self._icon.run, daemon=True, name="charlywebaudit-tray")
         self._thread.start()
 
     def _stop_icon(self) -> None:

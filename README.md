@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.0.9**
+**Versión actual: 0.1.0a**
 
 ---
 
@@ -262,11 +262,14 @@ charlywebaudit/
     test_exec.py                  Parsea el reporte JSON de Playwright
   report/                   Construye y renderiza el reporte final
   ui/                        La CLI (questionary + rich)
-  gui/                        La interfaz gráfica (Tkinter) — ver v0.0.5/v0.0.6 abajo
+  gui/                        La interfaz gráfica (Tkinter) — ver v0.0.5/v0.0.6/v0.1.0a abajo
     theme.py                    Branding: paleta, fuentes, estilos ttk
     widgets.py                   Componentes reutilizables (Header/Card/etc — v0.0.6)
+    dialogs.py                    Diálogos seguros entre hilos (v0.0.8)
     assets/                       Íconos reales de la extensión (branding compartido)
-    views/                         Las seis pantallas (formularios, ejecución, reporte, ayuda)
+    views/                         Las ocho pantallas (formularios, ejecución, catálogo,
+                                    dashboard, reporte, ayuda — v0.1.0a agregó catálogo/dashboard)
+  history.py                Historial de corridas + reportes auto-guardados (v0.1.0a)
   vendor/charlyaudit/       Copia empaquetada de la extensión CharlyAudit
 build/
   build_installer.py       Script de build del binario (mismo en los 3 SO)
@@ -950,6 +953,125 @@ línea por línea a través de `reporter.raw()` — funciona igual para
 `QueueReporter` (GUI) que para `CliReporter` — y que el mensaje de error
 final incluye tanto el detalle real como la sugerencia específica de
 `install-deps`, en vez del mensaje genérico sin información de antes.
+
+## v0.1.0a — Bugs arquitectónicos reales, catálogo de pruebas y dashboard
+
+Esta versión parte de un aporte real de un usuario (RedGPS): tomó el
+proyecto, llegó al punto de que el navegador abría correctamente, y
+reportó dos problemas junto con su propio intento de solución. Se
+analizó su versión a fondo (diff completo contra la línea base), se
+extrajo lo aprovechable, y se investigó el resto hasta la causa raíz real
+— con Chrome real instalado en el entorno de desarrollo, no solo
+revisando código.
+
+### 1 — "El navegador se cierra de forma inesperada" (`no close frame received or sent`)
+
+Se encontraron y corrigieron **dos causas raíz genuinamente distintas**:
+
+**Causa 1 — el mecanismo de sincronización nunca fue confiable.** Desde
+v0.0.1, este proyecto "pausaba" la pestaña del spec vía CDP
+(`waitForDebuggerOnStart`) para hacer su propio trabajo antes de dejarla
+navegar. Se descubrió que Playwright Test abre su **propia** conexión
+CDP, independiente de la nuestra (`--remote-debugging-pipe` vs. nuestro
+`--remote-debugging-port`) — y la sesión de Playwright libera **su
+propia** pausa como parte de su arranque normal, sin importar la
+nuestra. La carrera la ganaba Playwright, no nosotros: el spec podía
+terminar de correr *antes* de que nuestro código llamara `release()`, y
+al intentar seguir usando la conexión, el navegador ya se había cerrado.
+Confirmado con logging en vivo mostrando "1 passed" apareciendo antes de
+nuestro propio `release()`.
+
+*Fix*: se reemplazó el pausado por depurador por **intercepción a nivel
+de red** (dominio `Fetch` de CDP) sobre la primera navegación real — esto
+sí bloquea la navegación sin importar qué sesión CDP la dispare.
+Validado con un ciclo completo: interceptar, hacer el trabajo real
+(abrir extensión, sembrar config), liberar, y confirmar que el test
+termina exitosamente después. El pausado por depurador se conserva solo
+como ventana de tiempo para armar la intercepción antes de que cualquier
+navegación pueda dispararse.
+
+**Causa 2 — el archivo de configuración no se podía resolver.**
+`playwright.config.ts` se escribía en un directorio temporal separado
+(`work_dir`), fuera de la carpeta del proyecto del usuario — Node
+resuelve `require('@playwright/test')` desde el directorio del propio
+archivo hacia arriba, nunca desde el `cwd` del proceso, así que un
+config fuera de esa jerarquía fallaba con `MODULE_NOT_FOUND`. **Esta
+corrección ya estaba en la versión de RedGPS** (escribir el config junto
+al spec del usuario) — se extrajo y se aplicó, con limpieza explícita al
+terminar (antes vivía en `work_dir`, que se borra solo; ahora vive en el
+proyecto del usuario, así que se borra aparte).
+
+Con ambos arreglos, se corrió `run_audit()` real de principio a fin
+—lanzamiento, intercepción, spec de Playwright, resultado— sin ningún
+crash. Además, se agregó **degradación elegante** en dos puntos donde el
+navegador puede cerrarse más rápido de lo que tarda nuestro propio
+trabajo (specs muy cortos, o el cierre normal de Playwright Test al
+terminar): en vez de un traceback crudo, el usuario recibe un reporte
+con los resultados reales de Playwright y un aviso claro de qué faltó.
+
+### 2 — "Debería ser 1 navegador con 2 pestañas, no 2 navegadores"
+
+Investigado a fondo, con una prueba real: se intentó forzar la página de
+la extensión al mismo contexto de navegador que usa Playwright Test para
+la pestaña del spec — y la extensión **dejó de cargar** ahí
+(`chrome-error://chromewebdata/`, confirmado leyendo el estado real de
+la página). Chrome solo habilita extensiones cargadas por línea de
+comandos (`--load-extension`) en el contexto de navegador *por defecto*
+— un contexto adicional creado por Playwright Test no la hereda. Es una
+restricción real de seguridad de Chrome, no algo resolvible sin tocar el
+spec del usuario (se consideraron y descartaron varias alternativas:
+`launchPersistentContext`, reporters personalizados, interceptar el
+cierre del navegador — ninguna es compatible con "nunca modificar el
+.spec.ts del usuario", el principio de diseño de este proyecto desde
+v0.0.1). Se revirtió el intento y se documentó la razón real en el
+código para que nadie lo reintente sin saber por qué falló.
+
+### 3 — Mejoras de UI
+
+La ventana creció a 1080×720 (antes 980×680) para dar espacio a las dos
+pestañas nuevas sin apretar el contenido existente. El resto de la UI
+(branding, tema, formularios) no mostró elementos "desaparecidos" al
+revisar contra la línea base — si seguís viendo algo faltante en tu
+propio uso, es información valiosa: decinos exactamente qué pantalla y
+qué elemento para investigarlo con el mismo rigor que el resto de esta
+sección.
+
+### 4 — Reportes completos
+
+`CombinedReport` ahora incluye `assistant_analysis_complete: bool` — el
+reporte HTML muestra un aviso visible al inicio cuando el análisis del
+Asistente no se pudo completar (ver degradación elegante, punto 1 de
+arriba), en vez de que el usuario tenga que notar por su cuenta que cada
+uno de los 15 ámbitos dice "Sin respuesta". *Validado*: confirmado que
+el aviso aparece cuando corresponde y no aparece cuando el análisis está
+completo.
+
+### 5 — Catálogo de pruebas + Dashboard comparativo
+
+Dos pestañas nuevas:
+
+- **Catálogo** (`gui/views/catalog_view.py`): pruebas guardadas con
+  nombre (`config.TestCase` — nombre, script, URL, cabeceras) — crear,
+  editar, eliminar, y correr cualquiera con un clic, reusando el mismo
+  motor (`run_audit`) sin duplicar nada.
+- **`history.py`** (nuevo): cada corrida — venga del catálogo o sea una
+  prueba suelta — agrega un `RunRecord` (nombre, fecha, duración,
+  pasaron/fallaron, si el análisis del Asistente se completó, y la ruta
+  del reporte completo) a un historial persistente en la carpeta de
+  datos del usuario. El reporte de cada corrida se guarda automáticamente
+  ahí también — el dashboard siempre tiene algo que mostrar, sin
+  depender de que el usuario recuerde guardar manualmente.
+- **Dashboard** (`gui/views/dashboard_view.py`): por cada prueba con
+  historial, un resumen (corridas totales, cuántas pasaron completas,
+  duración promedio), un gráfico de barras de duración por corrida a lo
+  largo del tiempo (verde = pasó con análisis completo, ámbar = pasó
+  pero el análisis quedó incompleto, rojo = falló — dibujado con
+  `tk.Canvas`, sin dependencias nuevas), y una tabla con acceso directo
+  al reporte completo de cualquier corrida pasada.
+
+*Validado*: guardado y recarga real del catálogo y del historial
+confirmados con datos reales (no solo revisado); capturas de pantalla de
+ambas pestañas con datos poblados.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

@@ -1,5 +1,5 @@
 """
-errors.py — Excepciones propias de RedGpsWebAudit.
+errors.py — Excepciones propias de charlyWebAudit.
 
 Todas heredan de CharlyWebAuditError con un `hint` opcional: un consejo
 accionable en una línea, pensado para mostrarse tal cual en el panel de

@@ -1,10 +1,14 @@
 """
-gui/theme.py — Branding de la GUI de RedGpsWebAudit.
+gui/theme.py — Branding de la GUI (punto 2 del pedido v0.0.5, endurecido en
+v0.0.6 tras una auditoría visual real con capturas de pantalla).
 
-Toma como base la paleta real del sistema de diseño oficial de CharlyAudit
-(sidepanel.css v2.5.0): `--c-brand #5b6cff` (azul índigo), fondos oscuros
-`--c-bg #0e1020`, `--c-surface #171a2e`, etc. — así la GUI de escritorio
-comparte identidad visual con la extensión y el reporte HTML.
+Toma como base la paleta real de CharlyAudit — los mismos tokens de color
+que ya usa el panel lateral de la extensión (`--c-brand`, `--c-bg`,
+`--c-surface`, etc., ver sidepanel.css en vendor/charlyaudit/) y el mismo
+naranja de marca (`#b87619`, DEFAULT_PALETTE en constants.py) que ya se
+siembra en la configuración del Asistente — así la CLI, la extensión y
+ahora la GUI comparten una sola identidad visual, no tres inventadas por
+separado.
 """
 
 from __future__ import annotations
@@ -15,20 +19,21 @@ from tkinter import ttk
 
 from ..constants import APP_NAME, DEFAULT_PALETTE
 
-# Paleta completa — tokens del sistema de diseño oficial de CharlyAudit
-# (sidepanel.css v2.5.0), replicados como constantes de Python para tkinter.
-BRAND = DEFAULT_PALETTE["--c-brand"]  # "#5b6cff" azul índigo
-BRAND_LIGHT = "#7d8bff"               # hover: brightness +10%
-BRAND_DIM = "#36407f"                 # --c-brand-dim: selecciones, fondo de chips
-BG = "#0e1020"                         # --c-bg
-SURFACE = "#171a2e"                    # --c-surface
-SURFACE_2 = "#1f2440"                  # --c-surface2
-BORDER = "#2a2f4c"                     # --c-border
-TEXT = "#e7e9f5"                       # --c-text
-MUTED = "#8a90b5"                      # --c-muted
-SUCCESS = "#34d399"                    # --c-success
-DANGER = "#ff6b5e"                     # --c-danger
-WARNING = "#f5b544"                    # --c-warn
+# Paleta completa — el naranja de marca viene de DEFAULT_PALETTE (constants.py,
+# la misma fuente que se siembra en la extensión); el resto son los mismos
+# tokens oscuros que sidepanel.css de CharlyAudit ya usa.
+BRAND = DEFAULT_PALETTE["--c-brand"]  # "#b87619"
+BRAND_LIGHT = "#cc8a24"
+BRAND_DIM = "#8a5813"
+BG = "#0e1020"
+SURFACE = "#171a2e"
+SURFACE_2 = "#1f2440"
+BORDER = "#2a2f4c"
+TEXT = "#e7e9f5"
+MUTED = "#8a90b5"
+SUCCESS = "#34d399"
+DANGER = "#ff6b5e"
+WARNING = "#f5b544"
 
 FONT_FAMILY = "Segoe UI" if tk.TkVersion else "Helvetica"  # ttk resuelve la mejor disponible por SO
 FONT_MONO = "Consolas"
@@ -79,7 +84,7 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
     style.configure(
         "Brand.TButton",
         background=BRAND,
-        foreground="#ffffff",
+        foreground="#1a1200",
         font=(FONT_FAMILY, 10, "bold"),
         borderwidth=0,
         padding=(14, 8),
@@ -190,7 +195,7 @@ def load_icon_images() -> list[tk.PhotoImage]:
 
 
 def apply_window_icon(root: tk.Tk) -> None:
-    """Aplica el ícono de RedGpsWebAudit a la ventana (barra de título,
+    """Aplica el ícono real de CharlyAudit a la ventana (barra de título,
     barra de tareas, alt-tab) — se guardan las referencias en el propio
     root para que el recolector de basura de Python no las libere (un
     PhotoImage sin una referencia viva en, se borra de la ventana)."""

@@ -22,6 +22,12 @@ class CombinedReport:
     spec_path: str
     playwright: PlaywrightRunResult
     assistant_scopes: list[dict] = field(default_factory=list)  # [{id, label, html}]
+    assistant_analysis_complete: bool = True
+    """Punto 4 del pedido v0.1.0a ("garantiza los reportes completos"):
+    en vez de dejar que el usuario descubra por su cuenta que faltan
+    ámbitos (cada uno con su propio texto "Sin respuesta..."), el reporte
+    HTML muestra un aviso visible al inicio cuando esto es False — nunca
+    se pretende que un reporte parcial es uno completo."""
 
 
 def build_combined_report(
@@ -45,14 +51,5 @@ def build_combined_report(
         spec_path=spec_path,
         playwright=playwright_result,
         assistant_scopes=scopes,
+        assistant_analysis_complete=bool(assistant_responses),
     )
-
-
-def build_summary_report(reports: list[CombinedReport]) -> str:
-    """Genera un reporte resumen HTML a partir de una lista de reportes."""
-    html = "<h1>Informe General de Pruebas</h1><ul>"
-    for r in reports:
-        status = "✅ Pasó" if r.playwright.all_passed else "❌ Falló"
-        html += f"<li>{r.spec_path}: {status}</li>"
-    html += "</ul>"
-    return html

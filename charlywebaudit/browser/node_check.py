@@ -40,7 +40,7 @@ def ensure_node() -> tuple[str, str]:
     except NodeNotFoundError:
         raise NodeNotFoundError(
             "No se encontró Node.js/npm en el PATH del sistema.",
-            hint="RedGpsWebAudit ejecuta los specs de @playwright/test con el CLI de Node — "
+            hint="charlyWebAudit ejecuta los specs de @playwright/test con el CLI de Node — "
             "instala Node.js desde https://nodejs.org (versión LTS recomendada) y vuelve a intentarlo.",
         )
     node_version = _run_version([node_path, "--version"])

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import questionary
 
-from ..config import AppConfig, TestCase
+from ..config import AppConfig
 from .theme import QUESTIONARY_STYLE, console, print_info, print_warning
 from rich.markup import escape
 
@@ -165,27 +165,3 @@ def configure_assistant(cfg: AppConfig, *, force: bool = False) -> bool:
 
     cfg.assistant.configured = True
     return True
-
-
-def create_test_case_form(default_name: str = "") -> TestCase | None:
-    """Formulario para crear un nuevo caso de prueba."""
-    # Nota: Esta función usa cuestionary (terminal) y no es compatible directamente con Tkinter.
-    # Se debe implementar un formulario de Tkinter para la GUI.
-    name = questionary.text("Nombre de la prueba:", default=default_name, style=QUESTIONARY_STYLE).ask()
-    if not name:
-        return None
-    
-    spec = _ask_spec_path(None)
-    if spec is None:
-        return None
-    
-    url = _ask_url(None)
-    if url is None:
-        return None
-    
-    headers = {}
-    want_headers = questionary.confirm("¿Agregar cabeceras?", default=False, style=QUESTIONARY_STYLE).ask()
-    if want_headers:
-        headers = _edit_headers({})
-        
-    return TestCase(name=name, spec_path=spec, url=url, headers=headers)

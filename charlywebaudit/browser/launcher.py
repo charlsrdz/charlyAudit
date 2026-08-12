@@ -40,6 +40,11 @@ class LaunchedRun:
     paused_target: PausedTarget
     work_dir: Path
     report_json_path: Path
+    config_path: Path
+    """Ruta del playwright.config.ts generado — vive en spec_path.parent
+    (ver nota real en RunOrchestrator.launch), no en work_dir, así que
+    necesita limpiarse por separado al terminar la corrida en vez de
+    quedar cubierto por el rmtree de work_dir."""
 
 
 class RunOrchestrator:
@@ -47,7 +52,7 @@ class RunOrchestrator:
         self,
         *,
         spec_path: Path,
-        extension_path: Path | None,
+        extension_path: Path,
         target_url: str,
         headers: dict[str, str],
         work_dir: Path,
@@ -55,7 +60,7 @@ class RunOrchestrator:
     ) -> None:
         if not spec_path.is_file():
             raise SpecNotFoundError(f"No se encontró el spec: {spec_path}")
-        if extension_path and not extension_path.is_dir():
+        if not extension_path.is_dir():
             raise BrowserLaunchError(f"No se encontró el build de la extensión en: {extension_path}")
 
         self.spec_path = spec_path
@@ -68,9 +73,21 @@ class RunOrchestrator:
     async def launch(self) -> LaunchedRun:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         report_json_path = self.work_dir / "playwright-report.json"
-        # La configuración se genera en la carpeta del propio spec
-        # para que Node/Playwright puedan resolver los módulos instalados allí (@playwright/test).
-        config_path = self.spec_path.parent / "charlyaudit.config.ts"
+        # Bug real corregido en v0.1.0a: el archivo de configuracion se
+        # escribia en self.work_dir (un directorio temporal separado,
+        # fuera del proyecto del usuario) — pero Node resuelve
+        # `require('@playwright/test')` (y cualquier import) desde el
+        # directorio del PROPIO ARCHIVO que hace el require, buscando
+        # node_modules hacia arriba en el arbol de directorios, nunca desde
+        # el cwd del proceso. Un config.ts fuera de esa jerarquia (como
+        # work_dir, tipicamente /tmp/charlywebaudit-XXXXXX) SIEMPRE fallaba
+        # con MODULE_NOT_FOUND, a menos que /tmp resultara ser, por
+        # casualidad, ancestro del proyecto del usuario. Confirmado
+        # reproduciendo el error real antes de este fix. El JSON del
+        # reporte SI puede seguir en work_dir (se referencia por ruta
+        # absoluta dentro del config, Node lo escribe ahi sin problema —
+        # solo el propio archivo de config necesita vivir junto al proyecto).
+        config_path = self.spec_path.parent / ".charlywebaudit.config.ts"
         write_playwright_config(
             config_path,
             spec_path=self.spec_path,
@@ -82,10 +99,12 @@ class RunOrchestrator:
 
         # El subproceso de Node corre exactamente lo que el usuario correría
         # a mano — sin ninguna modificacion a su spec. Corre desde la carpeta
-        # del PROPIO spec (no desde nuestro work_dir): Node resuelve modulos
-        # (incluido @playwright/test) desde el directorio del archivo hacia
-        # arriba, no desde el cwd del proceso — el proyecto del usuario ya
-        # tiene @playwright/test instalado ahi, que es de donde debe resolverse.
+        # del PROPIO spec (no desde nuestro work_dir): Node resuelve
+        # modulos (incluido @playwright/test) desde el directorio del
+        # archivo hacia arriba, no desde el cwd del proceso — el proyecto
+        # del usuario ya tiene @playwright/test instalado ahi, que es de
+        # donde debe resolverse (y por eso, ahora, el propio config.ts
+        # tambien vive ahi — ver nota arriba).
         npx_path = resolve_npx()  # nunca el nombre desnudo "npx" (bug real en Windows, ver platform_utils.py)
         cmd = [npx_path, "playwright", "test", "--config", str(config_path)]
         if needs_virtual_display():
@@ -132,6 +151,7 @@ class RunOrchestrator:
             paused_target=paused_target,
             work_dir=self.work_dir,
             report_json_path=report_json_path,
+            config_path=config_path,
         )
 
     async def _wait_for_correct_tab(self, sync: BrowserSync, process: subprocess.Popen) -> PausedTarget:

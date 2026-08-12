@@ -29,19 +29,18 @@ segura entre hilos (ver `gui/dialogs.py`).
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
 
 import questionary
+from playwright.sync_api import sync_playwright
 
 from ..errors import ChromiumInstallFailedError, ChromiumNotInstalledError
 from ..reporter import Reporter
 from ..ui.theme import CliReporter, QUESTIONARY_STYLE
-from .platform_utils import default_playwright_browsers_path, find_xvfb_run, needs_virtual_display, resolve_npx
+from .platform_utils import find_xvfb_run, needs_virtual_display
 
 ConfirmFn = Callable[[str], bool]
 
@@ -63,88 +62,75 @@ def _warn_if_missing_display(reporter: Reporter) -> None:
     if find_xvfb_run():
         reporter.info(
             "No se detectó un entorno gráfico ($DISPLAY vacío), pero 'xvfb-run' está disponible — "
-            "RedGpsWebAudit lo usará automáticamente."
+            "charlyWebAudit lo usará automáticamente."
         )
     else:
         reporter.warning(
             "No se detectó un entorno gráfico ($DISPLAY vacío) ni 'xvfb-run' instalado. "
             "CharlyAudit necesita un navegador con interfaz (las extensiones no cargan en modo headless puro) — "
-            "instala un paquete de Xvfb (p. ej. 'apt install xvfb') o corre RedGpsWebAudit desde un entorno con pantalla."
+            "instala un paquete de Xvfb (p. ej. 'apt install xvfb') o corre charlyWebAudit desde un entorno con pantalla."
         )
 
 
 def is_chromium_installed() -> bool:
-    """Verifica que exista en disco la instalación de Chromium gestionada por Playwright,
-    comprobando la existencia del directorio de navegadores y el marcador de instalación
-    o binarios, sin necesidad de invocar la API de Python de Playwright (evitando así
-    conflictos con event loops de asyncio o fugas del proceso driver)."""
-    browsers_dir = default_playwright_browsers_path()
-    if not browsers_dir or not browsers_dir.is_dir():
-        return False
+    """Verifica que exista en disco el binario exacto que la app usará en la
+    práctica — sin lanzar un navegador completo.
+
+    Bug real corregido en v0.0.2: la versión anterior comprobaba lanzando
+    Chromium con `headless=True` — pero la app SIEMPRE usa `headless=False`
+    (las extensiones de Chrome no cargan de forma fiable en modo headless
+    puro). En versiones recientes de Playwright, `headless=True` puede
+    resolver a un binario DISTINTO (`chrome-headless-shell`), separado del
+    que usa `headless=False` — es decir, la verificación podía decir "sí
+    está instalado" cuando en realidad faltaba el binario que la corrida
+    real necesita, o viceversa. Comprobar `executable_path` directamente
+    verifica el binario correcto, es más rápido (no lanza ni cierra un
+    proceso completo), y no depende de tener un display disponible."""
     try:
-        for entry in browsers_dir.iterdir():
-            if entry.is_dir() and (entry.name.startswith("chromium") or entry.name.startswith("chrome")):
-                if (entry / "INSTALLATION_COMPLETE").exists() or any(
-                    sub.is_dir() and ("chrome" in sub.name.lower() or "chromium" in sub.name.lower())
-                    for sub in entry.iterdir()
-                ):
-                    return True
+        with sync_playwright() as p:
+            return Path(p.chromium.executable_path).exists()
     except Exception:
-        pass
-    return False
+        return False
 
 
-def _exec_command(cmd: list[str], reporter: Reporter) -> tuple[bool, str]:
-    """Ejecuta un comando en subproceso retransmitiendo salida en vivo."""
+def _run_playwright_install(reporter: Reporter) -> tuple[bool, str]:
+    """Corre `python -m playwright install chromium` como subproceso,
+    transmitiendo su salida real en vivo a través de `reporter` (funciona
+    igual para la CLI y para el panel de la GUI — antes, la salida solo se
+    heredaba directamente a la terminal, invisible para quien corre la GUI
+    sin una consola abierta, y descartada por completo del mensaje de
+    error).
+
+    Bug real corregido: antes, cuando la instalación fallaba de verdad
+    (proceso termina con código distinto de cero, no una excepción al
+    lanzarlo), el detalle devuelto era un string vacío — el mensaje de
+    error mostrado ("La instalación de Chromium falló.") no tenía ninguna
+    información real de la causa, solo un consejo genérico ("revisa tu
+    conexión a internet"). Ahora se capturan las últimas líneas reales de
+    la salida del propio Playwright (que suelen contener el motivo real:
+    fallo de red, biblioteca de sistema faltante, etc.) y se incluyen en
+    el mensaje de error."""
     try:
         proc = subprocess.Popen(
-            cmd,
+            [sys.executable, "-m", "playwright", "install", "chromium"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
         )
         lines: list[str] = []
-        if proc.stdout:
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                if line:
-                    reporter.raw(line)
-                    lines.append(line)
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            if line:
+                reporter.raw(line)
+                lines.append(line)
         proc.wait()
-        tail = "\n".join(lines[-12:])
+        # Las ultimas lineas suelen contener el motivo real del fallo (el
+        # resto suele ser progreso de descarga, menos util como detalle).
+        tail = "\n".join(lines[-8:])
         return proc.returncode == 0, tail
     except OSError as exc:
         return False, str(exc)
-
-
-def _run_playwright_install(reporter: Reporter) -> tuple[bool, str]:
-    """Corre la instalación de Chromium a través de Playwright.
-
-    Bug real corregido: si la aplicación corre empaquetada como ejecutable
-    PyInstaller (`sys.frozen == True`), `sys.executable` apunta al binario propio de
-    `charlywebaudit`, NO al intérprete de Python. Invocarlo con `-m playwright` provocaba
-    que `charlywebaudit` se re-ejecutara a sí mismo en bucle e intentara verificar
-    prerrequisitos recursivamente.
-    En ese escenario (o como fallback si `python -m playwright` falla), se utiliza
-    `npx playwright install chromium` usando la instalación de Node.js/npm del sistema.
-    """
-    is_frozen = getattr(sys, "frozen", False)
-    tail = ""
-
-    if not is_frozen:
-        ok, tail = _exec_command([sys.executable, "-m", "playwright", "install", "chromium"], reporter)
-        if ok:
-            return True, tail
-
-    try:
-        npx_path = resolve_npx()
-        ok_npx, tail_npx = _exec_command([npx_path, "--yes", "playwright", "install", "chromium"], reporter)
-        if ok_npx:
-            return True, tail_npx
-        return False, tail_npx or tail
-    except Exception as exc:
-        return False, tail or str(exc)
 
 
 def ensure_chromium(*, reporter: Reporter | None = None, confirm: ConfirmFn | None = None) -> None:

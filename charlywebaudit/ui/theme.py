@@ -1,5 +1,5 @@
 """
-ui/theme.py — Diseño estándar de la CLI de RedGpsWebAudit.
+ui/theme.py — Diseño básico estándar (punto 3 del pedido).
 
 Un único lugar para: la paleta de colores de la CLI, el banner de marca, y
 los helpers de mensaje (error/éxito/aviso) que todo el resto del proyecto
@@ -19,9 +19,10 @@ from ..errors import CharlyWebAuditError
 
 console = Console()
 
-# Color de marca oficial del sistema de diseño CharlyAudit (sidepanel.css v2.5.0)
-# --c-brand: #5b6cff (azul índigo) — mismo token que usa la extensión.
-BRAND = "#5b6cff"
+# Mismo tono de marca que la extensión (naranja CharlyAudit, #b87619 por
+# defecto de la paleta) — coherencia visual entre la CLI y lo que se ve
+# dentro del navegador durante la corrida.
+BRAND = "#b87619"
 
 QUESTIONARY_STYLE = questionary.Style(
     [

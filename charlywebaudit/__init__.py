@@ -1,4 +1,4 @@
-"""RedGpsWebAudit — orquesta CharlyAudit + un script Playwright real."""
+"""charlyWebAudit — orquesta CharlyAudit + un script Playwright real."""
 
 from .constants import APP_VERSION as __version__
 

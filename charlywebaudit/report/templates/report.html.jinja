@@ -2,10 +2,10 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8" />
-<title>RedGpsWebAudit — Reporte de {{ report.url }}</title>
+<title>charlyWebAudit — Reporte de {{ report.url }}</title>
 <style>
   :root {
-    --brand: #5b6cff;
+    --brand: #b87619;
     --bg: #0e1020;
     --surface: #171a2e;
     --surface2: #1f2440;
@@ -66,13 +66,24 @@
 </head>
 <body>
 <header>
-  <h1>Reporte de auditoría — RedGpsWebAudit</h1>
+  <h1>Reporte de auditoría — charlyWebAudit</h1>
   <div class="meta">
     URL: <code>{{ report.url }}</code> · Spec: <code>{{ report.spec_path }}</code><br>
     Generado: {{ report.generated_at }}
   </div>
 </header>
 <main>
+
+  {% if not report.assistant_analysis_complete %}
+  <section>
+    <div class="card" style="border-color: var(--err); background: rgba(255,107,94,0.08);">
+      <strong style="color: var(--err);">⚠ Análisis del Asistente incompleto.</strong>
+      El navegador se cerró antes de que el Asistente pudiera analizar los 15 ámbitos de esta
+      corrida — los resultados de Playwright abajo son completos y reales, pero la sección
+      "Análisis del Asistente IA" no tiene contenido para esta corrida.
+    </div>
+  </section>
+  {% endif %}
 
   <section>
     <h2>Resumen de Playwright</h2>
@@ -118,6 +129,6 @@
   </section>
 
 </main>
-<footer>Generado por RedGpsWebAudit v{{ app_version }}</footer>
+<footer>Generado por charlyWebAudit v{{ app_version }}</footer>
 </body>
 </html>

@@ -19,24 +19,12 @@ from ..widgets import Card, Header
 
 
 class TestConfigView(ttk.Frame):
-    def __init__(self, parent: tk.Widget, cfg: AppConfig, on_change=None, on_navigate=None) -> None:
+    def __init__(self, parent: tk.Widget, cfg: AppConfig, on_change=None) -> None:
         super().__init__(parent, padding=20)
         self.cfg = cfg
         self.on_change = on_change
-        self.on_navigate = on_navigate
         self._headers_rows: list[tuple[tk.StringVar, tk.StringVar, ttk.Frame]] = []
         self._build()
-
-    def _open_ai_config(self) -> None:
-        if self.on_navigate:
-            self.on_navigate("assistant")
-
-    def _update_ai_status(self) -> None:
-        configured = self.cfg.assistant.configured
-        self.ai_status_label.configure(
-            text=("✓ IA configurada" if configured else "⚠ IA sin configurar"),
-            style=("Success.TLabel" if configured else "Danger.TLabel"),
-        )
 
     def _build(self) -> None:
         Header(self, "Configurar prueba", "Script de Playwright, URL objetivo y cabeceras HTTP personalizadas.").pack(
@@ -73,16 +61,6 @@ class TestConfigView(ttk.Frame):
             self._add_header_row(name, value)
 
         ttk.Button(body, text="+ Agregar cabecera", style="Ghost.TButton", command=lambda: self._add_header_row()).pack(
-            anchor="w", pady=(8, 0)
-        )
-        
-        # --- AI Config ----------------------------------------------------
-        ttk.Label(body, text="ASISTENTE IA", style="Section.TLabel").pack(anchor="w", pady=(16, 4))
-        self.ai_status_label = ttk.Label(body, text="", style="Muted.TLabel")
-        self.ai_status_label.pack(anchor="w")
-        self._update_ai_status()
-        
-        ttk.Button(body, text="Configurar / Actualizar IA", style="Ghost.TButton", command=self._open_ai_config).pack(
             anchor="w", pady=(8, 0)
         )
 
@@ -146,4 +124,3 @@ class TestConfigView(ttk.Frame):
         el resto de las vistas de configuración (v0.0.6)."""
         self.spec_var.set(self.cfg.test.spec_path or "")
         self.url_var.set(self.cfg.test.url or "")
-        self._update_ai_status()

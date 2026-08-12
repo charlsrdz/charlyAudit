@@ -1,5 +1,5 @@
 """
-constants.py — Branding, versionado y valores por defecto de RedGpsWebAudit.
+constants.py — Branding, versionado y valores por defecto de charlyWebAudit.
 
 Todo lo que "no cambia salvo que alguien lo decida a propósito" vive aquí:
 el ID fijo de la extensión CharlyAudit (derivado de la `key` que se agregó a
@@ -10,15 +10,15 @@ perfil de navegador nuevo.
 
 from __future__ import annotations
 
-APP_NAME = "RedGpsWebAudit"
-APP_SLUG = "redgpswebaudit"  # usado para rutas de config (platformdirs)
-APP_VERSION = "0.0.9"
+APP_NAME = "charlyWebAudit"
+APP_SLUG = "charlywebaudit"  # usado para rutas de config (platformdirs)
+APP_VERSION = "0.1.0a"
 APP_TAGLINE = "Orquesta CharlyAudit + Playwright en una sola corrida auditada"
 
 # --- Autor / créditos (sección Ayuda de la GUI, v0.0.6) ---------------------
 AUTHOR_NAME = "RedGPS"
 AUTHOR_DESCRIPTION = (
-    "RedGpsWebAudit y CharlyAudit son herramientas internas de RedGPS "
+    "charlyWebAudit y CharlyAudit son herramientas internas de RedGPS "
     "para automatizar la auditoría de calidad de las plataformas de rastreo."
 )
 RELATED_PROJECT = "CharlyAudit"  # la extension de Chrome que esta herramienta orquesta
@@ -41,7 +41,7 @@ CDP_PORT = 9333
 # primera vez que se usa un perfil de navegador nuevo; después queda
 # persistida en el propio `chrome.storage.local` del perfil y ya no se
 # vuelve a tocar salvo que el usuario la actualice explícitamente desde el
-# menú de RedGpsWebAudit). -----------------------------------------------
+# menú de charlyWebAudit). -----------------------------------------------
 DEFAULT_ASSISTANT_CONFIG = {
     "provider": "gemini",
     "model": "gemini-flash-latest",
@@ -49,7 +49,7 @@ DEFAULT_ASSISTANT_CONFIG = {
 }
 
 DEFAULT_PALETTE = {
-    "--c-brand": "#5b6cff",  # azul índigo del sistema de diseño oficial (sidepanel.css)
+    "--c-brand": "#b87619",
 }
 
 DEFAULT_CAPTURE_CONFIG = {

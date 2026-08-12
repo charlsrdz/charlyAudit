@@ -54,32 +54,3 @@ def make_thread_safe_confirm(root: tk.Tk) -> Callable[[str], bool]:
         return result.get("value", False)
 
     return confirm
-
-
-def make_thread_safe_save_path(root: tk.Tk) -> Callable[[str], str | None]:
-    """Devuelve una función `ask_save_path(default_name) -> str | None` segura
-    de llamar desde el hilo en segundo plano de `AsyncBridge`."""
-
-    def ask_save_path(default_name: str) -> str | None:
-        from tkinter import filedialog
-        result: dict[str, str | None] = {}
-        answered = threading.Event()
-
-        def _show_dialog() -> None:
-            try:
-                file = filedialog.asksaveasfilename(
-                    title="Guardar reporte",
-                    initialfile=default_name,
-                    defaultextension=".html",
-                    filetypes=[("Reporte HTML", "*.html")],
-                    parent=root,
-                )
-                result["value"] = file if file else None
-            finally:
-                answered.set()
-
-        root.after(0, _show_dialog)
-        answered.wait()
-        return result.get("value", None)
-
-    return ask_save_path

@@ -1,11 +1,11 @@
 """
-gui/app.py — Ventana principal de RedGpsWebAudit.
+gui/app.py — Ventana principal de charlyWebAudit.
 
 Ata todo lo demás:
   - `theme.py` + `widgets.py` (branding, punto 2 del pedido; endurecido en v0.0.6)
   - `async_bridge.py` (el motor de orquestación corriendo en segundo plano)
   - `tray.py` (modo segundo plano, punto 3 del pedido)
-  - `views/*` (formularios, ejecución, reporte y ayuda, punto 4 del pedido)
+  - `views/*` (formularios, ejecución, reporte, ayuda, catálogo y dashboard)
 """
 
 from __future__ import annotations
@@ -20,19 +20,21 @@ from .theme import MUTED, apply_theme, apply_window_icon, window_title
 from .tray import TrayController
 from .views.assistant_config_view import AssistantConfigView
 from .views.catalog_view import CatalogView
+from .views.dashboard_view import DashboardView
 from .views.help_view import HelpView
 from .views.home_view import HomeView
 from .views.report_view import ReportView
 from .views.run_view import RunView
 from .views.test_config_view import TestConfigView
 
-_TAB_ORDER = ["home", "catalog", "test", "assistant", "run", "report", "help"]
+_TAB_ORDER = ["home", "test", "assistant", "catalog", "run", "dashboard", "report", "help"]
 _TAB_LABELS = {
     "home": "Inicio",
-    "catalog": "Catálogo",
     "test": "Configurar prueba",
     "assistant": "Asistente IA",
+    "catalog": "Catálogo",
     "run": "Ejecutar",
+    "dashboard": "Dashboard",
     "report": "Reporte",
     "help": "Ayuda",
 }
@@ -42,8 +44,8 @@ class App:
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title(window_title())
-        self.root.geometry("980x680")
-        self.root.minsize(820, 600)
+        self.root.geometry("1080x720")
+        self.root.minsize(860, 620)
         apply_theme(self.root)
         apply_window_icon(self.root)
 
@@ -66,10 +68,11 @@ class App:
         self.views: dict[str, ttk.Frame] = {}
 
         self.views["home"] = HomeView(self.notebook, self.cfg, on_navigate=self.show_view)
-        self.views["catalog"] = CatalogView(self.notebook, self.cfg, on_change=self._on_config_changed)
-        self.views["test"] = TestConfigView(self.notebook, self.cfg, on_change=self._on_config_changed, on_navigate=self.show_view)
+        self.views["test"] = TestConfigView(self.notebook, self.cfg, on_change=self._on_config_changed)
         self.views["assistant"] = AssistantConfigView(self.notebook, self.cfg, on_change=self._on_config_changed)
+        self.views["catalog"] = CatalogView(self.notebook, self.cfg, self.bridge, on_run_test=self._run_from_catalog)
         self.views["run"] = RunView(self.notebook, self.cfg, self.bridge, on_report_ready=self._on_report_ready)
+        self.views["dashboard"] = DashboardView(self.notebook)
         self.views["report"] = ReportView(self.notebook)
         self.views["help"] = HelpView(self.notebook)
 
@@ -101,7 +104,12 @@ class App:
 
     def _on_report_ready(self, report) -> None:
         self.views["report"].show_report(report)
+        self.views["dashboard"].refresh()  # la corrida que acaba de terminar ya debe verse en el Dashboard
         self.show_view("report")
+
+    def _run_from_catalog(self, test_case) -> None:
+        self.show_view("run")
+        self.views["run"]._start_run(test_case)
 
     def _trigger_run_from_tray(self) -> None:
         self.show_view("run")

@@ -74,7 +74,7 @@ class AsyncBridge:
     def start(self) -> None:
         if self._thread is not None:
             return  # ya esta corriendo
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="redgpswebaudit-asyncio")
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="charlywebaudit-asyncio")
         self._thread.start()
         self._ready.wait(timeout=5)
 
@@ -104,18 +104,6 @@ class AsyncBridge:
 
     def stop(self) -> None:
         if self._loop is not None:
-            # En lugar de solo detener, intentamos cerrar tareas de forma segura
-            # ignorando errores de conexión (TargetClosedError) que son inevitables.
-            async def _cleanup():
-                tasks = [t for t in asyncio.all_tasks(self._loop) if t is not asyncio.current_task()]
-                for t in tasks:
-                    t.cancel()
-                # Esperar a que las cancelaciones se propaguen sin lanzar excepciones
-                await asyncio.gather(*tasks, return_exceptions=True)
-                self._loop.stop()
-
-            # Asegurar que el loop se detenga en el hilo principal del bridge
-            self._loop.call_soon_threadsafe(lambda: asyncio.create_task(_cleanup()))
-        
+            self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=5)
