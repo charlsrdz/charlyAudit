@@ -46,8 +46,8 @@ class RunView(ttk.Frame):
         Header(
             self,
             "Ejecutar corrida",
-            "Lanza el navegador con CharlyAudit, corre el spec de Playwright, y pide el "
-            "análisis de los 15 ámbitos del Asistente — el mismo flujo que la CLI.",
+            "Lanza el navegador, corre el spec de Playwright tal cual está escrito, "
+            "y genera un reporte con el resultado — el mismo flujo que la CLI.",
             actions=[_run_button],
         ).pack(fill="x", pady=(0, 12))
 
@@ -120,9 +120,6 @@ class RunView(ttk.Frame):
 
         if not run_spec_path or not run_url:
             self._append_log("⚠ Configura primero el script y la URL en 'Configurar prueba'.", "warning")
-            return
-        if not self.cfg.assistant.configured:
-            self._append_log("⚠ Configura primero el Asistente IA.", "warning")
             return
 
         self._running = True
@@ -205,7 +202,12 @@ class RunView(ttk.Frame):
             self._append_log(f"⚠ {msg.payload}", "warning")
         elif msg.kind == "error":
             exc = msg.payload
-            text = exc.message if isinstance(exc, CharlyWebAuditError) else str(exc)
+            if isinstance(exc, CharlyWebAuditError):
+                text = exc.message
+                if exc.hint:
+                    text += f"\n{exc.hint}"
+            else:
+                text = str(exc)
             self._append_log(f"✕ {text}", "error")
         elif msg.kind == "raw":
             self._append_log(str(msg.payload), "raw")

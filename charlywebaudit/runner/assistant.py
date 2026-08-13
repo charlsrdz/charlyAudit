@@ -1,5 +1,11 @@
 """
 runner/assistant.py — Punto 5 de la decisión confirmada: activa cada uno de
+
+v0.1.1 — NO USADO en el flujo principal desde esta version. A pedido
+explicito, run_audit() (__main__.py) ya no orquesta la extension
+CharlyAudit en absoluto — este modulo queda intacto y validado, por si se
+reintroduce soporte de extension en el futuro, pero nada en el codigo
+activo lo importa hoy.
 los 15 ámbitos del Asistente UNO A LA VEZ (no todos juntos), pide un
 análisis de cada uno, y devuelve las 15 respuestas para que report/builder.py
 las una con el resultado de Playwright en un solo reporte.

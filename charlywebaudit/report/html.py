@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 from ..constants import APP_VERSION
 from .builder import CombinedReport
@@ -15,9 +15,16 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 def render_html(report: CombinedReport) -> str:
+    # Bug de seguridad real corregido: select_autoescape(["html"]) mira la
+    # extension FINAL del nombre del archivo del template — para
+    # "report.html.jinja" esa extension es ".jinja", no ".html", asi que
+    # el autoescape NUNCA se activaba. Confirmado con un payload XSS real
+    # (una URL con <script>) que se incrustaba sin escapar en el reporte
+    # generado. Esta plantilla siempre produce HTML, asi que autoescape=True
+    # incondicional es lo correcto — no depende de adivinar la extension.
     env = Environment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
-        autoescape=select_autoescape(["html"]),
+        autoescape=True,
     )
     template = env.get_template("report.html.jinja")
     return template.render(report=report, app_version=APP_VERSION)

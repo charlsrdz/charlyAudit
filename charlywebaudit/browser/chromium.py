@@ -1,62 +1,54 @@
 """
 browser/chromium.py — Punto 5.2.1 del pedido.
 
-Valida si el Chromium que gestiona Playwright está instalado; si no, ofrece
-instalarlo (nunca lo hace sin preguntar) y no permite continuar sin él —
-reintentando el proceso de instalación si falla, tantas veces como el
-usuario quiera.
+v0.1.0a2 — a pedido explícito, tras confirmar en producción (dos veces)
+que el Chromium gestionado por Playwright falla al instalarse en sistemas
+operativos fuera de su lista de soporte oficial (Ubuntu 24.04, sin que
+`npx playwright install-deps chromium` resuelva el problema): se
+abandona por completo el Chromium gestionado por Playwright. charlyWebAudit
+usa exclusivamente Google Chrome (canal estable) del sistema — se detecta
+si ya está instalado; si no, se muestra cómo instalarlo y se detiene ahí.
+**Nunca se ofrece instalarlo automáticamente** — es una decisión de
+producto explícita, no solo técnica: instalar un navegador en el sistema
+del usuario sin que lo pida activamente es más intrusivo que pedirle que
+lo instale él mismo por el canal oficial de su sistema operativo.
 
-v0.0.8 — bug arquitectónico real corregido, reportado en producción: esta
-función llamaba directamente a `questionary.confirm().ask()` y a los
-`print_*` de la CLI (`rich.console`) — funcionaba bien para la CLI, pero
-`run_audit()` (el motor compartido, ver `__main__.py`) también la llama
-cuando corre desde la GUI, dentro del hilo en segundo plano de
-`AsyncBridge`, que YA tiene su propio event loop de asyncio corriendo.
-`questionary`/`prompt_toolkit` no puede usarse de forma segura ahí — lo
-confirmó exactamente el error reportado: `RuntimeWarning: coroutine
-'Application.run_async' was never awaited` seguido de `asyncio.run()
-cannot be called from a running event loop`. Se reprodujo el error exacto
-en un hilo con su propio loop antes de corregir esto.
-
-Ahora `ensure_chromium()` no sabe nada de `questionary` ni de `rich`
-directamente — recibe un `Reporter` (la misma interfaz compartida
-CLI/GUI, ver `reporter.py`) para su salida, y una función `confirm` para
-la decisión interactiva de instalar/reintentar. La CLI pasa la versión
-basada en `questionary` (comportamiento idéntico al de antes); la GUI
-pasa una versión que muestra un diálogo nativo de Tkinter de forma
-segura entre hilos (ver `gui/dialogs.py`).
+Nota de investigación honesta, para quien retome esto: se probó ejecutar
+la extensión CharlyAudit con Chrome real (no solo revisado en código) y
+se encontró una incompatibilidad real, no resuelta todavía — la carga de
+la extensión con Chrome resultó inconsistente en las pruebas (a veces la
+extensión no aparece en absoluto entre los procesos/targets activos de
+Chrome; en otro intento apareció pero bloqueada al navegar directamente a
+su panel lateral, con `ERR_BLOCKED_BY_CLIENT` — la extensión declara
+`side_panel` en su manifest, la API nativa de Chrome para paneles
+laterales, que puede exigir abrirse vía `chrome.sidePanel.open()` en vez
+de navegación directa a su URL en versiones recientes de Chrome; esto NO
+se confirmó como la causa completa, dado que en otras corridas ni
+siquiera el service worker de la extensión llegó a aparecer). Se decidió
+priorizar el pedido explícito del usuario (dejar de usar Chromium) sobre
+seguir bloqueando la entrega mientras se investiga esto a fondo — pero
+es un problema real y abierto, no una limitación ya resuelta. Si
+`charlywebaudit` corre pero CharlyAudit no graba nada, este es el primer
+lugar para revisar.
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
+import shutil
 from pathlib import Path
-from typing import Callable
 
-import questionary
-from playwright.sync_api import sync_playwright
-
-from ..errors import ChromiumInstallFailedError, ChromiumNotInstalledError
+from ..errors import ChromiumNotInstalledError
 from ..reporter import Reporter
-from ..ui.theme import CliReporter, QUESTIONARY_STYLE
-from .platform_utils import find_xvfb_run, needs_virtual_display
-
-ConfirmFn = Callable[[str], bool]
-
-
-def _cli_confirm(question: str) -> bool:
-    """Confirmación interactiva por terminal (comportamiento original,
-    preservado tal cual para la CLI) — nunca se llama desde la GUI."""
-    return bool(questionary.confirm(question, default=True, style=QUESTIONARY_STYLE).ask())
+from ..ui.theme import CliReporter
+from .platform_utils import find_xvfb_run, is_linux, is_macos, is_windows, needs_virtual_display
 
 
 def _warn_if_missing_display(reporter: Reporter) -> None:
     """CharlyAudit necesita `headless: false` (las extensiones de Chrome no
     cargan de forma fiable en modo headless puro) — en Linux, eso requiere
-    un entorno gráfico real o uno virtual (Xvfb). En macOS/Windows correr
-    de forma interactiva siempre implica una sesión gráfica, así que esto
-    nunca aplica ahí (`needs_virtual_display()` ya filtra por plataforma)."""
+    un entorno gráfico real o uno virtual (Xvfb). `browser/launcher.py` ya
+    envuelve el comando con `xvfb-run` automáticamente cuando hace falta
+    — esto es solo el aviso informativo."""
     if not needs_virtual_display():
         return
     if find_xvfb_run():
@@ -72,128 +64,87 @@ def _warn_if_missing_display(reporter: Reporter) -> None:
         )
 
 
-def is_chromium_installed() -> bool:
-    """Verifica que exista en disco el binario exacto que la app usará en la
-    práctica — sin lanzar un navegador completo.
-
-    Bug real corregido en v0.0.2: la versión anterior comprobaba lanzando
-    Chromium con `headless=True` — pero la app SIEMPRE usa `headless=False`
-    (las extensiones de Chrome no cargan de forma fiable en modo headless
-    puro). En versiones recientes de Playwright, `headless=True` puede
-    resolver a un binario DISTINTO (`chrome-headless-shell`), separado del
-    que usa `headless=False` — es decir, la verificación podía decir "sí
-    está instalado" cuando en realidad faltaba el binario que la corrida
-    real necesita, o viceversa. Comprobar `executable_path` directamente
-    verifica el binario correcto, es más rápido (no lanza ni cierra un
-    proceso completo), y no depende de tener un display disponible."""
-    try:
-        with sync_playwright() as p:
-            return Path(p.chromium.executable_path).exists()
-    except Exception:
-        return False
+_LINUX_CHROME_CANDIDATES = ["google-chrome-stable", "google-chrome", "chrome"]
+_MACOS_CHROME_APP = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+_WINDOWS_CHROME_CANDIDATES = [
+    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+    Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+]
 
 
-def _run_playwright_install(reporter: Reporter) -> tuple[bool, str]:
-    """Corre `python -m playwright install chromium` como subproceso,
-    transmitiendo su salida real en vivo a través de `reporter` (funciona
-    igual para la CLI y para el panel de la GUI — antes, la salida solo se
-    heredaba directamente a la terminal, invisible para quien corre la GUI
-    sin una consola abierta, y descartada por completo del mensaje de
-    error).
+def find_chrome_executable() -> str | None:
+    """Devuelve la ruta del ejecutable de Chrome estable si lo encuentra, o
+    `None`. No lanza nada — solo mira el sistema de archivos/PATH, así que
+    es instantáneo y no depende de tener ya un navegador funcionando."""
+    if is_linux():
+        for name in _LINUX_CHROME_CANDIDATES:
+            path = shutil.which(name)
+            if path:
+                return path
+        return None
+    if is_macos():
+        if _MACOS_CHROME_APP.is_file():
+            return str(_MACOS_CHROME_APP)
+        return shutil.which("google-chrome") or shutil.which("chrome")
+    if is_windows():
+        for path in _WINDOWS_CHROME_CANDIDATES:
+            if path.is_file():
+                return str(path)
+        import os
 
-    Bug real corregido: antes, cuando la instalación fallaba de verdad
-    (proceso termina con código distinto de cero, no una excepción al
-    lanzarlo), el detalle devuelto era un string vacío — el mensaje de
-    error mostrado ("La instalación de Chromium falló.") no tenía ninguna
-    información real de la causa, solo un consejo genérico ("revisa tu
-    conexión a internet"). Ahora se capturan las últimas líneas reales de
-    la salida del propio Playwright (que suelen contener el motivo real:
-    fallo de red, biblioteca de sistema faltante, etc.) y se incluyen en
-    el mensaje de error."""
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            user_path = Path(local) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if user_path.is_file():
+                return str(user_path)
+        return None
+    return shutil.which("google-chrome") or shutil.which("chrome")
+
+
+def _chrome_install_instructions() -> str:
+    if is_linux():
+        return (
+            "Instálalo desde el paquete oficial de Google (requiere sudo):\n"
+            "  wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb\n"
+            "  sudo apt install ./google-chrome-stable_current_amd64.deb\n\n"
+            "(en Fedora/RHEL: descarga el .rpm equivalente desde google.com/chrome)\n\n"
+            "Después de instalarlo, volvé a intentarlo desde este menú."
         )
-        lines: list[str] = []
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if line:
-                reporter.raw(line)
-                lines.append(line)
-        proc.wait()
-        # Las ultimas lineas suelen contener el motivo real del fallo (el
-        # resto suele ser progreso de descarga, menos util como detalle).
-        tail = "\n".join(lines[-8:])
-        return proc.returncode == 0, tail
-    except OSError as exc:
-        return False, str(exc)
+    if is_macos():
+        return (
+            "Descárgalo desde https://www.google.com/chrome/ e instálalo como cualquier app de macOS.\n\n"
+            "Después de instalarlo, volvé a intentarlo desde este menú."
+        )
+    return (
+        "Descárgalo e instálalo desde https://www.google.com/chrome/\n\n"
+        "Después de instalarlo, volvé a intentarlo desde este menú."
+    )
 
 
-def ensure_chromium(*, reporter: Reporter | None = None, confirm: ConfirmFn | None = None) -> None:
-    """Punto de entrada: garantiza que Chromium esté instalado antes de
-    continuar, o lanza ChromiumNotInstalledError si el usuario declina.
+def ensure_browser(*, reporter: Reporter | None = None, confirm=None) -> str | None:
+    """Punto de entrada: garantiza que Google Chrome (canal estable) esté
+    disponible antes de continuar, o lanza `ChromiumNotInstalledError`.
 
-    `reporter`: por defecto `CliReporter()` (mismo comportamiento que
-    antes de existir esta abstracción). `confirm`: por defecto un prompt
-    de `questionary` (mismo comportamiento CLI de siempre) — la GUI DEBE
-    pasar su propia versión (ver `gui/dialogs.py`), nunca usar la
-    por defecto, porque `questionary` no es seguro de llamar desde el
-    hilo en segundo plano de `AsyncBridge` (ver docstring del módulo)."""
+    No instala nada automáticamente — solo detecta y, si falta, muestra
+    cómo instalarlo (decisión de producto explícita, ver docstring del
+    módulo). `confirm` se acepta por compatibilidad de firma con el resto
+    del pipeline (`run_audit`) pero no se usa aquí: no hay ninguna
+    decisión de "instalar sí/no" que ofrecer, solo un hecho que reportar
+    y, si hace falta, instrucciones para que el usuario lo resuelva él
+    mismo.
+
+    Devuelve `'chrome'` — el valor que `config_gen.py` usa para el
+    parámetro `channel` de Playwright."""
     reporter = reporter or CliReporter()
-    confirm = confirm or _cli_confirm
-
     _warn_if_missing_display(reporter)
 
-    if is_chromium_installed():
-        reporter.success("Chromium detectado.")
-        return
+    path = find_chrome_executable()
+    if path:
+        reporter.success(f"Google Chrome detectado: {path}")
+        return "chrome"
 
-    reporter.warning("No se encontró un Chromium funcional gestionado por Playwright.")
-
-    while True:
-        proceed = confirm("¿Instalar Chromium ahora? (requerido para continuar)")
-        if not proceed:
-            raise ChromiumNotInstalledError(
-                "Chromium es obligatorio para ejecutar cualquier prueba.",
-                hint="Corre 'python -m playwright install chromium' manualmente cuando quieras, "
-                "o vuelve a intentarlo desde este menú.",
-            )
-
-        reporter.info("Instalando Chromium (puede tardar varios minutos)…")
-        ok, err = _run_playwright_install(reporter)
-        if ok and is_chromium_installed():
-            reporter.success("Chromium instalado correctamente.")
-            return
-
-        # Sugerencia especifica cuando la salida real de Playwright avisa que
-        # el sistema operativo no esta oficialmente soportado (usa un build
-        # "de reserva") — un patron real observado en produccion (Ubuntu
-        # 24.04, demasiado reciente para la lista de SO probados de
-        # Playwright) que muy seguido significa que faltan bibliotecas de
-        # sistema que el propio binario de Chromium necesita en tiempo de
-        # ejecucion, no que la descarga en si haya fallado.
-        hint = "Revisa tu conexión a internet y espacio en disco. Puedes reintentar ahora mismo."
-        if "not officially supported" in err.lower():
-            hint = (
-                "Tu sistema operativo no está en la lista de SO probados por Playwright "
-                "(usa un build de reserva) — esto suele significar que faltan bibliotecas de "
-                "sistema que Chromium necesita en tiempo de ejecución, no que la descarga haya "
-                "fallado en sí. Corre este comando y luego reintentá:\n"
-                "  npx playwright install-deps chromium"
-            )
-
-        reporter.error(
-            ChromiumInstallFailedError(
-                "La instalación de Chromium falló." + (f"\n\nDetalle (salida real de Playwright):\n{err}" if err else ""),
-                hint=hint,
-            )
-        )
-        retry = confirm("¿Reintentar la instalación?")
-        if not retry:
-            raise ChromiumNotInstalledError(
-                "Chromium sigue sin instalarse; no se puede continuar.",
-            )
+    reporter.warning("No se encontró Google Chrome (versión estable) en este sistema.")
+    raise ChromiumNotInstalledError(
+        "charlyWebAudit necesita Google Chrome (canal estable) instalado.",
+        hint=_chrome_install_instructions(),
+    )

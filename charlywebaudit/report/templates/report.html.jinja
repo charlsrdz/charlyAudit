@@ -74,7 +74,16 @@
 </header>
 <main>
 
-  {% if not report.assistant_analysis_complete %}
+  {% if report.browser_outcome == "closed_unexpectedly" %}
+  <section>
+    <div class="card" style="border-color: var(--err); background: rgba(255,107,94,0.08);">
+      <strong style="color: var(--err);">⚠ El navegador se cerró de forma inesperada durante esta corrida.</strong>
+      {{ report.browser_outcome_description }}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if report.extension_used and not report.assistant_analysis_complete %}
   <section>
     <div class="card" style="border-color: var(--err); background: rgba(255,107,94,0.08);">
       <strong style="color: var(--err);">⚠ Análisis del Asistente incompleto.</strong>
@@ -93,6 +102,9 @@
       <div><div class="num">{{ report.playwright.skipped }}</div><div class="lbl">Omitidos</div></div>
       <div><div class="num">{{ "%.1f"|format(report.playwright.duration_ms / 1000) }}s</div><div class="lbl">Duración</div></div>
     </div>
+    {% if report.browser_outcome and report.browser_outcome != "closed_unexpectedly" %}
+    <p style="color: var(--muted); font-size: 13px; margin-top: 8px;">{{ report.browser_outcome_description }}</p>
+    {% endif %}
   </section>
 
   <section>
@@ -118,6 +130,7 @@
     {% endfor %}
   </section>
 
+  {% if report.extension_used %}
   <section>
     <h2>Análisis del Asistente IA — por ámbito (15/15)</h2>
     {% for scope in report.assistant_scopes %}
@@ -127,6 +140,7 @@
     </details>
     {% endfor %}
   </section>
+  {% endif %}
 
 </main>
 <footer>Generado por charlyWebAudit v{{ app_version }}</footer>

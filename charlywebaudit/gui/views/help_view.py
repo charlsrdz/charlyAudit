@@ -15,7 +15,6 @@ from ...constants import (
     APP_VERSION,
     AUTHOR_DESCRIPTION,
     AUTHOR_NAME,
-    RELATED_PROJECT,
 )
 from ..widgets import BrandHeader, Card, Header, ScrollableFrame
 
@@ -50,10 +49,9 @@ class HelpView(ttk.Frame):
         ttk.Label(
             about_card.body,
             text=f"{APP_TAGLINE}.\n\n"
-            f"Corre un script real de Playwright con {RELATED_PROJECT} grabando la "
-            "sesión, y pide al Asistente de la extensión un análisis de los 15 "
-            "ámbitos de contexto sobre esa misma grabación — todo en una sola "
-            "corrida, con un reporte único al final.",
+            "Corre un script real de Playwright, tal cual está escrito, en un navegador "
+            "real — y genera un reporte con el resultado y el estado del navegador "
+            "durante la corrida (si se cerró de forma normal o inesperada).",
             style="Surface.TLabel",
             justify="left",
             wraplength=380,
@@ -64,9 +62,8 @@ class HelpView(ttk.Frame):
         for i, step in enumerate(
             [
                 "Configurar prueba: script .spec.ts, URL, cabeceras opcionales.",
-                "Configurar Asistente IA: proveedor, modelo, API key (una vez).",
-                "Ejecutar: lanza el navegador, graba, corre el spec.",
-                "Reporte: resultado de Playwright + análisis de los 15 ámbitos.",
+                "Ejecutar: lanza el navegador y corre el spec.",
+                "Reporte: resultado de Playwright + estado del navegador.",
             ],
             start=1,
         ):
@@ -76,7 +73,10 @@ class HelpView(ttk.Frame):
 
         req_card = Card(left, title="REQUISITOS")
         req_card.pack(fill="x", pady=(12, 0))
-        for req in ["Node.js + npm (para correr specs de @playwright/test)", "Chromium (se ofrece instalar solo)"]:
+        for req in [
+            "Node.js + npm (para correr specs de @playwright/test)",
+            "Google Chrome (canal estable) — hay que instalarlo vos, la app no lo hace por su cuenta",
+        ]:
             ttk.Label(req_card.body, text=f"• {req}", style="Surface.TLabel", justify="left", wraplength=380).pack(
                 anchor="w", pady=(0, 4)
             )

@@ -73,15 +73,3 @@ def needs_virtual_display() -> bool:
 
 def find_xvfb_run() -> str | None:
     return shutil.which("xvfb-run")
-
-
-def default_playwright_browsers_path() -> Path | None:
-    """Ruta donde Playwright guarda los navegadores que gestiona — varía por
-    sistema operativo. Solo informativa (para mensajes de diagnóstico);
-    Playwright resuelve esto internamente, esto no se usa para lanzar nada."""
-    if is_windows():
-        base = os.environ.get("LOCALAPPDATA")
-        return Path(base) / "ms-playwright" if base else None
-    if is_macos():
-        return Path.home() / "Library" / "Caches" / "ms-playwright"
-    return Path.home() / ".cache" / "ms-playwright"

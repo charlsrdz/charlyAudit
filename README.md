@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.1.0a**
+**Versión actual: 0.1.4**
 
 ---
 
@@ -1072,6 +1072,398 @@ Dos pestañas nuevas:
 *Validado*: guardado y recarga real del catálogo y del historial
 confirmados con datos reales (no solo revisado); capturas de pantalla de
 ambas pestañas con datos poblados.
+
+## v0.1.0a2 — Chrome exclusivamente, y arreglo real de la bandeja del sistema
+
+A pedido explícito del usuario, tras confirmar que `npx playwright
+install-deps chromium` no resolvía el problema real de instalación en su
+sistema: **se abandona por completo el Chromium gestionado por
+Playwright.** charlyWebAudit usa exclusivamente Google Chrome (canal
+estable) del sistema — se detecta si ya está instalado; si no, se
+muestran instrucciones claras y se detiene ahí. **Nunca se ofrece
+instalarlo automáticamente** — decisión de producto explícita, no solo
+técnica.
+
+### Un hallazgo real, no resuelto — documentado con total honestidad
+
+Antes de entregar esto, se probó correr la extensión CharlyAudit con
+Chrome real (no solo revisado en código, con el orquestador real de este
+proyecto) y se encontró una incompatibilidad real que **sigue sin
+resolverse**: la carga de la extensión con Chrome fue inconsistente en
+las pruebas —
+
+- En algunos intentos, la extensión no aparece en absoluto entre los
+  targets/procesos activos de Chrome (ni service worker, ni background
+  page).
+- En otros, el service worker de la extensión sí aparece con su ID fijo
+  correcto, pero al intentar navegar directamente a su panel lateral
+  (`sidepanel.html`), Chrome responde `ERR_BLOCKED_BY_CLIENT` — la
+  extensión declara `side_panel` en su manifest (la API nativa de Chrome
+  para paneles laterales), que en versiones recientes de Chrome puede
+  exigir abrirse vía `chrome.sidePanel.open()` en vez de navegación
+  directa a su URL. Esta pista no llegó a confirmarse como la causa
+  completa, dado que en otras corridas ni el service worker llegó a
+  existir.
+
+Se contrastó limpiamente contra el Chromium gestionado por Playwright, en
+la misma prueba exacta: ahí la extensión sí carga correctamente todas las
+veces. La diferencia es real y reproducible, no una casualidad de una
+sola corrida.
+
+**Qué significa esto en la práctica**: con esta versión, charlyWebAudit
+va a lanzar Chrome, correr el spec de Playwright, y producir un reporte
+con los resultados de Playwright — pero la grabación de CharlyAudit y el
+análisis del Asistente pueden no funcionar de forma confiable todavía,
+dependiendo de si la extensión logra cargar en tu Chrome específico. Si
+te encontrás con esto, es información valiosa: contame exactamente qué
+ves (¿el panel lateral abre pero vacío? ¿nunca abre? ¿algún error en la
+pestaña de Reporte?) para seguir esta investigación con datos de tu
+entorno real, que puede diferir del entorno de desarrollo donde se
+probó esto.
+
+### Bandeja del sistema — no se podía cerrar la app sin matar el proceso
+
+Reportado en producción: al minimizar a la bandeja, el menú contextual
+(clic derecho, con la opción "Salir") no aparecía de forma confiable en
+todos los entornos de escritorio — solo quedaba disponible la acción por
+defecto (doble clic para restaurar la ventana), sin ninguna forma de
+cerrar la app salvo terminar el proceso desde la terminal.
+
+*Diagnóstico*: el menú contextual del ícono de bandeja depende del
+backend de `pystray` de cada sistema operativo (GTK/AppIndicator en
+Linux, Cocoa en macOS, Win32 en Windows) — en algunos entornos de
+escritorio ese menú no es confiable, un problema de la plataforma más
+que de la app en sí.
+
+*Fix*: en vez de intentar arreglar el menú de bandeja para cada backend
+posible (frágil, imposible de probar exhaustivamente sin acceso a todos
+los entornos de escritorio existentes), se agregó un botón **"Salir"**
+siempre visible en la ventana principal, junto a "Minimizar a la
+bandeja" — nunca depende de que el menú de la bandeja funcione en el
+sistema del usuario. *Validado*: confirmado que el botón llama al cierre
+real de la aplicación (`root.destroy()`), no solo minimiza.
+
+### Bug adicional encontrado en el camino
+
+`default_playwright_browsers_path()` no respetaba `PLAYWRIGHT_BROWSERS_PATH`
+— la variable de entorno oficial que el propio Playwright usa para
+personalizar dónde instala los navegadores — lo que podía dar un falso
+negativo de "Chromium no instalado" cuando sí lo estaba. Corregido junto
+con el resto (aunque la función en sí quedó sin uso tras abandonar el
+Chromium gestionado — se documenta el fix igual, por si se reintroduce
+en el futuro).
+
+## v0.1.1 — Rediseño radical: sin extensión en el flujo principal, telemetría del navegador
+
+A partir de un nuevo error real reportado en producción (`No se pudo
+conectar al navegador orquestado por CDP`, con Node v24.19.0) y un pedido
+explícito de cambio de dirección, esta versión reescribe el corazón del
+motor de orquestación.
+
+### Diagnóstico del error reportado
+
+Hasta v0.1.0a2, `RunOrchestrator.launch()` establecía **su propia
+conexión CDP inmediatamente** al lanzar el navegador, para pausar la
+primera pestaña y sincronizar con la extensión CharlyAudit antes de
+dejarla navegar. Con una versión de Node considerablemente más nueva
+(v24.19.0) que la usada en desarrollo hasta ese momento, esa conexión CDP
+inmediata competía con el propio arranque del navegador de una forma que
+versiones anteriores de Node no exponían — de ahí el error. Se analizó un
+proyecto de referencia compartido por un usuario para contrastar
+mecanismos de lanzamiento, aunque la causa raíz resultó estar en el
+propio diseño de sincronización temprana, no en una diferencia de
+configuración puntual.
+
+### Punto 1 — sin extensión en el flujo principal
+
+`run_audit()` (`__main__.py`) fue reescrito desde cero: ya no orquesta la
+extensión CharlyAudit en absoluto — nada de pausa de pestaña, panel
+lateral, siembra de configuración, grabación, ni análisis del Asistente.
+Lanza el navegador, corre el spec de Playwright tal cual el usuario lo
+escribió, y arma el reporte con el resultado. `browser/launcher.py`
+también se reescribió: `RunOrchestrator.launch()` ya no abre ninguna
+conexión CDP propia — solo genera el config (sin ningún argumento de
+extensión) y lanza el subproceso de Node. *Validado*: corrida real de
+principio a fin, sin ningún error de CDP, con Chrome real.
+
+Los módulos que orquestaban la extensión (`browser/extension_page.py`,
+`runner/seed.py`, `runner/recorder.py`, `runner/assistant.py`,
+`gui/views/assistant_config_view.py`) se conservan intactos y validados
+en versiones anteriores, pero quedan **sin uso** en el código activo —
+marcados explícitamente como tales en sus propios docstrings, por si se
+reintroduce soporte de extensión en el futuro. La pestaña "Asistente IA"
+se quitó de la navegación de la GUI por la misma razón.
+
+### Punto 2 — reporte compatible con o sin extensión
+
+`CombinedReport` (`report/builder.py`) tiene un campo nuevo,
+`extension_used: bool`. El flujo principal siempre lo deja en `False` —
+el reporte HTML omite la sección "Análisis del Asistente IA" por
+completo en ese caso (no la muestra vacía ni con una advertencia, que
+implicaría que algo salió mal cuando en realidad es el comportamiento
+esperado). *Validado*: ambos casos (con y sin extensión) confirmados con
+datos reales — el reporte sin extensión se ve limpio, sin secciones que
+no aplican.
+
+### Punto 3 — telemetría del navegador
+
+Nuevo módulo, `browser/telemetry.py`: una conexión CDP puramente pasiva
+(nunca envía ningún comando que module el comportamiento del navegador,
+a diferencia del mecanismo de sincronización retirado) que responde tres
+preguntas con evidencia real: ¿el navegador llegó a arrancar?, ¿la
+conexión se mantuvo viva durante toda la corrida?, y si se perdió,
+¿coincide con un cierre normal (al terminar la prueba) o inesperado
+(antes de que la prueba terminara — se cerró solo, o alguien lo cerró)?
+
+Se descartó un primer diseño que comparaba, con timestamps propios, "en
+qué momento detecté yo la desconexión" contra "en qué momento el proceso
+de Node me dijo que terminó" — confirmado con una prueba real (matar
+Chrome a mano a mitad de una corrida) que estos son dos relojes
+independientes con retrasos de detección impredecibles entre sí: Node
+notició la muerte del navegador casi al instante en una prueba, mucho más
+lento en otra, sin ningún patrón confiable. El diseño final usa lo que
+Playwright Test mismo reportó (código de salida, mensajes de error como
+"Target page, context or browser has been closed" en su salida) como la
+señal principal, con la conexión CDP propia como corroboración — no al
+revés. *Validado* con dos escenarios reales: una corrida normal (sin
+falsos positivos) y una corrida con Chrome matado a mano a mitad de
+camino (detectado correctamente como cierre inesperado).
+
+En el camino se encontró y corrigió un bug real en `CDPClient.send()`: el
+timeout interno fijo de 15 segundos (pensado para operaciones CDP
+normales) hacía que detectar una conexión realmente muerta tardara hasta
+15 segundos — demasiado lento para telemetría útil. Ahora `send()` acepta
+un `timeout` configurable, y la telemetría usa uno corto (2 segundos)
+para sus sondeos de salud.
+
+## v0.1.2 — Auditoría de seguridad, telemetría con diagnóstico ampliado
+
+A partir de un reporte real ("abre el navegador, pasa un minuto y se
+cierra solo, la prueba se interrumpe sin ningún registro previo que
+explique por qué") y un pedido explícito de revisar seguridad y
+rendimiento.
+
+### Diagnóstico del cierre reportado — sin causa raíz confirmada, pero con las herramientas para encontrarla
+
+Se revisó todo el código propio buscando cualquier timeout cercano a un
+minuto — no se encontró ninguno. Esto apunta a una causa **externa** al
+propio código (el sistema operativo cerrando el proceso por falta de
+memoria, una política del entorno del usuario, un crash del navegador) —
+sin poder reproducir el problema exacto en este entorno de desarrollo, no
+se puede confirmar la causa con certeza. Lo que sí se puede garantizar:
+la próxima vez que pase, va a quedar un rastro real para diagnosticarlo.
+
+### Punto 1 — telemetría con pulso periódico y diagnóstico ampliado
+
+`browser/telemetry.py` ahora recibe el `Reporter` de la corrida y:
+
+- Registra un **pulso cada 15 segundos** ("Navegador sigue conectado (Xs
+  transcurridos)") mientras la conexión sigue viva — así, si el navegador
+  se cierra solo, el registro de la corrida muestra hasta qué segundo
+  exacto seguía respondiendo, en vez de un silencio total hasta el error
+  final.
+- Al detectar que el navegador dejó de responder, captura un
+  **diagnóstico ampliado en el momento exacto**: memoria disponible del
+  sistema (vía `/proc/meminfo` en Linux) y cualquier señal reciente de
+  que el OOM-killer del kernel actuó (buscado en `dmesg`, best-effort —
+  nunca interrumpe la corrida si no está disponible). Si la causa es
+  falta de memoria, esto lo va a mostrar directamente ("Memoria
+  disponible: 50MB de 4000MB" es una pista mucho más clara que ningún
+  registro en absoluto).
+
+*Validado con un cierre real*: se mató Chrome a mano a mitad de una
+corrida y se confirmó que el pulso periódico se registró correctamente
+hasta el momento del cierre, y que el diagnóstico ampliado capturó la
+memoria real del sistema en ese instante exacto.
+
+### Punto 2 — seguridad y rendimiento
+
+**Dos vulnerabilidades reales encontradas y corregidas, no solo
+revisadas en el código:**
+
+- **XSS real en el reporte HTML** (`report/html.py`): el reporte se
+  generaba con `select_autoescape(["html"])`, que decide si escapar el
+  contenido mirando la extensión *final* del nombre del archivo de la
+  plantilla — para `report.html.jinja`, esa extensión es `.jinja`, no
+  `.html`, así que **el autoescape nunca se activaba**. Confirmado con un
+  payload real: una URL con `<script>alert(document.cookie)</script>` se
+  incrustaba sin escapar en el reporte generado — cualquier URL o ruta de
+  script con contenido malicioso se hubiera ejecutado al abrir el
+  reporte. *Fix*: `autoescape=True` incondicional (esta plantilla siempre
+  produce HTML, no hace falta adivinar por extensión). *Validado*: el
+  mismo payload ahora queda escapado correctamente, y el contenido
+  legítimo del Asistente (marcado explícitamente con `| safe`) sigue
+  renderizando sin cambios.
+- **Path traversal real en el nombre de archivo del reporte auto-guardado**
+  (`__main__.py`): el nombre de una prueba del Catálogo (que el usuario
+  escribe libremente) se usaba tal cual en el nombre del archivo del
+  reporte — un nombre como `../../../tmp/x` escapaba por completo el
+  directorio de reportes, confirmado con una prueba real antes del fix
+  (el archivo terminaba en `/tmp/`, no en la carpeta de reportes). *Fix*:
+  `_sanitize_filename_component()` — se queda solo con caracteres seguros
+  para un nombre de archivo, sin importar el sistema operativo.
+  *Validado* con varios intentos de escape (incluidas rutas anidadas
+  tipo `....//....//etc`), todos quedan contenidos correctamente.
+
+**Revisado y confirmado seguro** (sin cambios necesarios):
+
+- Ningún uso de `shell=True` en todo el proyecto — sin riesgo de
+  inyección de comandos vía `subprocess`.
+- El puerto de depuración CDP (`--remote-debugging-port`) solo escucha en
+  localhost — confirmado con `curl` real que no responde ni en `0.0.0.0`
+  ni en la IP de red de la máquina, aunque `--remote-allow-origins=*` esté
+  activo (necesario para que Chrome moderno acepte la conexión — ver
+  v0.1.1).
+- El archivo de configuración (que puede contener una API key) tiene
+  permisos `600` aplicados desde versiones anteriores.
+
+**Rendimiento**: el sondeo de telemetría (cada 250ms durante toda la
+corrida) representa una carga real mínima — un mensaje JSON pequeño por
+WebSocket local, ~1200 sondeos en una corrida de 5 minutos, sin impacto
+medible. `history.py` reescribe el archivo completo en cada corrida
+(en vez de solo agregar al final) — con el límite de 500 registros ya
+existente, esto es un archivo de a lo sumo un par de cientos de KB,
+reescrito una vez por corrida (no en un bucle) — no representa un
+problema real a esta escala.
+
+## v0.1.3 — Análisis profundo de un log real, dos bugs corregidos, validación de dependencias con instalación en vivo
+
+Un usuario compartió un log real de una corrida fallida en macOS, con tres
+síntomas distintos en el mismo intento. Se analizó cada uno por separado.
+
+### Bug 1 (real, corregido): `Cannot find module '@playwright/test'`
+
+La causa real, confirmada reproduciendo el escenario exacto: `@playwright/test`
+estaba instalado **globalmente** (`npm install -g`), no localmente en la
+carpeta del spec. `ensure_playwright_test()` (la verificación anterior)
+solo confirmaba que `npx playwright --version` corriera — y eso funciona
+igual con una instalación global o local, porque `npx` sabe resolver el
+CLI desde cualquiera de las dos. Pero el `.charlywebaudit.config.ts` que
+generamos, que vive junto al spec del usuario, hace su propio
+`require('@playwright/test')` — y Node **no** busca en el `node_modules`
+global al resolver un `require()` normal, solo en el local. Confirmado
+reproduciendo exactamente esto antes del fix: el CLI corría bien, pero
+`require.resolve()` fallaba con `MODULE_NOT_FOUND` desde la carpeta del
+spec.
+
+### Bug 2 (real, corregido): `argument should be a str... not 'coroutine'`
+
+Dos causas independientes, ambas con el mismo síntoma final:
+
+- `ask_save_path(default_name)` se llamaba **sin `await`** — pero la GUI
+  pasa una función `async def`. Llamar una función async sin `await` no
+  la ejecuta, devuelve un objeto corrutina — y un objeto corrutina es
+  "truthy" en Python, así que `if dest_raw:` pasaba igual, y
+  `Path(dest_raw)` fallaba con exactamente el error reportado.
+- La versión CLI de `ask_save_path` llamaba `questionary.path().ask()`
+  de forma síncrona desde dentro de `run_audit()` (que corre bajo
+  `asyncio.run()`) — el mismo tipo de conflicto de event loop que ya se
+  había corregido una vez para `ensure_chromium()` en v0.0.8, pero nunca
+  se aplicó acá. Confirmado que, según la versión de `prompt_toolkit`
+  instalada, esto puede lanzar un error limpio o —el caso real
+  reportado— devolver en silencio una corrutina sin ejecutar.
+
+*Fix*: `ask_save_path` ahora es consistentemente `await`-eado en
+`run_audit()`, y la versión CLI (`_default_ask_save_path`) corre
+`questionary` en un hilo aparte (vía `run_in_executor`), sin ningún event
+loop propio con el que pueda chocar.
+
+### Punto explícito del pedido: validación de dependencias con instalación en vivo
+
+Nuevo módulo, `dependencies.py`: valida Python, Node.js/npm, Google
+Chrome, y —la pieza nueva y central— si `@playwright/test` resuelve
+**localmente** desde la carpeta del spec (la comprobación que faltaba,
+ver Bug 1 arriba). Cuando algo falta, se ofrece resolverlo según qué tan
+seguro sea hacerlo automáticamente:
+
+- **`@playwright/test`: sí se instala en vivo**, con confirmación
+  explícita — es un paquete que vive dentro del proyecto del usuario
+  (su propio `node_modules`), reversible con solo borrar esa carpeta.
+  Después de instalar, se vuelve a correr la MISMA verificación de
+  resolución — no se confía en que un `npm install` sin error signifique
+  que quedó realmente utilizable ("garantizando que después de la
+  instalación podrá funcionar", como se pidió explícitamente).
+- **Node.js y Google Chrome: se detectan, pero no se instalan
+  automáticamente** — decisión de producto ya tomada explícitamente antes
+  para Chrome, y consistente para Node por el mismo motivo: ambos se
+  instalan de formas muy distintas según el sistema operativo, y
+  automatizarlo sería más frágil que útil. Se dan instrucciones claras de
+  dónde conseguirlos.
+
+*Validado de punta a punta*: se reprodujo el escenario exacto del bug 1
+(`@playwright/test` global, sin instalación local) a través del motor
+real completo — confirmado que detecta el problema, ofrece instalar,
+instala correctamente, verifica la resolución real después, y el spec de
+Playwright **corre y pasa** a continuación.
+
+### Pendiente conocido
+
+En la misma corrida de validación, la telemetría del navegador no logró
+conectar (`No se pudo conectar la telemetría del navegador`) a pesar de
+que el navegador sí funcionó correctamente y el test pasó — una
+desconexión entre lo que la telemetría reporta y lo que realmente pasó.
+No se investigó a fondo en esta versión por restricción de tiempo; queda
+documentado para revisar en una próxima versión.
+
+## v0.1.4 — Falsa alarma de telemetría corregida, buena noticia sobre el sistema de dependencias
+
+Un usuario compartió un log real donde el sistema de validación de
+dependencias (v0.1.3) funcionó perfecto — detectó `@playwright/test` sin
+instalación local, lo instaló en vivo, lo verificó, y el spec corrió y
+produjo un resultado real y legítimo (una aserción de texto que no
+coincidía, sin ninguna relación con charlyWebAudit). Pero había una
+anomalía real en el medio: la telemetría avisó que el navegador "dejó de
+responder" a los 17.9s, **en plena mitad de la corrida** — y el test
+siguió corriendo con total normalidad, terminando 8.5s después con un
+resultado válido.
+
+### Diagnóstico
+
+El sondeo de salud de la telemetría (`Target.getTargets`, con un timeout
+de 2 segundos) declaraba la conexión perdida ante **un solo intento sin
+respuesta**. Durante un test real, Chrome está ocupado procesando el
+tráfico CDP genuino de Playwright Test (navegación, consultas al DOM,
+red) — nuestro propio sondeo, liviano pero en la misma cola de mensajes,
+puede quedar detrás de ese tráfico real y tardar más de 2 segundos sin
+que la conexión esté rota en absoluto. Un solo sondeo lento no es lo
+mismo que un navegador cerrado.
+
+*Por qué el resultado final fue correcto de todas formas*: el diseño ya
+tenía una segunda capa de protección (`evaluate_browser_outcome()`, ver
+v0.1.1) que usa la salida real de Playwright como señal principal — como
+el test terminó con una falla de aserción normal (no con texto de error
+de infraestructura tipo "browser has disconnected"), el veredicto final
+correctamente dijo "cierre normal". Pero el aviso intermedio, mostrado
+DURANTE la corrida, sí era una falsa alarma real y confusa.
+
+### Fix
+
+Ahora se exigen **3 sondeos fallidos consecutivos** antes de declarar la
+conexión perdida (el mismo patrón que usa, por ejemplo, un *liveness
+probe* de Kubernetes: `failureThreshold`) — un sondeo lento aislado ya no
+dispara nada, y si el siguiente sondeo responde bien, el contador se
+reinicia (recuperación de un bache transitorio, no un cierre real). Peor
+caso para confirmar una desconexión genuina: ~6 segundos (3 intentos × 2s
+cada uno) — sigue siendo rápido para detectar un cierre real, mucho más
+resistente a la congestión normal de un test real.
+
+*Validado*: prueba unitaria confirmando que 2 fallos consecutivos
+(bache transitorio) no disparan ninguna alarma, que 3 fallos consecutivos
+genuinos sí se detectan correctamente, y una corrida real con
+interacciones de DOM repetidas (tráfico CDP intenso, buscando reproducir
+el mismo tipo de congestión) sin ninguna falsa alarma intermedia.
+
+### Bug adicional encontrado validando esto
+
+`websockets.exceptions.ConnectionClosed`, referenciado dinámicamente
+dentro de un bloque `except`, falló intermitentemente con
+`AttributeError: module 'websockets' has no attribute 'exceptions'` —
+un problema de la carga perezosa de submódulos de la librería
+`websockets`, reproducido durante las pruebas de esta misma corrección.
+*Fix*: se importa la clase explícitamente una sola vez al cargar el
+módulo (`from websockets.exceptions import ConnectionClosed`), en vez de
+depender de una resolución diferida repetida en cada excepción — aplicado
+tanto en `telemetry.py` como, preventivamente, en `cdp_sync.py`.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

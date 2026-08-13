@@ -55,6 +55,7 @@ import urllib.request
 from dataclasses import dataclass
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from ..errors import BrowserLaunchError, TargetTabNotFoundError
 
@@ -97,16 +98,27 @@ class CDPClient:
                         fut.set_result(msg)
                 else:
                     await self._events.put(msg)
-        except websockets.ConnectionClosed:
+        except ConnectionClosed:
             pass  # el navegador puede cerrar la conexion al terminar; no es un error
 
-    async def send(self, method: str, params: dict | None = None, session_id: str | None = None, *, retries: int = 2) -> dict:
+    async def send(
+        self, method: str, params: dict | None = None, session_id: str | None = None, *, retries: int = 2, timeout: float = 15
+    ) -> dict:
         """Envía un comando CDP y espera su respuesta. Reintenta ante un
         timeout (no ante una desconexión real) — bajo contención de CDP
         (varios targets activos, navegación en curso en otro target) una
         respuesta individual puede tardar más de lo normal sin que la
         conexión esté realmente rota; un timeout aislado no siempre debe
-        interpretarse como fallo duro."""
+        interpretarse como fallo duro.
+
+        `timeout`: 15s por defecto (operaciones CDP normales). Un valor
+        bajo (1-2s) es necesario para sondeos de salud/telemetría —
+        `kill -9` sobre el navegador no cierra el WebSocket con un cierre
+        limpio, así que el timeout es la única señal disponible de que la
+        conexión está realmente muerta (confirmado con una prueba real:
+        con el timeout de 15s por defecto, un cierre inesperado del
+        navegador tardaba hasta 15s en detectarse — demasiado lento para
+        telemetría útil, ver browser/telemetry.py)."""
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             self._id += 1
@@ -118,14 +130,14 @@ class CDPClient:
             self._pending[mid] = fut
             try:
                 await self._ws.send(json.dumps(payload))
-                return await asyncio.wait_for(fut, timeout=15)
+                return await asyncio.wait_for(fut, timeout=timeout)
             except asyncio.TimeoutError as exc:
                 last_exc = exc
                 self._pending.pop(mid, None)
                 if attempt < retries:
                     await asyncio.sleep(0.3 * (attempt + 1))
                     continue
-            except websockets.ConnectionClosed:
+            except ConnectionClosed:
                 raise  # esto si es un fallo duro real: no tiene sentido reintentar
         raise last_exc
 

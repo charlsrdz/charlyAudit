@@ -1,5 +1,11 @@
 """
 browser/extension_page.py — Interactúa con páginas de la extensión (panel
+
+v0.1.1 — NO USADO en el flujo principal desde esta version. A pedido
+explicito, run_audit() (__main__.py) ya no orquesta la extension
+CharlyAudit en absoluto — este modulo queda intacto y validado, por si se
+reintroduce soporte de extension en el futuro, pero nada en el codigo
+activo lo importa hoy.
 lateral) sobre la MISMA conexión CDP cruda ya usada para el mecanismo de
 pausa (cdp_sync.py), en vez de abrir una segunda conexión de alto nivel
 (p. ej. Playwright normal) que competiría por el control de
