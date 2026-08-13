@@ -1,13 +1,8 @@
-# charlyWebAudit
+# RedGps Web Audit - Performance & Seguridad
 
-CLI + GUI en Python 3.11+ que orquesta [CharlyAudit](../CharlyPlugin) junto
-con un script real de `@playwright/test` (TypeScript, tal cual lo
-escribiría cualquier equipo de QA) para producir un único reporte HTML: el
-resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
-ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
-grabada.
+CLI + GUI en Python 3.11+ que orquesta scripts reales de `@playwright/test` (TypeScript) para producir reportes de auditoría de rendimiento y seguridad.
 
-**Versión actual: 0.1.5**
+**Versión actual: 0.1.4redgps**
 
 ---
 

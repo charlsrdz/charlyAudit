@@ -48,6 +48,7 @@ from .runner.seed import seed_domain_allowlist, seed_pre_release, seed_post_rele
 from .runner.test_exec import parse_report, wait_for_process
 from .ui.menu import main_menu_loop
 from .reporter import Reporter
+from .telemetry import send_telemetry, setup_telemetry_hooks
 from .ui.theme import CliReporter, QUESTIONARY_STYLE, console, print_error
 
 
@@ -436,27 +437,34 @@ def _parse_args(argv: list[str]):
 
 
 def main() -> None:
+    setup_telemetry_hooks()
     ns = _parse_args(sys.argv[1:])
 
     if ns.gui:
+        send_telemetry("APP_START", "Iniciando RedGps Web Audit en modo GUI")
         from .gui import main as gui_main  # punto de entrada seguro (ver gui/__init__.py) — misma logica que usa el entry point charlywebaudit-gui, una sola fuente de verdad
 
         gui_main()
         return
 
+    send_telemetry("APP_START", "Iniciando RedGps Web Audit en modo CLI")
+
     def _on_run(cfg: AppConfig) -> None:
         try:
             asyncio.run(run_audit(cfg))
         except CharlyWebAuditError as exc:
+            send_telemetry("ERROR_AUDIT", str(exc))
             print_error(exc)
         except KeyboardInterrupt:
             console.print("\n[yellow]Corrida cancelada por el usuario.[/]")
         except Exception as exc:  # noqa: BLE001 — ultima linea de defensa, nunca un traceback crudo
+            send_telemetry("ERROR_UNHANDLED", str(exc))
             print_error(exc)
 
     try:
         main_menu_loop(_on_run)
     except CharlyWebAuditError as exc:
+        send_telemetry("ERROR_FATAL", str(exc))
         print_error(exc)
         sys.exit(1)
     except KeyboardInterrupt:
