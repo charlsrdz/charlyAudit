@@ -1,8 +1,13 @@
-# RedGps Web Audit - Performance & Seguridad
+# charlyWebAudit
 
-CLI + GUI en Python 3.11+ que orquesta scripts reales de `@playwright/test` (TypeScript) para producir reportes de auditoría de rendimiento y seguridad.
+CLI + GUI en Python 3.11+ que orquesta [CharlyAudit](../CharlyPlugin) junto
+con un script real de `@playwright/test` (TypeScript, tal cual lo
+escribiría cualquier equipo de QA) para producir un único reporte HTML: el
+resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
+ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
+grabada.
 
-**Versión actual: 0.1.4redgps**
+**Versión actual: 0.1.6**
 
 ---
 
@@ -1582,6 +1587,53 @@ claro — la prueba de Playwright (y el análisis por IA) corren igual.
 - **Etiqueta de `StatusRow` cortada**: "Extensión CharlyAudit" (21
   caracteres) contra un ancho fijo de 14 — acortada a "CharlyAudit" en
   vez de tocar el ancho compartido que otras filas usan para alinearse.
+
+## v0.1.6 — Dashboard con resumen general, reportes rediseñados
+
+A pedido explícito, con foco en limpieza de diseño e información completa
+para el usuario en ambas superficies.
+
+### Dashboard
+
+- **Limpieza**: se quitaron cuatro imports sin usar (`os`, `subprocess`,
+  `sys`, `BG`, código muerto). La tabla de historial ahora tiene *zebra
+  striping* (franjas alternadas, sutiles) para que sea más fácil de
+  escanear con muchas filas.
+- **Resumen general** (nuevo, siempre visible antes del selector de
+  prueba): cruza *todo* el historial, no solo la prueba seleccionada —
+  corridas totales, pruebas distintas, tasa de éxito global, y cuatro
+  destacados calculados con evidencia real: la prueba más rápida en
+  promedio, la más confiable (mayor % de éxito), la más problemática
+  (más fallos), y la actividad más reciente. *Validado* con un historial
+  real de tres pruebas de perfiles claramente distintos (una rápida y
+  confiable, una lenta con fallos, una con una sola corrida) — confirmado
+  que cada destacado señala exactamente a la prueba correcta.
+- El resumen por prueba ganó un campo más: "Mejor tiempo" (la corrida más
+  rápida registrada para esa prueba específica), junto al promedio ya
+  existente.
+
+### Reportes
+
+`CombinedReport` ganó dos campos que antes faltaban por completo:
+`test_name` (el nombre bajo el que quedó registrada la corrida — antes
+solo se veía la URL y la ruta del spec) y `headers` (las cabeceras HTTP
+personalizadas usadas — se configuraban y se usaban, pero nunca aparecían
+en el reporte).
+
+La plantilla HTML se rediseñó con una tabla de contenidos lateral fija
+(con anclas a cada sección — Resumen, Análisis por IA, Cabeceras,
+Casos, KPIs, Ámbitos, cada una solo si aplica), una barra visual de tasa
+de éxito (verde/rojo/gris, proporcional), una barra de duración por cada
+caso de Playwright (para comparar de un vistazo cuál tardó más), un color
+de borde distinto para casos omitidos (antes solo pasado/fallido tenían
+uno), y estilos de impresión (`@media print`) para cuando el reporte se
+imprime o se exporta a PDF. *Validado*: renderizado real con Chrome
+headless, confirmando visualmente que todo se vea correctamente tanto con
+datos completos (cabeceras, IA, casos con distintos resultados) como en
+el caso más simple (sin ninguna sección opcional colgando vacía). También
+validado de punta a punta con `run_audit()` real, confirmando que
+`test_name`, `headers` y `ai_analysis_html` lleguen correctamente al
+reporte final.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

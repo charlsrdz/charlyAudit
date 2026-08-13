@@ -44,7 +44,7 @@ class HelpView(ttk.Frame):
         left = ttk.Frame(body)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 
-        about_card = Card(left, title="QUÉ ES REDGPS WEB AUDIT")
+        about_card = Card(left, title="QUÉ ES CHARLYWEBAUDIT")
         about_card.pack(fill="x")
         ttk.Label(
             about_card.body,

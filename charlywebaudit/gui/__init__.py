@@ -62,9 +62,6 @@ def main() -> None:
     """Punto de entrada seguro — usado por `charlywebaudit-gui` y por
     `charlywebaudit --gui`. Nunca deja escapar un ImportError como
     traceback crudo."""
-    from ..telemetry import setup_telemetry_hooks
-    setup_telemetry_hooks()
-
     try:
         import tkinter  # noqa: F401 — solo para verificar disponibilidad antes de importar el resto
     except ImportError:

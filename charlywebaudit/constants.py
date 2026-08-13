@@ -13,18 +13,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-APP_NAME = "RedGps Web Audit - Performance & Seguridad"
+APP_NAME = "charlyWebAudit"
 APP_SLUG = "charlywebaudit"  # usado para rutas de config (platformdirs)
-APP_VERSION = "0.1.4redgps"
-APP_TAGLINE = "Corre pruebas reales de Playwright y genera un reporte de auditoría de rendimiento y seguridad"
+APP_VERSION = "0.1.6"
+APP_TAGLINE = "Corre pruebas reales de Playwright y genera un reporte con el resultado y el estado del navegador"
 
-# --- Autor / créditos (sección Ayuda de la GUI) ---------------------
+# --- Autor / créditos (sección Ayuda de la GUI, v0.0.6) ---------------------
 AUTHOR_NAME = "RedGPS"
 AUTHOR_DESCRIPTION = (
-    "RedGps Web Audit - Performance & Seguridad es una herramienta de auditoría de calidad "
-    "y rendimiento desarrollada por RedGPS."
+    "charlyWebAudit y CharlyAudit son herramientas internas de RedGPS "
+    "para automatizar la auditoría de calidad de las plataformas de rastreo."
 )
-RELATED_PROJECT = "RedGps Web Audit"  # herramienta de auditoria
+RELATED_PROJECT = "CharlyAudit"  # la extension de Chrome que esta herramienta orquesta
 
 # ID de extensión FIJO: se deriva matemáticamente de la clave publica que se
 # agregó al campo "key" de manifest.json de CharlyAudit (SHA256 de la clave
@@ -40,7 +40,11 @@ CHARLYAUDIT_EXTENSION_ID = "oohbidkmnljblaealbjcplggfnckkaed"
 # tener que pasarse el puerto por un canal adicional.
 CDP_PORT = 9333
 
-# --- Configuración semilla de la extensión (se aplica UNA sola vez) ---------
+# --- Configuración semilla de la extensión (se aplica UNA sola vez, la
+# primera vez que se usa un perfil de navegador nuevo; después queda
+# persistida en el propio `chrome.storage.local` del perfil y ya no se
+# vuelve a tocar salvo que el usuario la actualice explícitamente desde el
+# menú de charlyWebAudit). -----------------------------------------------
 DEFAULT_ASSISTANT_CONFIG = {
     "provider": "gemini",
     "model": "gemini-flash-latest",
@@ -48,7 +52,7 @@ DEFAULT_ASSISTANT_CONFIG = {
 }
 
 DEFAULT_PALETTE = {
-    "--c-brand": "#ec9c2f",
+    "--c-brand": "#b87619",
 }
 
 DEFAULT_CAPTURE_CONFIG = {

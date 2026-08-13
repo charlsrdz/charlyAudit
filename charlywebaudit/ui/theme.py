@@ -19,8 +19,10 @@ from ..errors import CharlyWebAuditError
 
 console = Console()
 
-# Mismo tono de marca que library-style.css (--orange: #ec9c2f)
-BRAND = "#ec9c2f"
+# Mismo tono de marca que la extensión (naranja CharlyAudit, #b87619 por
+# defecto de la paleta) — coherencia visual entre la CLI y lo que se ve
+# dentro del navegador durante la corrida.
+BRAND = "#b87619"
 
 QUESTIONARY_STYLE = questionary.Style(
     [

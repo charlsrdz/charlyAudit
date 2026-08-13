@@ -61,6 +61,15 @@ class CombinedReport:
     la extensión (ver ai_playwright.py) — presente siempre que el
     Asistente esté configurado, independientemente de si la extensión
     CharlyAudit funcionó o no en esta corrida."""
+    test_name: str | None = None
+    """Punto 2 del pedido de mejora de reportes: el nombre bajo el que
+    esta corrida quedó registrada (catálogo o el nombre del archivo del
+    spec) — antes el reporte no lo mostraba en ningún lado, solo la URL y
+    la ruta del spec."""
+    headers: dict[str, str] = field(default_factory=dict)
+    """Cabeceras HTTP personalizadas usadas en esta corrida — dato real
+    que antes no aparecía en el reporte en absoluto, aunque sí se
+    configuraban y se usaban."""
 
 
 def build_combined_report(
@@ -74,6 +83,8 @@ def build_combined_report(
     browser_outcome_description: str | None = None,
     kpis_html: str | None = None,
     ai_analysis_html: str | None = None,
+    test_name: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> CombinedReport:
     scopes = [
         {
@@ -95,4 +106,6 @@ def build_combined_report(
         browser_outcome_description=browser_outcome_description,
         kpis_html=kpis_html,
         ai_analysis_html=ai_analysis_html,
+        test_name=test_name,
+        headers=headers or {},
     )
