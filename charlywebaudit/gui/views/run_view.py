@@ -29,6 +29,8 @@ _PLACEHOLDER = "El registro de la corrida aparecerá aquí una vez que le des a 
 
 
 class RunView(ttk.Frame):
+    _CONFIGURED_LABEL = "Prueba configurada (pestaña 'Configurar prueba')"
+
     def __init__(self, parent: tk.Widget, cfg: AppConfig, bridge: AsyncBridge, on_report_ready=None) -> None:
         super().__init__(parent, padding=20)
         self.cfg = cfg
@@ -36,11 +38,14 @@ class RunView(ttk.Frame):
         self.on_report_ready = on_report_ready
         self._queue: "queue.Queue[ProgressMessage]" = queue.Queue()
         self._running = False
+        self._sequence_queue: list = []
+        self._sequence_total = 0
+        self._sequence_run_index = 0
         self._build()
 
     def _build(self) -> None:
         def _run_button(parent):
-            self.run_button = ttk.Button(parent, text="▶ Correr prueba", style="Brand.TButton", command=self._start_run)
+            self.run_button = ttk.Button(parent, text="▶ Correr prueba", style="Brand.TButton", command=self._on_run_button)
             return self.run_button
 
         Header(
@@ -50,6 +55,14 @@ class RunView(ttk.Frame):
             "y genera un reporte con el resultado — el mismo flujo que la CLI.",
             actions=[_run_button],
         ).pack(fill="x", pady=(0, 12))
+
+        source_row = ttk.Frame(self)
+        source_row.pack(fill="x", pady=(0, 10))
+        ttk.Label(source_row, text="Prueba a correr:", style="Muted.TLabel").pack(side="left", padx=(0, 8))
+        self.source_var = tk.StringVar(value=self._CONFIGURED_LABEL)
+        self.source_combo = ttk.Combobox(source_row, textvariable=self.source_var, state="readonly", width=40)
+        self.source_combo.pack(side="left")
+        self._refresh_source_options()
 
         status_row = ttk.Frame(self)
         status_row.pack(fill="x", pady=(0, 4))
@@ -97,6 +110,30 @@ class RunView(ttk.Frame):
         self.log_text.insert("end", _PLACEHOLDER, "placeholder")
         self.log_text.configure(state="disabled")
 
+    def _refresh_source_options(self) -> None:
+        """Punto 3 del pedido original: repuebla las opciones del selector
+        con la prueba configurada + cada prueba guardada del Catálogo —
+        se llama al construir la vista y cada vez que el Catálogo cambia
+        (ver app._on_config_changed)."""
+        names = [self._CONFIGURED_LABEL] + [tc.name for tc in self.cfg.test_catalog]
+        self.source_combo["values"] = names
+        if self.source_var.get() not in names:
+            self.source_var.set(self._CONFIGURED_LABEL)
+
+    def _resolve_selected_source(self):
+        """Devuelve `None` (prueba configurada) o el `TestCase` del Catálogo
+        que coincide con la selección actual del combo."""
+        selected = self.source_var.get()
+        if selected == self._CONFIGURED_LABEL:
+            return None
+        return next((tc for tc in self.cfg.test_catalog if tc.name == selected), None)
+
+    def _on_run_button(self) -> None:
+        self._start_run(self._resolve_selected_source())
+
+    def refresh(self) -> None:
+        self._refresh_source_options()
+
     def _append_log(self, text: str, tag: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", text + "\n", tag)
@@ -127,9 +164,26 @@ class RunView(ttk.Frame):
         self.status_label.configure(text="● Corriendo…", style="Warning.TLabel")
         self.progress.pack(fill="x", pady=(0, 8), before=self.log_text.master)
         self.progress.start(12)
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
+        if self._sequence_total == 0:
+            self._sequence_run_index = 0  # corrida suelta (no secuencia): nunca cuenta como "continuacion"
+        self._sequence_run_index += 1
+        if self._sequence_run_index <= 1:
+            # Bug real corregido: borrar el log aca incondicionalmente
+            # tambien borraba el historial de corridas ANTERIORES de una
+            # secuencia ("Ejecutar todas" del Catalogo) cada vez que
+            # arrancaba la siguiente — confirmado con una prueba real
+            # (solo quedaba visible la ultima prueba de la secuencia). Solo
+            # se limpia en la primera corrida (de una secuencia, o una
+            # corrida suelta) — las siguientes de la misma secuencia
+            # conservan el historial completo.
+            self.log_text.configure(state="normal")
+            self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
+        if self._sequence_total > 0:
+            display_name = run_test_name or "(sin nombre)"
+            self._append_log(
+                f"\n▶ Secuencia: prueba {self._sequence_run_index}/{self._sequence_total} — {display_name}", "section"
+            )
 
         reporter = QueueReporter(self._queue)
 
@@ -221,8 +275,29 @@ class RunView(ttk.Frame):
             text = exc.message if isinstance(exc, CharlyWebAuditError) else str(exc)
             self.status_label.configure(text="● Terminó con error", style="Danger.TLabel")
             self._append_log(f"\n✕ La corrida terminó con un error: {text}", "error")
+            self._advance_sequence()  # un fallo en una prueba de la secuencia no detiene al resto
             return
         self.status_label.configure(text="● Corrida completa", style="Success.TLabel")
         self._append_log("\n✓ Corrida completa.", "success")
         if result is not None and self.on_report_ready:
             self.on_report_ready(result)
+        self._advance_sequence()
+
+    def run_sequence(self, test_cases: list) -> None:
+        """Punto 2 del pedido v0.1.5: "Ejecutar todas" del Catálogo — corre
+        cada prueba una por una, en orden, esperando a que cada una termine
+        (con o sin error) antes de empezar la siguiente. Reusa el mismo
+        camino de una corrida individual (`_start_run`), sin duplicar
+        nada."""
+        if self._running or not test_cases:
+            return
+        self._sequence_queue = list(test_cases)
+        self._sequence_total = len(test_cases)
+        self._advance_sequence()
+
+    def _advance_sequence(self) -> None:
+        if not self._sequence_queue:
+            self._sequence_total = 0  # secuencia terminada — una corrida suelta despues debe limpiar el log normalmente
+            return
+        next_case = self._sequence_queue.pop(0)
+        self._start_run(next_case)

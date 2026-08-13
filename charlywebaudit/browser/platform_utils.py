@@ -73,3 +73,22 @@ def needs_virtual_display() -> bool:
 
 def find_xvfb_run() -> str | None:
     return shutil.which("xvfb-run")
+
+
+def default_playwright_browsers_path() -> Path | None:
+    """Ruta donde Playwright guarda los navegadores que gestiona — respeta
+    `PLAYWRIGHT_BROWSERS_PATH` (la variable de entorno oficial que el
+    propio Playwright usa para personalizar esto) antes de asumir la ruta
+    por defecto de cada sistema operativo — bug real corregido una vez
+    (v0.1.0a1): ignorar esa variable podía dar un falso negativo de
+    "Chromium no instalado" cuando sí lo estaba, solo que en una ruta
+    distinta a la de sistema operativo por defecto."""
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override:
+        return Path(override)
+    if is_windows():
+        base = os.environ.get("LOCALAPPDATA")
+        return Path(base) / "ms-playwright" if base else None
+    if is_macos():
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"

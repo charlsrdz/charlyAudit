@@ -10,9 +10,12 @@ perfil de navegador nuevo.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 APP_NAME = "charlyWebAudit"
 APP_SLUG = "charlywebaudit"  # usado para rutas de config (platformdirs)
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 APP_TAGLINE = "Corre pruebas reales de Playwright y genera un reporte con el resultado y el estado del navegador"
 
 # --- Autor / créditos (sección Ayuda de la GUI, v0.0.6) ---------------------
@@ -94,3 +97,14 @@ SCOPE_LABELS = {
     "codeblocks": "Código",
     "headers": "Cabeceras",
 }
+
+# v0.1.5: ruta al build de la extensión CharlyAudit incluido con
+# charlyWebAudit — resuelve tanto en desarrollo (código fuente normal)
+# como empaquetado con PyInstaller (vía sys._MEIPASS, el directorio
+# temporal donde el binario se autoextrae) — mismo patrón que
+# build/build_installer.py usa para empaquetar la carpeta vendor/ con
+# --add-data.
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    VENDOR_EXTENSION_DIR = Path(sys._MEIPASS) / "charlywebaudit" / "vendor" / "charlyaudit"
+else:
+    VENDOR_EXTENSION_DIR = Path(__file__).parent / "vendor" / "charlyaudit"

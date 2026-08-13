@@ -105,6 +105,8 @@ class DashboardView(ttk.Frame):
         passed_runs = sum(1 for r in records if r.all_passed)
         avg_duration = sum(r.duration_ms for r in records) / total
         last = records[-1]
+        with_extension = sum(1 for r in records if r.use_extension)
+        unexpected_closures = sum(1 for r in records if r.browser_outcome == "closed_unexpectedly")
         stats_row = tk.Frame(summary_card.body, bg=SURFACE)
         stats_row.pack(fill="x")
         for label, value, color in [
@@ -116,6 +118,17 @@ class DashboardView(ttk.Frame):
             col = tk.Frame(stats_row, bg=SURFACE)
             col.pack(side="left", padx=(0, 28))
             tk.Label(col, text=value, bg=SURFACE, fg=color, font=("Segoe UI", 15, "bold")).pack(anchor="w")
+            tk.Label(col, text=label, bg=SURFACE, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
+
+        stats_row2 = tk.Frame(summary_card.body, bg=SURFACE)
+        stats_row2.pack(fill="x", pady=(10, 0))
+        for label, value, color in [
+            ("Con extensión CharlyAudit", f"{with_extension}/{total}", TEXT if with_extension else MUTED),
+            ("Cierres inesperados del navegador", str(unexpected_closures), DANGER if unexpected_closures else SUCCESS),
+        ]:
+            col = tk.Frame(stats_row2, bg=SURFACE)
+            col.pack(side="left", padx=(0, 28))
+            tk.Label(col, text=value, bg=SURFACE, fg=color, font=("Segoe UI", 13, "bold")).pack(anchor="w")
             tk.Label(col, text=label, bg=SURFACE, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
 
         # --- Gráfico: duración por corrida, verde/rojo segun resultado --------
@@ -168,21 +181,37 @@ class DashboardView(ttk.Frame):
     def _render_table(self, parent: tk.Widget, records: list[RunRecord]) -> None:
         header = tk.Frame(parent, bg=SURFACE_2)
         header.pack(fill="x")
-        for text, w in [("Fecha", 20), ("Resultado", 14), ("Duración", 10), ("Análisis", 14), ("", 10)]:
+        for text, w in [
+            ("Fecha", 18),
+            ("Resultado", 12),
+            ("Duración", 9),
+            ("Análisis", 11),
+            ("Extensión", 10),
+            ("Navegador", 16),
+            ("", 10),
+        ]:
             tk.Label(header, text=text, bg=SURFACE_2, fg=MUTED, font=("Segoe UI", 8, "bold"), width=w, anchor="w").pack(
                 side="left", padx=4, pady=4
             )
 
+        _BROWSER_OUTCOME_LABELS = {
+            "closed_normally": ("cierre normal", SUCCESS),
+            "closed_unexpectedly": ("cierre inesperado", DANGER),
+            "never_connected": ("sin conectar", WARNING),
+        }
         for r in records:
             row = tk.Frame(parent, bg=SURFACE)
             row.pack(fill="x")
             date_display = r.started_at.split("T")[0] + " " + r.started_at.split("T")[1][:8] if "T" in r.started_at else r.started_at
-            tk.Label(row, text=date_display, bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), width=20, anchor="w").pack(side="left", padx=4, pady=3)
+            tk.Label(row, text=date_display, bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), width=18, anchor="w").pack(side="left", padx=4, pady=3)
             result_text = f"✓ {r.passed} pasaron" if r.all_passed else f"✕ {r.failed} fallaron"
-            tk.Label(row, text=result_text, bg=SURFACE, fg=(SUCCESS if r.all_passed else DANGER), font=("Segoe UI", 9), width=14, anchor="w").pack(side="left", padx=4, pady=3)
-            tk.Label(row, text=f"{r.duration_ms/1000:.1f}s", bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), width=10, anchor="w").pack(side="left", padx=4, pady=3)
+            tk.Label(row, text=result_text, bg=SURFACE, fg=(SUCCESS if r.all_passed else DANGER), font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=4, pady=3)
+            tk.Label(row, text=f"{r.duration_ms/1000:.1f}s", bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), width=9, anchor="w").pack(side="left", padx=4, pady=3)
             analysis_text = "completo" if r.assistant_analysis_complete else "incompleto"
-            tk.Label(row, text=analysis_text, bg=SURFACE, fg=(SUCCESS if r.assistant_analysis_complete else WARNING), font=("Segoe UI", 9), width=14, anchor="w").pack(side="left", padx=4, pady=3)
+            tk.Label(row, text=analysis_text, bg=SURFACE, fg=(SUCCESS if r.assistant_analysis_complete else WARNING), font=("Segoe UI", 9), width=11, anchor="w").pack(side="left", padx=4, pady=3)
+            tk.Label(row, text=("sí" if r.use_extension else "no"), bg=SURFACE, fg=(TEXT if r.use_extension else MUTED), font=("Segoe UI", 9), width=10, anchor="w").pack(side="left", padx=4, pady=3)
+            outcome_text, outcome_color = _BROWSER_OUTCOME_LABELS.get(r.browser_outcome or "", ("—", MUTED))
+            tk.Label(row, text=outcome_text, bg=SURFACE, fg=outcome_color, font=("Segoe UI", 9), width=16, anchor="w").pack(side="left", padx=4, pady=3)
             if r.report_path and Path(r.report_path).is_file():
                 ttk.Button(row, text="Ver reporte", style="Ghost.TButton", command=lambda p=r.report_path: self._open_report(p)).pack(side="left", padx=4, pady=2)
 

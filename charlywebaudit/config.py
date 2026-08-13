@@ -47,6 +47,13 @@ class TestConfig:
     spec_path: str | None = None
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    use_extension: bool = False
+    """v0.1.5: si True, la corrida usa la extensión CharlyAudit (grabación +
+    análisis del Asistente IA + KPIs, todo incluido en el reporte final) —
+    requiere el Chromium gestionado por Playwright (la única opción
+    confirmada que carga la extensión de forma confiable; Chrome real no
+    la carga, ver browser/chromium.py). Si False (default), sigue el
+    flujo simple y estable desde v0.1.1: solo Playwright, con Chrome."""
 
 
 @dataclass
@@ -62,6 +69,7 @@ class TestCase:
     spec_path: str
     url: str
     headers: dict[str, str] = field(default_factory=dict)
+    use_extension: bool = False
 
 
 @dataclass

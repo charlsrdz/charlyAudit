@@ -47,6 +47,9 @@ class HomeView(ttk.Frame):
         ttk.Button(quick, text="Configurar prueba", style="Ghost.TButton", command=lambda: self._go("test")).pack(
             side="left", padx=(0, 8)
         )
+        ttk.Button(
+            quick, text="Asistente IA", style="Ghost.TButton", command=lambda: self._go("assistant")
+        ).pack(side="left", padx=(0, 8))
         ttk.Button(quick, text="▶ Correr prueba", style="Brand.TButton", command=lambda: self._go("run")).pack(
             side="left"
         )
@@ -57,9 +60,9 @@ class HomeView(ttk.Frame):
         tips_card = Card(right, title="CÓMO FUNCIONA")
         tips_card.pack(fill="both", expand=True)
         steps = [
-            "1. Configura el script de Playwright y la URL de la prueba.",
+            "1. Configura el script de Playwright y la URL de la prueba\n    (opcionalmente, activá la extensión CharlyAudit).",
             "2. Corré la prueba — lanza el navegador y corre tu spec real,\n    tal cual está escrito.",
-            "3. Al terminar, se genera un reporte con el resultado y el\n    estado del navegador durante la corrida.",
+            "3. Al terminar, se genera un reporte con el resultado, el\n    estado del navegador, y un análisis por IA (si configuraste\n    el Asistente) de qué funcionó y qué mejorar del script.",
         ]
         for step in steps:
             ttk.Label(tips_card.body, text=step, style="Surface.TLabel", justify="left", wraplength=220).pack(
@@ -82,6 +85,11 @@ class HomeView(ttk.Frame):
         rows = [
             ("Script", self.cfg.test.spec_path or "(sin configurar)"),
             ("URL", self.cfg.test.url or "(sin configurar)"),
+            (
+                "Asistente IA",
+                f"configurado ({self.cfg.assistant.provider})" if self.cfg.assistant.configured else "sin configurar",
+            ),
+            ("CharlyAudit", "activada" if self.cfg.test.use_extension else "desactivada"),
         ]
         for label, value in rows:
             ok = "sin configurar" not in value

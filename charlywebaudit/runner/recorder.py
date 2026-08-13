@@ -1,11 +1,7 @@
 """
 runner/recorder.py — Inicia/detiene la grabación en la pestaña correcta.
 
-v0.1.1 — NO USADO en el flujo principal desde esta version. A pedido
-explicito, run_audit() (__main__.py) ya no orquesta la extension
-CharlyAudit en absoluto — este modulo queda intacto y validado, por si se
-reintroduce soporte de extension en el futuro, pero nada en el codigo
-activo lo importa hoy.
+v0.1.5: reintegrado al flujo principal (modo con extensión).
 
 Usa el `tabId` explícito que se agregó a la acción "toggle" del service
 worker de CharlyAudit (v2.6.2) — sin eso, la grabación habría apuntado a la

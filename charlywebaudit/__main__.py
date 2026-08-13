@@ -1,37 +1,20 @@
 """
 __main__.py — Punto de entrada de charlyWebAudit.
 
-v0.1.1 — REDISEÑO radical del motor de orquestación, a pedido explícito:
+v0.1.1 — motor simplificado: sin la extensión, `run_audit()` lanza el
+navegador, corre el spec de Playwright tal cual, y arma el reporte —
+telemetría del navegador incluida (ver `browser/telemetry.py`).
 
-  1. "Al ejecutar una prueba solo debe abrir el navegador y omitir todo lo
-     que tenga que ver con la extensión" — se retiró POR COMPLETO la
-     orquestación de CharlyAudit del flujo principal (pausa de pestaña,
-     panel lateral, siembra de configuración, grabación, análisis del
-     Asistente). `run_audit()` ahora hace lo mínimo necesario: lanza el
-     navegador, corre el spec de Playwright tal cual el usuario lo
-     escribió, y arma el reporte con el resultado.
-
-  2. El reporte generado es compatible con o sin datos de la extensión
-     (ver `report/builder.py`, campo `extension_used`) — el flujo actual
-     siempre lo deja en `False`, pero el reporte HTML se adapta
-     correctamente en ambos casos.
-
-  3. Se agregó telemetría del navegador (`browser/telemetry.py`): se sabe
-     si el navegador llegó a arrancar, y si se cerró de forma normal (al
-     terminar la corrida) o inesperada (se cerró solo, o alguien lo cerró
-     manualmente a mitad de la corrida) — visible tanto en el log de la
-     corrida como en el reporte final.
-
-Por qué este rediseño, con evidencia real: la versión anterior (hasta
-v0.1.0a2) establecía su propia conexión CDP inmediatamente al lanzar el
-navegador, para pausar la primera pestaña y sincronizar con la extensión
-antes de dejarla navegar. Un usuario reportó, con una versión más nueva
-de Node (v24.19.0), el error "No se pudo conectar al navegador orquestado
-por CDP" — la conexión CDP inmediata competía con el propio arranque del
-navegador de una forma que versiones anteriores de Node no exponían.
-Validado en desarrollo: sin esa conexión CDP inmediata (el diseño actual,
-que solo se conecta DESPUÉS, para telemetría pasiva, con su propia lógica
-de espera/reintento), el lanzamiento funciona de forma consistente.
+v0.1.5 — la extensión CharlyAudit se reintegra como OPCIÓN
+(`cfg.test.use_extension`, ver `config.py`) — nunca como comportamiento
+por defecto obligatorio, para no arriesgar la confiabilidad ya lograda
+del flujo simple. Cuando se pide, `run_audit()` hace lo que hacía hasta
+v0.1.0a2: pausa la primera navegación (a nivel de red, no de depurador —
+ver `browser/cdp_sync.py` para el porqué), abre el panel lateral, siembra
+la configuración (incluido el dominio permitido, extraído de la URL de
+la prueba — punto 1 del pedido), graba, y al terminar el spec, pide el
+análisis de los 15 ámbitos y extrae los KPIs de la sesión — todo se une
+en el mismo reporte final (`extension_used=True`).
 """
 
 from __future__ import annotations
@@ -44,21 +27,78 @@ import time as _time
 from pathlib import Path
 
 import questionary
+from websockets.exceptions import ConnectionClosed
 
 from .browser.chromium import ensure_browser
+from .browser.cdp_sync import BrowserSync
+from .browser.extension_page import ExtensionPage, SIDEPANEL_URL
 from .browser.launcher import RunOrchestrator
 from .dependencies import ensure_dependencies
 from .browser.telemetry import BrowserTelemetry
 from .config import AppConfig, load_config, save_config
-from .constants import APP_NAME, APP_VERSION
-from .errors import CharlyWebAuditError
+from .constants import APP_NAME, APP_VERSION, VENDOR_EXTENSION_DIR
+from .ai_playwright import analyze_playwright_run
+from .errors import AssistantError, CharlyWebAuditError, ExtensionNotFoundError
 from .history import RunRecord, append_run_record, make_run_id, now_iso, reports_dir as history_reports_dir
 from .report.builder import build_combined_report, CombinedReport
 from .report.html import save_report
+from .runner.assistant import analyze_all_scopes, get_kpis_html
+from .runner.recorder import start_recording, stop_recording, wait_until_recording
+from .runner.seed import seed_domain_allowlist, seed_pre_release, seed_post_release
 from .runner.test_exec import parse_report, wait_for_process
 from .ui.menu import main_menu_loop
 from .reporter import Reporter
 from .ui.theme import CliReporter, QUESTIONARY_STYLE, console, print_error
+
+
+def _resolve_extension_path() -> Path:
+    """Ruta al build de la extensión CharlyAudit incluido con
+    charlyWebAudit — mismo directorio tanto en desarrollo como empaquetado
+    (ver build/build_installer.py, --add-data)."""
+    if not VENDOR_EXTENSION_DIR.is_dir():
+        raise ExtensionNotFoundError(
+            f"No se encontró el build de la extensión CharlyAudit en: {VENDOR_EXTENSION_DIR}",
+            hint="Esto no debería pasar en una instalación normal — reinstala charlyWebAudit.",
+        )
+    return VENDOR_EXTENSION_DIR
+
+
+async def _identify_tab_id(ext: ExtensionPage, *, timeout: float = 10) -> int:
+    """Encuentra el `tabId` de la pestaña del spec (no la del propio panel
+    lateral) — la única pestaña de tipo normal, sin URL de extensión,
+    entre las que `chrome.tabs.query` puede ver.
+
+    Hallazgo real, investigado a fondo (v0.1.5): la pestaña del spec vive
+    en un `browserContextId` DISTINTO al del panel lateral de la extensión
+    — confirmado con CDP real (`Target.getTargets`). `chrome.tabs.query`,
+    llamado desde el panel lateral, está limitado al mismo contexto de
+    navegador donde la extensión corre — no puede ver tabs en un contexto
+    distinto, es una restricción de aislamiento de Chrome, no un problema
+    de sincronización o de timing. En la práctica, esto significa que la
+    grabación de CharlyAudit puede no lograr identificar la pestaña del
+    spec — si eso pasa, el resto de la corrida sigue con normalidad
+    (degradación elegante, ver `run_audit`), solo sin grabación ni
+    análisis del Asistente para esa corrida específica."""
+    t0 = asyncio.get_event_loop().time()
+    while asyncio.get_event_loop().time() - t0 < timeout:
+        tab_id = await ext.evaluate(
+            "(async () => { "
+            "const tabs = await chrome.tabs.query({}); "
+            "const t = tabs.find(t => t.url && !t.url.startsWith('chrome-extension://') && !t.url.startsWith('chrome://')); "
+            "return t ? t.id : null; "
+            "})()",
+            await_promise=True,
+        )
+        if tab_id is not None:
+            return tab_id
+        await asyncio.sleep(0.3)
+    raise ExtensionNotFoundError(
+        "No se pudo identificar la pestaña del spec desde la extensión.",
+        hint="La pestaña del spec y el panel lateral de la extensión pueden estar en contextos de "
+        "navegador distintos (una restricción real de aislamiento de Chrome, confirmada con CDP) — "
+        "la grabación de CharlyAudit no está disponible para esta corrida específica. El resto del "
+        "reporte (resultados de Playwright) sigue siendo válido.",
+    )
 
 
 async def run_audit(
@@ -84,8 +124,20 @@ async def run_audit(
     spec_path = Path(cfg.test.spec_path)
     resolved_test_name = test_name or spec_path.stem
 
+    use_extension = cfg.test.use_extension
+
     reporter.section("Prerrequisitos")
-    channel = ensure_browser(reporter=reporter, confirm=confirm_install)
+    try:
+        channel = ensure_browser(reporter=reporter, confirm=confirm_install, need_extension=use_extension)
+    except CharlyWebAuditError as exc:
+        if not use_extension:
+            raise  # sin extension de por medio, esto SI es bloqueante (no hay navegador)
+        reporter.warning(
+            f"No se pudo preparar el navegador para la extensión CharlyAudit ({exc.message}) — "
+            "la corrida sigue solo con Playwright, sin la extensión."
+        )
+        use_extension = False
+        channel = ensure_browser(reporter=reporter, confirm=confirm_install, need_extension=False)
     # Validación completa de dependencias (Python/Node/Chrome/@playwright-test
     # local) — con instalación en vivo ofrecida donde es segura y contenida
     # (ver dependencies.py). Reemplaza el chequeo anterior
@@ -99,8 +151,16 @@ async def run_audit(
     work_dir = Path(tempfile.mkdtemp(prefix="charlywebaudit-"))
     reporter.info(f"Directorio de trabajo de esta corrida: {work_dir}")
 
+    extension_path = None
+    if use_extension:
+        try:
+            extension_path = _resolve_extension_path()
+        except CharlyWebAuditError as exc:
+            reporter.warning(f"No se pudo preparar la extensión CharlyAudit ({exc.message}) — la corrida sigue solo con Playwright.")
+            use_extension = False
     orchestrator = RunOrchestrator(
         spec_path=spec_path,
+        extension_path=extension_path,
         target_url=cfg.test.url,
         headers=cfg.test.headers,
         work_dir=work_dir,
@@ -109,14 +169,62 @@ async def run_audit(
 
     run = None
     telemetry: BrowserTelemetry | None = None
+    sync: BrowserSync | None = None
+    sidepanel: ExtensionPage | None = None
+    recording_active = False
     try:
         reporter.section("Lanzando navegador + spec")
         run = orchestrator.launch()
         reporter.success(f"Navegador lanzado (PID {run.process.pid}) — el spec ya está corriendo.")
 
+        if use_extension:
+            # v0.1.5: la navegación real del spec se retiene a nivel de RED
+            # (dominio Fetch, no el estado "pausado" del target — ver el
+            # docstring de cdp_sync.py para el diagnóstico completo de por
+            # qué el mecanismo anterior, basado en depurador, no era
+            # confiable) mientras se abre el panel lateral y se siembra la
+            # configuración de captura, incluido el dominio permitido
+            # (punto 1 del pedido).
+            sync = BrowserSync(run.cdp_port)
+            await sync.connect()
+            paused_target = await sync.wait_for_new_page(timeout=45)
+
+            sidepanel = await ExtensionPage.open(sync.client, SIDEPANEL_URL, timeout=30)
+            reporter.success("Panel lateral de CharlyAudit abierto.")
+
+            reporter.info("Aplicando dominio permitido y configuración de captura…")
+            await seed_domain_allowlist(sidepanel, cfg)
+            await seed_pre_release(sidepanel, cfg)
+
+            reporter.info("Liberando la navegación retenida — el spec empieza a cargar la página ahora.")
+            await paused_target.release()
+
+            try:
+                target_tab_id = await _identify_tab_id(sidepanel)
+                reporter.info(f"Pestaña del spec identificada (tabId={target_tab_id}).")
+                await start_recording(sidepanel, target_tab_id)
+                await wait_until_recording(sidepanel)
+                reporter.success("Grabación de CharlyAudit activa.")
+                recording_active = True
+
+                reporter.info("Aplicando configuración del Asistente IA y la paleta…")
+                await seed_post_release(sidepanel, cfg)
+            except ExtensionNotFoundError as exc:
+                reporter.warning(
+                    f"{exc.message} {exc.hint or ''}"
+                )
+            except (ConnectionClosed, ConnectionError, OSError) as exc:
+                reporter.warning(
+                    "El navegador se cerró antes de poder activar la grabación de CharlyAudit "
+                    f"(el spec terminó más rápido de lo esperado). El reporte va a incluir los "
+                    f"resultados de Playwright, sin grabación ni análisis del Asistente. Detalle: {exc}"
+                )
+
         # Telemetria pasiva (punto 3 del pedido) — se conecta por su cuenta,
         # con su propia espera/reintento; si no logra conectar, no bloquea
         # la corrida (solo significa que no hay telemetria que ofrecer).
+        # Es una conexion CDP SEPARADA de `sync` (usada arriba solo para la
+        # extension) — CDP admite varios clientes simultaneos sin problema.
         telemetry = BrowserTelemetry(run.cdp_port, reporter=reporter)
         telemetry_connected = await telemetry.start()
         if telemetry_connected:
@@ -134,6 +242,26 @@ async def run_audit(
         else:
             reporter.warning(f"Playwright: {pw_result.failed} caso(s) fallaron, {pw_result.passed} pasaron.")
 
+        # Puntos 1 y 2 del pedido: análisis por IA de los resultados de
+        # Playwright, llamando directamente a la API del proveedor
+        # configurado — NUNCA vía la extensión (ver ai_playwright.py), así
+        # que funciona aunque CharlyAudit no esté disponible en este
+        # sistema. Punto 3: un fallo acá (sin credenciales, sin red, la
+        # API caída) nunca debe interrumpir la corrida — el resultado real
+        # de Playwright ya está confirmado antes de intentar esto.
+        ai_analysis_html: str | None = None
+        if cfg.assistant.configured:
+            reporter.section("Análisis por IA del resultado de Playwright")
+            try:
+                ai_analysis_html = await analyze_playwright_run(
+                    cfg.assistant, pw_result=pw_result, raw_stdout=raw_stdout, spec_path=str(spec_path)
+                )
+                reporter.success("Análisis de IA generado.")
+            except AssistantError as exc:
+                reporter.warning(f"No se pudo generar el análisis de IA: {exc.message}")
+            except Exception as exc:  # noqa: BLE001 — nunca debe interrumpir la corrida por esto
+                reporter.warning(f"No se pudo generar el análisis de IA (error inesperado): {exc}")
+
         browser_outcome_value: str | None = None
         browser_outcome_description: str | None = None
         if telemetry is not None:
@@ -146,14 +274,39 @@ async def run_audit(
             else:
                 reporter.info(browser_report.description)
 
+        # Punto 4 del pedido v0.1.5: KPIs + los 15 ámbitos del Asistente,
+        # incluidos en el mismo reporte final. Mismo criterio de
+        # degradación elegante que el resto del pipeline — si el navegador
+        # se cierra antes de tiempo, el reporte sigue siendo válido, solo
+        # sin estos datos extra.
+        assistant_responses: dict[str, str] = {}
+        kpis_html: str | None = None
+        if recording_active and sidepanel is not None:
+            try:
+                await stop_recording(sidepanel)
+                reporter.success("Grabación detenida.")
+                kpis_html = await get_kpis_html(sidepanel)
+
+                reporter.section("Análisis del Asistente IA (15 ámbitos, uno a la vez)")
+                assistant_responses = await analyze_all_scopes(sidepanel, source="live")
+                reporter.success("Los 15 ámbitos fueron analizados.")
+            except (ConnectionClosed, ConnectionError, OSError) as exc:
+                reporter.warning(
+                    "El navegador se cerró antes de poder completar el análisis del Asistente. "
+                    f"El reporte incluye los resultados de Playwright y la grabación, sin el "
+                    f"análisis de los 15 ámbitos. Detalle: {exc}"
+                )
+
         report = build_combined_report(
             url=cfg.test.url,
             spec_path=str(spec_path),
             playwright_result=pw_result,
-            assistant_responses={},
-            extension_used=False,
+            assistant_responses=assistant_responses,
+            extension_used=recording_active,
             browser_outcome=browser_outcome_value,
             browser_outcome_description=browser_outcome_description,
+            kpis_html=kpis_html,
+            ai_analysis_html=ai_analysis_html,
         )
 
         # El reporte se guarda SIEMPRE en un directorio propio, sin depender
@@ -184,8 +337,11 @@ async def run_audit(
                 failed=pw_result.failed,
                 skipped=pw_result.skipped,
                 all_passed=pw_result.all_passed,
-                assistant_analysis_complete=False,  # v0.1.1: la extension no se usa en el flujo principal
+                assistant_analysis_complete=bool(assistant_responses),
                 report_path=str(auto_report_path) if auto_report_path else None,
+                use_extension=recording_active,
+                browser_outcome=browser_outcome_value,
+                duration_s=round(duration_ms / 1000, 1),
             )
         )
 
@@ -199,6 +355,16 @@ async def run_audit(
         return report
 
     finally:
+        if sidepanel is not None:
+            try:
+                await sidepanel.close()
+            except (ConnectionClosed, ConnectionError, OSError):
+                pass
+        if sync is not None:
+            try:
+                await sync.close()
+            except (ConnectionClosed, ConnectionError, OSError):
+                pass
         if telemetry is not None:
             try:
                 await telemetry.stop()

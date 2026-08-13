@@ -1,12 +1,12 @@
 """
 gui/views/assistant_config_view.py — Formulario de configuración del
-
-v0.1.1 — NO USADO en el flujo principal desde esta version. A pedido
-explicito, run_audit() (__main__.py) ya no orquesta la extension
-CharlyAudit en absoluto — este modulo queda intacto y validado, por si se
-reintroduce soporte de extension en el futuro, pero nada en el codigo
-activo lo importa hoy.
 Asistente IA: proveedor, modelo, API key.
+
+v0.1.6: reintegrado a la navegación principal — esta misma configuración
+ahora alimenta DOS cosas: el análisis por IA directo de los resultados de
+Playwright (`ai_playwright.py`, siempre disponible, puntos 1 y 2 del
+pedido) y, si la extensión CharlyAudit funciona en este sistema, el
+análisis de los 15 ámbitos vía la extensión (`runner/assistant.py`).
 
 v0.0.6: envuelto en Card (consistencia visual con el resto de la GUI) y se
 agregó refresh() — antes de esto, si la configuración cambiaba desde otra

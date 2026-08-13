@@ -72,6 +72,17 @@ class RunRecord:
     report_path: str | None = None
     """Ruta del reporte .html completo de esta corrida, si se guardó uno —
     permite abrir el detalle completo desde el dashboard."""
+    use_extension: bool = False
+    """Punto 5 del pedido v0.1.5: si esta corrida usó la extensión
+    CharlyAudit — el dashboard lo muestra como una comparación más entre
+    corridas de la misma prueba."""
+    browser_outcome: str | None = None
+    """Qué observó la telemetría del navegador en esta corrida —
+    'closed_normally', 'closed_unexpectedly', 'never_connected', o None."""
+    duration_s: float | None = None
+    """Duración total de la corrida en segundos, con un decimal — mismo
+    dato que `duration_ms` pero ya redondeado, para mostrar directo en el
+    dashboard sin repetir la conversión en cada vista."""
 
 
 def _ensure_dir() -> None:

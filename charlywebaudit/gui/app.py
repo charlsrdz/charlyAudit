@@ -18,6 +18,7 @@ from ..constants import APP_VERSION
 from .async_bridge import AsyncBridge
 from .theme import MUTED, apply_theme, apply_window_icon, window_title
 from .tray import TrayController
+from .views.assistant_config_view import AssistantConfigView
 from .views.catalog_view import CatalogView
 from .views.dashboard_view import DashboardView
 from .views.help_view import HelpView
@@ -26,10 +27,11 @@ from .views.report_view import ReportView
 from .views.run_view import RunView
 from .views.test_config_view import TestConfigView
 
-_TAB_ORDER = ["home", "test", "catalog", "run", "dashboard", "report", "help"]
+_TAB_ORDER = ["home", "test", "assistant", "catalog", "run", "dashboard", "report", "help"]
 _TAB_LABELS = {
     "home": "Inicio",
     "test": "Configurar prueba",
+    "assistant": "Asistente IA",
     "catalog": "Catálogo",
     "run": "Ejecutar",
     "dashboard": "Dashboard",
@@ -67,7 +69,10 @@ class App:
 
         self.views["home"] = HomeView(self.notebook, self.cfg, on_navigate=self.show_view)
         self.views["test"] = TestConfigView(self.notebook, self.cfg, on_change=self._on_config_changed)
-        self.views["catalog"] = CatalogView(self.notebook, self.cfg, self.bridge, on_run_test=self._run_from_catalog)
+        self.views["assistant"] = AssistantConfigView(self.notebook, self.cfg, on_change=self._on_config_changed)
+        self.views["catalog"] = CatalogView(
+            self.notebook, self.cfg, self.bridge, on_run_test=self._run_from_catalog, on_run_all=self._run_all_from_catalog
+        )
         self.views["run"] = RunView(self.notebook, self.cfg, self.bridge, on_report_ready=self._on_report_ready)
         self.views["dashboard"] = DashboardView(self.notebook)
         self.views["report"] = ReportView(self.notebook)
@@ -75,6 +80,8 @@ class App:
 
         for key in _TAB_ORDER:
             self.notebook.add(self.views[key], text=_TAB_LABELS[key])
+
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Barra de estado inferior — version a la izquierda (identificacion
         # rapida de que binario/instalacion esta corriendo, util al reportar
@@ -108,9 +115,19 @@ class App:
         if key in self.views:
             self.notebook.select(self.views[key])
 
+    def _on_tab_changed(self, event) -> None:
+        """Refresca el selector de "Ejecutar" cada vez que esa pestaña queda
+        visible — sea por navegación programática (show_view) o porque el
+        usuario clickeó la pestaña directamente. Así el selector nunca
+        muestra pruebas del Catálogo obsoletas (borradas, renombradas)."""
+        current = self.notebook.select()
+        if current and str(self.views.get("run")) == current:
+            self.views["run"].refresh()
+
     def _on_config_changed(self) -> None:
         self.views["home"].refresh()
         self.views["test"].refresh()
+        self.views["assistant"].refresh()
 
     def _on_report_ready(self, report) -> None:
         self.views["report"].show_report(report)
@@ -120,6 +137,10 @@ class App:
     def _run_from_catalog(self, test_case) -> None:
         self.show_view("run")
         self.views["run"]._start_run(test_case)
+
+    def _run_all_from_catalog(self, test_cases: list) -> None:
+        self.show_view("run")
+        self.views["run"].run_sequence(test_cases)
 
     def _trigger_run_from_tray(self) -> None:
         self.show_view("run")

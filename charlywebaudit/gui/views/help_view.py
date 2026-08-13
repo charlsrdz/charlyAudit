@@ -49,9 +49,10 @@ class HelpView(ttk.Frame):
         ttk.Label(
             about_card.body,
             text=f"{APP_TAGLINE}.\n\n"
-            "Corre un script real de Playwright, tal cual está escrito, en un navegador "
-            "real — y genera un reporte con el resultado y el estado del navegador "
-            "durante la corrida (si se cerró de forma normal o inesperada).",
+            "El script corre tal cual está escrito, sin ninguna modificación. Si configurás el "
+            "Asistente IA, el reporte incluye un análisis de qué funcionó, qué no, y cómo mejorar "
+            "el script. Opcionalmente, también podés usar la extensión CharlyAudit para grabar la "
+            "sesión — ver la nota en Requisitos.",
             style="Surface.TLabel",
             justify="left",
             wraplength=380,
@@ -61,9 +62,10 @@ class HelpView(ttk.Frame):
         steps_card.pack(fill="x", pady=(12, 0))
         for i, step in enumerate(
             [
-                "Configurar prueba: script .spec.ts, URL, cabeceras opcionales.",
-                "Ejecutar: lanza el navegador y corre el spec.",
-                "Reporte: resultado de Playwright + estado del navegador.",
+                "Configurar prueba: script .spec.ts, URL, cabeceras opcionales,\n   y si querés usar la extensión CharlyAudit.",
+                "Asistente IA (opcional, pero recomendado): proveedor, modelo\n   y API key, para el análisis de resultados.",
+                "Ejecutar: elegí si correr la prueba configurada o una guardada\n   en el Catálogo, y lanzá la corrida.",
+                "Reporte: resultado de Playwright + análisis por IA + estado\n   del navegador (+ KPIs y 15 ámbitos, si usaste la extensión).",
             ],
             start=1,
         ):
@@ -76,6 +78,11 @@ class HelpView(ttk.Frame):
         for req in [
             "Node.js + npm (para correr specs de @playwright/test)",
             "Google Chrome (canal estable) — hay que instalarlo vos, la app no lo hace por su cuenta",
+            "Asistente IA (opcional): API key de Google Gemini u OpenAI, para el análisis de resultados",
+            "Extensión CharlyAudit (opcional): necesita el Chromium gestionado por Playwright — se "
+            "ofrece instalar. En algunos sistemas, la grabación puede no activarse por una "
+            "restricción real de Chrome (contextos de navegador aislados) — si eso pasa, la prueba "
+            "de Playwright y el análisis por IA siguen funcionando con normalidad",
         ]:
             ttk.Label(req_card.body, text=f"• {req}", style="Surface.TLabel", justify="left", wraplength=380).pack(
                 anchor="w", pady=(0, 4)

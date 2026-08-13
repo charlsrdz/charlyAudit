@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.1.4**
+**Versión actual: 0.1.5**
 
 ---
 
@@ -1464,6 +1464,129 @@ un problema de la carga perezosa de submódulos de la librería
 módulo (`from websockets.exceptions import ConnectionClosed`), en vez de
 depender de una resolución diferida repetida en cada excepción — aplicado
 tanto en `telemetry.py` como, preventivamente, en `cdp_sync.py`.
+
+## v0.1.5 — CharlyAudit reintegrado como opción, análisis por IA directo sobre Playwright
+
+Sesión larga, a pedido explícito de traer de vuelta la extensión CharlyAudit
+(retirada del flujo principal en v0.1.1) más un pedido posterior de conectar
+IA directamente sobre los resultados de Playwright, independiente de la
+extensión. Se cubre todo en esta única versión.
+
+### Reintegración de CharlyAudit — como opción, nunca por defecto
+
+`config.TestConfig`/`TestCase` tienen un campo nuevo, `use_extension: bool`
+(default `False` — el flujo estable de v0.1.1 sigue siendo el
+comportamiento por defecto sin tocar nada). Cuando se activa (checkbox
+nuevo en "Configurar prueba"):
+
+- Se usa **Chromium** (el gestionado por Playwright), no Chrome — es la
+  única opción confirmada que carga la extensión de forma confiable (ver
+  `browser/chromium.py`, `ensure_browser(need_extension=True)`). Si
+  Chromium no está instalado, se ofrece instalarlo en vivo, con
+  verificación real después (mismo patrón que `@playwright/test`).
+- Se reintegró la orquestación completa: pausa de la primera navegación a
+  nivel de red (no de depurador — el mecanismo ya validado en v0.1.1),
+  apertura del panel lateral, siembra de configuración, grabación, KPIs,
+  y análisis de los 15 ámbitos.
+- **Punto 1 del pedido**: dominio permitido configurado automáticamente —
+  se extrae el dominio de la URL de la prueba (`urllib.parse`) y se aplica
+  en `#cfg-domains` de la extensión (`runner/seed.seed_domain_allowlist`).
+  Validado con Chromium real.
+
+### Un hallazgo real y honesto: la grabación no puede activarse
+
+Validando esto de punta a punta con Chromium real, se encontró (con
+evidencia CDP directa, no una suposición) que **la pestaña del spec de
+Playwright y el panel lateral de la extensión viven en `browserContextId`
+distintos** — confirmado con `Target.getTargets`. Esto significa que
+`chrome.tabs.query()`, llamado desde la extensión, no puede ver la
+pestaña del spec en absoluto: es una restricción real de aislamiento de
+contextos de Chrome, no un problema de temporización. Se revisó el
+manifest de la extensión — usa inyección programática
+(`chrome.scripting.executeScript`, que necesita el `tabId` y está sujeta
+a la misma restricción), no inyección automática vía `content_scripts`
+(que sí hubiera funcionado cross-contexto). No hay forma de evitar esto
+sin modificar el spec del usuario o la extensión misma — ambas líneas
+que este proyecto no cruza.
+
+**En la práctica**: la grabación, los KPIs y el análisis de los 15
+ámbitos pueden no estar disponibles incluso con la extensión activada y
+Chromium funcionando — el resto de la corrida (Playwright, telemetría,
+análisis por IA directo) sigue funcionando con normalidad de todas
+formas (ver el punto siguiente). El checkbox de "usar CharlyAudit" en la
+GUI incluye esta advertencia en su propio texto, sin ocultarla.
+
+### Puntos 1, 2 y 4 del pedido de IA: análisis directo sobre Playwright
+
+Nuevo módulo, `ai_playwright.py`: llama directamente a la API del
+proveedor configurado (Gemini u OpenAI, vía `urllib` — sin agregar
+dependencias nuevas) — **nunca a través de la extensión**, así que
+funciona siempre que haya credenciales configuradas, independientemente
+de si CharlyAudit está disponible o pudo grabar algo. Un solo llamado
+pide dos cosas en la misma respuesta:
+
+1. Un análisis del resultado — a pedido explícito, sin dejar que las
+   fallas acaparen la atención. Si un test falla por una aserción que
+   capturó datos reales (errores de JS, advertencias de red, 404,
+   contenido mixto HTTP/HTTPS — el caso real que motivó este pedido), el
+   prompt pide extraer y explicar esos datos como hallazgos válidos sobre
+   el sitio probado, no solo reportar "el test falló". También pide
+   mencionar explícitamente lo que sí funcionó, con el mismo nivel de
+   detalle que lo que no.
+2. Recomendaciones concretas para mejorar el script de Playwright en sí
+   — con el código fuente real del spec como contexto (se lee del disco),
+   no solo el resultado de la corrida.
+
+El reporte HTML se reordenó: la sección de análisis por IA ahora aparece
+**antes** que la lista cruda de casos de Playwright, para que el contexto
+balanceado se lea primero — y cada caso tiene un borde de color según su
+resultado (verde/rojo), una señal visual más clara que un badge chico
+perdido entre texto. *Validado* de punta a punta con una corrida real
+(mockeando la llamada HTTP, sin credenciales reales disponibles en
+desarrollo) — el análisis se genera, se incluye en el reporte, y aparece
+en el orden correcto.
+
+### Punto 3 del pedido de IA: la extensión nunca debe interrumpir Playwright
+
+Se encontraron y corrigieron **dos fallas reales** que sí interrumpían
+toda la corrida antes de siquiera lanzar Playwright: si Chromium no
+estaba disponible para el modo extensión y el usuario declinaba
+instalarlo, o si no se encontraba el build de la extensión, ambos casos
+lanzaban una excepción que abortaba `run_audit()` por completo. Ahora
+ambos casos degradan a "seguir sin extensión, con Chrome" con un aviso
+claro — la prueba de Playwright (y el análisis por IA) corren igual.
+
+### Puntos 2, 3 y 5 del pedido anterior (arrastrados de la sesión previa)
+
+- **Catálogo — "Ejecutar todas"**: nuevo botón que corre cada prueba
+  guardada en secuencia, una por una, esperando a que cada una termine
+  (con o sin error) antes de empezar la siguiente — reusa el mismo
+  camino de una corrida individual, sin duplicar nada
+  (`RunView.run_sequence`).
+- **Ejecutar — selector de fuente**: nuevo combo para elegir entre la
+  prueba configurada o cualquier prueba guardada del Catálogo, con
+  refresco automático cada vez que la pestaña queda visible (cubre tanto
+  navegación por botón como clic directo del usuario en la pestaña,
+  vía el evento nativo `<<NotebookTabChanged>>` del Notebook).
+- **Dashboard — más campos de comparación**: el resumen ahora muestra
+  cuántas corridas usaron la extensión y cuántos cierres inesperados del
+  navegador hubo; la tabla de historial tiene dos columnas nuevas
+  (Extensión, Navegador con su estado de cierre). `history.RunRecord`
+  ganó los campos `use_extension`, `browser_outcome`, `duration_s`.
+
+### Bugs reales encontrados y corregidos en el camino
+
+- **`_identify_tab_id` sin `await_promise=True`**: la expresión evaluada
+  es un IIFE async (devuelve una Promise) — sin ese flag,
+  `Runtime.evaluate` devuelve la Promise sin resolver, que se serializa
+  como `{}` en vez de su valor real. Confirmado reproduciéndolo con
+  Chromium real antes del fix.
+- **Texto de UI cortado por falta de `wraplength`**: la advertencia del
+  checkbox de CharlyAudit se salía de la ventana en vez de continuar en
+  la siguiente línea. Confirmado con captura antes/después.
+- **Etiqueta de `StatusRow` cortada**: "Extensión CharlyAudit" (21
+  caracteres) contra un ancho fijo de 14 — acortada a "CharlyAudit" en
+  vez de tocar el ancho compartido que otras filas usan para alinearse.
 
 ## Qué está validado con evidencia real (no solo revisado)
 

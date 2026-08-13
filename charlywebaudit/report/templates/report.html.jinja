@@ -45,6 +45,11 @@
   .badge--skip { background: rgba(138,144,181,.15); color: var(--muted); }
   .case__title { font-weight: 600; margin-bottom: 4px; }
   .case__meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .card--passed { border-left: 3px solid var(--ok); }
+  .card--failed { border-left: 3px solid var(--err); }
+  .ai-analysis h4 { color: var(--brand); font-size: 14px; margin: 16px 0 6px; }
+  .ai-analysis h4:first-child { margin-top: 0; }
+  .ai-analysis :is(p, li) { color: var(--text); }
   pre {
     background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
     padding: 10px 12px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-word;
@@ -107,10 +112,17 @@
     {% endif %}
   </section>
 
+  {% if report.ai_analysis_html %}
+  <section>
+    <h2>Análisis por IA</h2>
+    <div class="card ai-analysis">{{ report.ai_analysis_html | safe }}</div>
+  </section>
+  {% endif %}
+
   <section>
     <h2>Casos de Playwright</h2>
     {% for case in report.playwright.cases %}
-    <div class="card">
+    <div class="card {% if case.status == 'passed' %}card--passed{% elif case.status == 'failed' %}card--failed{% endif %}">
       <div class="case__title">
         {{ case.title }}
         {% if case.status == "passed" %}<span class="badge badge--ok">passed</span>
@@ -131,6 +143,12 @@
   </section>
 
   {% if report.extension_used %}
+  {% if report.kpis_html %}
+  <section>
+    <h2>KPIs de la sesión (CharlyAudit)</h2>
+    <div class="card">{{ report.kpis_html | safe }}</div>
+  </section>
+  {% endif %}
   <section>
     <h2>Análisis del Asistente IA — por ámbito (15/15)</h2>
     {% for scope in report.assistant_scopes %}

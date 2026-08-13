@@ -1,14 +1,13 @@
 """
 runner/assistant.py — Punto 5 de la decisión confirmada: activa cada uno de
-
-v0.1.1 — NO USADO en el flujo principal desde esta version. A pedido
-explicito, run_audit() (__main__.py) ya no orquesta la extension
-CharlyAudit en absoluto — este modulo queda intacto y validado, por si se
-reintroduce soporte de extension en el futuro, pero nada en el codigo
-activo lo importa hoy.
 los 15 ámbitos del Asistente UNO A LA VEZ (no todos juntos), pide un
 análisis de cada uno, y devuelve las 15 respuestas para que report/builder.py
 las una con el resultado de Playwright en un solo reporte.
+
+v0.1.5: reintegrado al flujo principal (modo con extensión, ver
+`__main__.run_audit` y `cfg.test.use_extension`). Se agregó
+`get_kpis_html`: extrae los KPIs de la sesión grabada (punto 4 del
+pedido) para incluirlos también en el reporte final.
 
 Los chips de ámbito no tienen `id` individual — se seleccionan por posición
 (`#scopes button.scope`), en el mismo orden en que se declaran en SCOPES de
@@ -74,6 +73,28 @@ async def _wait_for_response(ext: ExtensionPage, *, prev_ai_count: int, timeout:
         "El Asistente no respondió dentro del tiempo esperado.",
         hint="Puede ser un proveedor/modelo lento, o una API key inválida — revisa la configuración.",
     )
+
+
+async def get_kpis_html(ext: ExtensionPage, *, timeout: float = 10) -> str | None:
+    """Punto 4 del pedido v0.1.5: extrae el HTML de los KPIs de la sesión
+    grabada (`#tl-kpis`, en la pestaña QA/Timeline) — se renderiza vía JS
+    de la propia extensión al expandir `#tl-kpis-toggle`, así que hay que
+    esperar a que el contenido aparezca antes de leerlo. Devuelve `None`
+    si no se pudo extraer (no debe abortar el resto del reporte por esto)."""
+    try:
+        await ext.click("#tab-btn-qa")
+        expanded = await ext.evaluate("document.getElementById('tl-kpis-toggle')?.getAttribute('aria-expanded') === 'true'")
+        if not expanded:
+            await ext.click("#tl-kpis-toggle")
+        t0 = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - t0 < timeout:
+            html = await ext.evaluate("document.getElementById('tl-kpis')?.innerHTML")
+            if html and html.strip():
+                return html
+            await asyncio.sleep(0.3)
+    except Exception:  # noqa: BLE001 — los KPIs son un extra del reporte, nunca deben abortar la corrida
+        return None
+    return None
 
 
 async def analyze_all_scopes(

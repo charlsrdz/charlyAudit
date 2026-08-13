@@ -49,6 +49,18 @@ class CombinedReport:
     'closed_unexpectedly', 'never_connected', o None si no hubo telemetría."""
     browser_outcome_description: str | None = None
     """La descripción legible correspondiente a `browser_outcome`."""
+    kpis_html: str | None = None
+    """Punto 4 del pedido v0.1.5: HTML de los KPIs de la sesión grabada por
+    CharlyAudit (ver runner/assistant.get_kpis_html) — solo presente cuando
+    `extension_used=True` y se pudo extraer con éxito."""
+    ai_analysis_html: str | None = None
+    """Puntos 1 y 2 del pedido: análisis por IA de los resultados de
+    Playwright (qué funcionó, qué no, hallazgos reales dentro de fallas de
+    aserción, y recomendaciones concretas para mejorar el script) — vía
+    llamada directa a la API del proveedor configurado, NUNCA a través de
+    la extensión (ver ai_playwright.py) — presente siempre que el
+    Asistente esté configurado, independientemente de si la extensión
+    CharlyAudit funcionó o no en esta corrida."""
 
 
 def build_combined_report(
@@ -60,6 +72,8 @@ def build_combined_report(
     extension_used: bool = False,
     browser_outcome: str | None = None,
     browser_outcome_description: str | None = None,
+    kpis_html: str | None = None,
+    ai_analysis_html: str | None = None,
 ) -> CombinedReport:
     scopes = [
         {
@@ -79,4 +93,6 @@ def build_combined_report(
         extension_used=extension_used,
         browser_outcome=browser_outcome,
         browser_outcome_description=browser_outcome_description,
+        kpis_html=kpis_html,
+        ai_analysis_html=ai_analysis_html,
     )

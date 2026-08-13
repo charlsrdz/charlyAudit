@@ -17,11 +17,12 @@ from ..widgets import Card, EmptyState, Header, ScrollableFrame
 
 
 class CatalogView(ttk.Frame):
-    def __init__(self, parent: tk.Widget, cfg: AppConfig, bridge, on_run_test=None) -> None:
+    def __init__(self, parent: tk.Widget, cfg: AppConfig, bridge, on_run_test=None, on_run_all=None) -> None:
         super().__init__(parent, padding=20)
         self.cfg = cfg
         self.bridge = bridge
         self.on_run_test = on_run_test
+        self.on_run_all = on_run_all
         self._editing_id: str | None = None
         self._build()
 
@@ -29,11 +30,14 @@ class CatalogView(ttk.Frame):
         def _new_button(parent):
             return ttk.Button(parent, text="+ Nueva prueba", style="Brand.TButton", command=self._open_form_new)
 
+        def _run_all_button(parent):
+            return ttk.Button(parent, text="▶ Ejecutar todas", style="Ghost.TButton", command=self._run_all)
+
         Header(
             self,
             "Catálogo de pruebas",
             "Pruebas guardadas con nombre — corrélas cuando quieras y compará resultados en el Dashboard.",
-            actions=[_new_button],
+            actions=[_run_all_button, _new_button],
         ).pack(fill="x", pady=(0, 16))
 
         self._scrollable = ScrollableFrame(self)
@@ -84,6 +88,13 @@ class CatalogView(ttk.Frame):
     def _run(self, tc: TestCase) -> None:
         if self.on_run_test:
             self.on_run_test(tc)
+
+    def _run_all(self) -> None:
+        if not self.cfg.test_catalog:
+            messagebox.showinfo("Catálogo vacío", "No hay pruebas guardadas para ejecutar.")
+            return
+        if self.on_run_all:
+            self.on_run_all(list(self.cfg.test_catalog))
 
     def _delete(self, tc: TestCase) -> None:
         if not messagebox.askyesno("Eliminar prueba", f"¿Eliminar \"{tc.name}\" del catálogo?\n(el historial de corridas pasadas se conserva)"):
