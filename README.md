@@ -1,13 +1,8 @@
-# charlyWebAudit
+# RedGps Web Audit - Performance & Seguridad
 
-CLI + GUI en Python 3.11+ que orquesta [CharlyAudit](../CharlyPlugin) junto
-con un script real de `@playwright/test` (TypeScript, tal cual lo
-escribiría cualquier equipo de QA) para producir un único reporte HTML: el
-resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
-ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
-grabada.
+CLI + GUI en Python 3.11+ que orquesta scripts reales de `@playwright/test` (TypeScript) para producir reportes de auditoría de rendimiento y seguridad.
 
-**Versión actual: 0.1.4**
+**Versión actual: 0.1.4redgps**
 
 ---
 
@@ -1405,7 +1400,7 @@ desconexión entre lo que la telemetría reporta y lo que realmente pasó.
 No se investigó a fondo en esta versión por restricción de tiempo; queda
 documentado para revisar en una próxima versión.
 
-## v0.1.4 — Falsa alarma de telemetría corregida, buena noticia sobre el sistema de dependencias
+## v0.1.4redgps — Rebranding RedGps Web Audit - Performance & Seguridad, paleta de colores library-style.css, telemetría Telegram y actualización de versión
 
 Un usuario compartió un log real donde el sistema de validación de
 dependencias (v0.1.3) funcionó perfecto — detectó `@playwright/test` sin

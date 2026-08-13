@@ -19,21 +19,20 @@ from tkinter import ttk
 
 from ..constants import APP_NAME, DEFAULT_PALETTE
 
-# Paleta completa — el naranja de marca viene de DEFAULT_PALETTE (constants.py,
-# la misma fuente que se siembra en la extensión); el resto son los mismos
-# tokens oscuros que sidepanel.css de CharlyAudit ya usa.
-BRAND = DEFAULT_PALETTE["--c-brand"]  # "#b87619"
-BRAND_LIGHT = "#cc8a24"
-BRAND_DIM = "#8a5813"
-BG = "#0e1020"
-SURFACE = "#171a2e"
-SURFACE_2 = "#1f2440"
-BORDER = "#2a2f4c"
-TEXT = "#e7e9f5"
-MUTED = "#8a90b5"
-SUCCESS = "#34d399"
-DANGER = "#ff6b5e"
-WARNING = "#f5b544"
+# Paleta de colores autorizada en library-style.css (Modo Claro)
+# Prohibido usar azul, morado u oscuros.
+BRAND = DEFAULT_PALETTE["--c-brand"]  # "#ec9c2f" (--orange de library-style.css)
+BRAND_LIGHT = "#f8ae4b"              # --ondel-orange2 (#f8ae4b)
+BRAND_DIM = "#d9851c"                # Naranja activo
+BG = "#ffffff"                       # --white (#ffffff)
+SURFACE = "#f4f4f4"                  # --ondel-gray1 (#f4f4f4)
+SURFACE_2 = "#edf1f5"                # --ondel-gray5 (#edf1f5)
+BORDER = "#dddddd"                   # --gray4 (#dddddd)
+TEXT = "#333333"                     # --txt-black / --ondel-text2 (#333333)
+MUTED = "#6c757d"                    # --ondel-text / --gray (#6c757d)
+SUCCESS = "#5cb85c"                  # --green (#5cb85c)
+DANGER = "#d9534f"                   # --red (#d9534f)
+WARNING = "#f3ba25"                  # --yellow (#f3ba25)
 
 FONT_FAMILY = "Segoe UI" if tk.TkVersion else "Helvetica"  # ttk resuelve la mejor disponible por SO
 FONT_MONO = "Consolas"
@@ -49,20 +48,15 @@ ASSETS_DIR = Path(__file__).parent / "assets"
 
 
 def apply_theme(root: tk.Tk) -> ttk.Style:
-    """Configura ttk.Style con la paleta de marca — se llama una vez al
-    crear la ventana principal. Devuelve el Style para que las vistas
-    puedan referenciar los nombres de estilo definidos aquí."""
+    """Configura ttk.Style con la paleta de marca en modo claro (library-style.css).
+    Devuelve el Style para que las vistas puedan referenciar los nombres de estilo."""
     root.configure(bg=BG)
     style = ttk.Style(root)
 
-    # "clam" es el tema base de ttk que mejor responde a personalización de
-    # colores en los tres sistemas operativos — los temas nativos (aqua en
-    # macOS, vista/winnative en Windows) ignoran gran parte de lo que se
-    # configura aquí porque delegan el dibujo al SO.
     try:
         style.theme_use("clam")
     except tk.TclError:
-        pass  # si "clam" no esta disponible, se usa el tema por defecto del SO
+        pass  # si "clam" no está disponible, se usa el tema por defecto del SO
 
     style.configure(".", background=BG, foreground=TEXT, font=FONT_BODY)
     style.configure("TFrame", background=BG)
@@ -84,18 +78,14 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
     style.configure(
         "Brand.TButton",
         background=BRAND,
-        foreground="#1a1200",
+        foreground="#ffffff",
         font=(FONT_FAMILY, 10, "bold"),
         borderwidth=0,
         padding=(14, 8),
     )
     style.map(
         "Brand.TButton",
-        background=[("disabled", SURFACE_2), ("active", BRAND_LIGHT)],
-        # Bug real corregido en v0.0.6 (auditoria visual): el estado
-        # deshabilitado usaba BORDER, muy cercano visualmente al color
-        # normal del boton — apenas se distinguia un boton activo de uno
-        # inhabilitado. MUTED sobre SURFACE_2 da contraste real.
+        background=[("disabled", BORDER), ("active", BRAND_LIGHT)],
         foreground=[("disabled", MUTED)],
     )
 
@@ -105,6 +95,7 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
         foreground=TEXT,
         font=FONT_BODY,
         borderwidth=1,
+        bordercolor=BORDER,
         padding=(12, 7),
     )
     style.map(
@@ -113,35 +104,26 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
         foreground=[("disabled", MUTED)],
     )
 
-    style.configure("TEntry", fieldbackground=SURFACE_2, foreground=TEXT, borderwidth=1, padding=6)
+    style.configure("TEntry", fieldbackground="#ffffff", foreground=TEXT, borderwidth=1, bordercolor=BORDER, padding=6)
     style.map(
         "TEntry",
-        fieldbackground=[("disabled", BG), ("readonly", SURFACE_2)],
+        fieldbackground=[("disabled", SURFACE), ("readonly", SURFACE_2)],
         foreground=[("disabled", MUTED)],
     )
 
-    # --- Combobox: bug real corregido en v0.0.6 -----------------------------
-    # Auditoria visual encontro el combobox de "Proveedor" practicamente
-    # ilegible (fondo claro, texto lavado) — con el tema "clam", configure()
-    # solo no alcanza para el estado "readonly" (el que usa el selector de
-    # proveedor): ttk exige un map() explicito por estado o cae a colores
-    # por defecto del sistema, que no coinciden con el tema oscuro.
-    style.configure("TCombobox", fieldbackground=SURFACE_2, foreground=TEXT, background=SURFACE_2, arrowcolor=TEXT)
+    style.configure("TCombobox", fieldbackground="#ffffff", foreground=TEXT, background=SURFACE_2, arrowcolor=TEXT)
     style.map(
         "TCombobox",
-        fieldbackground=[("readonly", SURFACE_2), ("disabled", BG)],
+        fieldbackground=[("readonly", SURFACE_2), ("disabled", SURFACE)],
         foreground=[("readonly", TEXT), ("disabled", MUTED)],
         background=[("readonly", SURFACE_2), ("active", SURFACE)],
         arrowcolor=[("disabled", MUTED)],
     )
-    # El listado desplegable de un Combobox es un widget Tk aparte (un
-    # Listbox), que ttk.Style NO cubre — sin esto, aunque el campo cerrado
-    # se vea bien, al desplegarlo las opciones aparecen con los colores por
-    # defecto del sistema (fondo blanco), rompiendo el tema oscuro.
-    root.option_add("*TCombobox*Listbox.background", SURFACE_2)
+
+    root.option_add("*TCombobox*Listbox.background", "#ffffff")
     root.option_add("*TCombobox*Listbox.foreground", TEXT)
-    root.option_add("*TCombobox*Listbox.selectBackground", BRAND_DIM)
-    root.option_add("*TCombobox*Listbox.selectForeground", TEXT)
+    root.option_add("*TCombobox*Listbox.selectBackground", BRAND)
+    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
     root.option_add("*TCombobox*Listbox.font", FONT_BODY)
 
     style.configure("TNotebook", background=BG, borderwidth=0)
@@ -151,23 +133,18 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
         background=[("selected", BG)],
         foreground=[("selected", BRAND)],
     )
-    style.configure("Treeview", background=SURFACE, fieldbackground=SURFACE, foreground=TEXT, borderwidth=0)
+    style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground=TEXT, borderwidth=1, bordercolor=BORDER)
     style.configure("Treeview.Heading", background=SURFACE_2, foreground=TEXT, font=(FONT_FAMILY, 9, "bold"))
-    style.map("Treeview", background=[("selected", BRAND_DIM)])
+    style.map("Treeview", background=[("selected", BRAND_LIGHT)], foreground=[("selected", "#ffffff")])
 
     style.configure("TSeparator", background=BORDER)
 
-    # --- Checkbutton: bug real corregido en v0.0.6 --------------------------
-    # Auditoria visual encontro el checkbox "mostrar" (junto al campo de
-    # API key) sin NINGUN texto visible. Con "clam", configure() por si solo
-    # no fija el color del texto en todos los estados — hace falta un map()
-    # explicito, igual que con el Combobox.
-    style.configure("TCheckbutton", background=BG, foreground=TEXT, font=FONT_BODY, indicatorbackground=SURFACE_2)
+    style.configure("TCheckbutton", background=BG, foreground=TEXT, font=FONT_BODY, indicatorbackground="#ffffff")
     style.map(
         "TCheckbutton",
         background=[("active", BG)],
         foreground=[("disabled", MUTED), ("!disabled", TEXT)],
-        indicatorbackground=[("selected", BRAND), ("!selected", SURFACE_2)],
+        indicatorbackground=[("selected", BRAND), ("!selected", "#ffffff")],
     )
 
     style.configure("TProgressbar", background=BRAND, troughcolor=SURFACE_2, borderwidth=0)

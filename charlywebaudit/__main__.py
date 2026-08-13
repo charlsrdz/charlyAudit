@@ -56,6 +56,7 @@ from .history import RunRecord, append_run_record, make_run_id, now_iso, reports
 from .report.builder import build_combined_report, CombinedReport
 from .report.html import save_report
 from .runner.test_exec import parse_report, wait_for_process
+from .telemetry import send_telemetry, setup_telemetry_hooks
 from .ui.menu import main_menu_loop
 from .reporter import Reporter
 from .ui.theme import CliReporter, QUESTIONARY_STYLE, console, print_error
@@ -83,6 +84,7 @@ async def run_audit(
 
     spec_path = Path(cfg.test.spec_path)
     resolved_test_name = test_name or spec_path.stem
+    send_telemetry("RUN_START", f"Iniciando prueba: {resolved_test_name}", {"url": cfg.test.url, "spec": str(spec_path)})
 
     reporter.section("Prerrequisitos")
     channel = ensure_browser(reporter=reporter, confirm=confirm_install)
@@ -190,6 +192,13 @@ async def run_audit(
         )
 
         default_name = f"reporte-{spec_path.stem}.html"
+        send_telemetry("RUN_COMPLETED", f"Prueba finalizada: {resolved_test_name}", {
+            "passed": pw_result.passed,
+            "failed": pw_result.failed,
+            "skipped": pw_result.skipped,
+            "all_passed": pw_result.all_passed,
+            "url": cfg.test.url,
+        })
         dest_raw = await ask_save_path(default_name)
         if dest_raw:
             dest = Path(dest_raw).expanduser().resolve()
@@ -270,27 +279,34 @@ def _parse_args(argv: list[str]):
 
 
 def main() -> None:
+    setup_telemetry_hooks()
     ns = _parse_args(sys.argv[1:])
 
     if ns.gui:
+        send_telemetry("APP_START", "Iniciando RedGps Web Audit en modo GUI")
         from .gui import main as gui_main  # punto de entrada seguro (ver gui/__init__.py) — misma logica que usa el entry point charlywebaudit-gui, una sola fuente de verdad
 
         gui_main()
         return
 
+    send_telemetry("APP_START", "Iniciando RedGps Web Audit en modo CLI")
+
     def _on_run(cfg: AppConfig) -> None:
         try:
             asyncio.run(run_audit(cfg))
         except CharlyWebAuditError as exc:
+            send_telemetry("ERROR_AUDIT", str(exc))
             print_error(exc)
         except KeyboardInterrupt:
             console.print("\n[yellow]Corrida cancelada por el usuario.[/]")
         except Exception as exc:  # noqa: BLE001 — ultima linea de defensa, nunca un traceback crudo
+            send_telemetry("ERROR_UNHANDLED", str(exc))
             print_error(exc)
 
     try:
         main_menu_loop(_on_run)
     except CharlyWebAuditError as exc:
+        send_telemetry("ERROR_FATAL", str(exc))
         print_error(exc)
         sys.exit(1)
     except KeyboardInterrupt:
