@@ -147,9 +147,9 @@ class ScrollableFrame(ttk.Frame):
 
 
 def logo_image(size: int = 48) -> tk.PhotoImage | None:
-    """Devuelve el ícono real de CharlyAudit en el tamaño más cercano
-    disponible (16/48/128) — usado para mostrar la marca dentro de la
-    propia ventana (Inicio, Ayuda), no solo en la barra de título."""
+    """Devuelve el ícono de la app en el tamaño más cercano disponible
+    (16/48/128) — usado para mostrar la marca dentro de la propia ventana
+    (Inicio, Ayuda), no solo en la barra de título."""
     images = load_icon_images()
     if not images:
         return None
@@ -158,10 +158,10 @@ def logo_image(size: int = 48) -> tk.PhotoImage | None:
 
 
 class BrandHeader(tk.Frame):
-    """Logo real + nombre de la app — usado en Inicio y Ayuda para reforzar
-    la identidad visual con algo más que texto (antes v0.0.6, ninguna
-    pantalla mostraba el ícono real de la extensión dentro de la propia
-    ventana, solo en la barra de título)."""
+    """Logo + nombre de la app — usado en Inicio y Ayuda para reforzar la
+    identidad visual con algo más que texto (antes v0.0.6, ninguna
+    pantalla mostraba el ícono real dentro de la propia ventana, solo en
+    la barra de título)."""
 
     def __init__(self, parent: tk.Widget, subtitle: str | None = None) -> None:
         super().__init__(parent, bg=BG)

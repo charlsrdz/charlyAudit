@@ -166,13 +166,6 @@ class CatalogView(ttk.Frame):
             anchor="w", pady=(0, 12)
         )
 
-        # --- Extensión CharlyAudit (misma opción que "Configurar prueba") -----
-        use_extension_var = tk.BooleanVar(value=existing.use_extension if existing else False)
-        ttk.Checkbutton(
-            body, text="Usar la extensión CharlyAudit en esta prueba (grabación, KPIs, 15 ámbitos)",
-            variable=use_extension_var,
-        ).pack(anchor="w", pady=(0, 12))
-
         def _save() -> None:
             if not name_var.get().strip() or not spec_var.get().strip() or not url_var.get().strip():
                 messagebox.showwarning("Faltan datos", "Nombre, script y URL son obligatorios.")
@@ -183,12 +176,11 @@ class CatalogView(ttk.Frame):
                 existing.spec_path = spec_var.get().strip()
                 existing.url = url_var.get().strip()
                 existing.headers = headers
-                existing.use_extension = use_extension_var.get()
             else:
                 self.cfg.test_catalog.append(
                     TestCase(
                         id=uuid.uuid4().hex[:12], name=name_var.get().strip(), spec_path=spec_var.get().strip(),
-                        url=url_var.get().strip(), headers=headers, use_extension=use_extension_var.get(),
+                        url=url_var.get().strip(), headers=headers,
                     )
                 )
             save_config(self.cfg)

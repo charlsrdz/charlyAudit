@@ -1,13 +1,7 @@
 """
-ai_playwright.py — Puntos 1 y 2 del pedido: análisis por IA de los
-resultados de Playwright, llamando directamente a la API del proveedor
-configurado (Gemini u OpenAI) — SIN pasar por la extensión CharlyAudit en
-absoluto. Funciona siempre que haya credenciales configuradas,
-independientemente de si la extensión está disponible, cargó, o pudo
-grabar algo en este sistema (ver la restricción real de aislamiento de
-contextos de Chrome documentada en `__main__.py` / `browser/chromium.py`)
-— exactamente lo que separa esto de `runner/assistant.py` (que SÍ
-depende de la extensión, y sigue siendo exclusivo de sus 15 ámbitos).
+ai_playwright.py — análisis por IA de los resultados de Playwright,
+llamando directamente a la API del proveedor configurado (Gemini u
+OpenAI).
 
 Un solo llamado a la API pide DOS cosas en una misma respuesta (evita
 duplicar costo/latencia de una segunda llamada):

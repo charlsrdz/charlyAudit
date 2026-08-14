@@ -64,18 +64,9 @@ class RunRecord:
     failed: int
     skipped: int
     all_passed: bool
-    assistant_analysis_complete: bool
-    """Falso si la corrida se degradó (ver __main__.py, v0.1.0a) — el
-    navegador se cerró antes de completar el análisis del Asistente. El
-    dashboard lo marca visualmente distinto: un resultado sin analisis
-    completo no es tan comparable como uno que sí lo tiene."""
     report_path: str | None = None
     """Ruta del reporte .html completo de esta corrida, si se guardó uno —
     permite abrir el detalle completo desde el dashboard."""
-    use_extension: bool = False
-    """Punto 5 del pedido v0.1.5: si esta corrida usó la extensión
-    CharlyAudit — el dashboard lo muestra como una comparación más entre
-    corridas de la misma prueba."""
     browser_outcome: str | None = None
     """Qué observó la telemetría del navegador en esta corrida —
     'closed_normally', 'closed_unexpectedly', 'never_connected', o None."""

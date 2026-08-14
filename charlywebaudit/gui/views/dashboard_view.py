@@ -249,7 +249,6 @@ class DashboardView(ttk.Frame):
         avg_duration = sum(r.duration_ms for r in records) / total
         best_duration = min(r.duration_ms for r in records) / 1000
         last = records[-1]
-        with_extension = sum(1 for r in records if r.use_extension)
         unexpected_closures = sum(1 for r in records if r.browser_outcome == "closed_unexpectedly")
 
         stats_row = tk.Frame(summary_card.body, bg=SURFACE)
@@ -269,7 +268,6 @@ class DashboardView(ttk.Frame):
         stats_row2 = tk.Frame(summary_card.body, bg=SURFACE)
         stats_row2.pack(fill="x", pady=(10, 0))
         for label, value, color in [
-            ("Con extensión CharlyAudit", f"{with_extension}/{total}", TEXT if with_extension else MUTED),
             ("Cierres inesperados del navegador", str(unexpected_closures), DANGER if unexpected_closures else SUCCESS),
         ]:
             col = tk.Frame(stats_row2, bg=SURFACE)
@@ -307,8 +305,6 @@ class DashboardView(ttk.Frame):
             x_center = pad + gap * i + gap / 2 if n > 1 else width / 2
             bar_h = (r.duration_ms / max_dur) * plot_h
             color = SUCCESS if r.all_passed else DANGER
-            if not r.assistant_analysis_complete:
-                color = WARNING if r.all_passed else DANGER  # incompleto pero paso -> ambar, distinto de un exito pleno
             x0 = x_center - bar_w / 2
             x1 = x_center + bar_w / 2
             y1 = height - pad
@@ -318,7 +314,7 @@ class DashboardView(ttk.Frame):
 
         legend = tk.Frame(parent, bg=SURFACE)
         legend.pack(anchor="w", pady=(6, 0))
-        for color, text in [(SUCCESS, "pasó, análisis completo"), (WARNING, "pasó, análisis incompleto"), (DANGER, "falló")]:
+        for color, text in [(SUCCESS, "pasó"), (DANGER, "falló")]:
             item = tk.Frame(legend, bg=SURFACE)
             item.pack(side="left", padx=(0, 16))
             tk.Frame(item, bg=color, width=10, height=10).pack(side="left", padx=(0, 4))
@@ -331,8 +327,6 @@ class DashboardView(ttk.Frame):
             ("Fecha", 18),
             ("Resultado", 12),
             ("Duración", 9),
-            ("Análisis", 11),
-            ("Extensión", 10),
             ("Navegador", 16),
             ("", 10),
         ]:
@@ -352,9 +346,6 @@ class DashboardView(ttk.Frame):
             result_text = f"✓ {r.passed} pasaron" if r.all_passed else f"✕ {r.failed} fallaron"
             tk.Label(row, text=result_text, bg=row_bg, fg=(SUCCESS if r.all_passed else DANGER), font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=4, pady=4)
             tk.Label(row, text=f"{r.duration_ms/1000:.1f}s", bg=row_bg, fg=TEXT, font=("Segoe UI", 9), width=9, anchor="w").pack(side="left", padx=4, pady=4)
-            analysis_text = "completo" if r.assistant_analysis_complete else "incompleto"
-            tk.Label(row, text=analysis_text, bg=row_bg, fg=(SUCCESS if r.assistant_analysis_complete else WARNING), font=("Segoe UI", 9), width=11, anchor="w").pack(side="left", padx=4, pady=4)
-            tk.Label(row, text=("sí" if r.use_extension else "no"), bg=row_bg, fg=(TEXT if r.use_extension else MUTED), font=("Segoe UI", 9), width=10, anchor="w").pack(side="left", padx=4, pady=4)
             outcome_text, outcome_color = _BROWSER_OUTCOME_LABELS.get(r.browser_outcome or "", ("—", MUTED))
             tk.Label(row, text=outcome_text, bg=row_bg, fg=outcome_color, font=("Segoe UI", 9), width=16, anchor="w").pack(side="left", padx=4, pady=4)
             if r.report_path and Path(r.report_path).is_file():

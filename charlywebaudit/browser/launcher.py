@@ -1,24 +1,15 @@
 """
-browser/launcher.py — Lanza el navegador + spec, punto 1 del pedido v0.1.1:
-solo Playwright, sin ninguna orquestación de extensión.
+browser/launcher.py — Lanza el navegador + spec.
 
-v0.1.1 — REDISEÑO radical, a pedido explícito ("al ejecutar una prueba
-solo debe abrir el navegador y omitir todo lo que tenga que ver con la
-extensión"). Hasta v0.1.0a2, `RunOrchestrator.launch()` establecía SU
-PROPIA conexión CDP inmediatamente después de lanzar el proceso, para
-pausar la primera pestaña y sincronizar con la extensión antes de dejarla
-navegar — ese mecanismo (con toda su complejidad: pausa por depurador,
-intercepción de red, etc.) es precisamente la causa raíz más probable del
-error real reportado en producción ("No se pudo conectar al navegador
-orquestado por CDP") con una versión más nueva de Node (v24.19.0): esa
-conexión CDP inmediata competía con el propio arranque del navegador de
-formas que en versiones anteriores de Node no se manifestaban.
+`launch()` genera el config y lanza el subproceso de Node — nada más. No
+abre ninguna conexión CDP propia. Quien necesite observar el navegador
+(telemetría, ver `browser/telemetry.py`) se conecta por su cuenta,
+DESPUÉS, con su propia lógica de espera/reintento — sin que el
+lanzamiento en sí dependa de que esa conexión tenga éxito.
 
-Ahora `launch()` simplemente genera el config y lanza el subproceso de
-Node — nada más. No abre ninguna conexión CDP propia. Quien necesite
-observar el navegador (telemetría, ver `browser/telemetry.py`) se conecta
-por su cuenta, DESPUÉS, con su propia lógica de espera/reintento — sin
-que el lanzamiento en sí dependa de que esa conexión tenga éxito.
+v0.1.7 — se retiró `extension_path` (existía para cargar la extensión
+CharlyAudit, ya eliminada del proyecto — ver
+`docs/roadmap-charlyaudit-nativo.md`).
 """
 
 from __future__ import annotations
@@ -56,7 +47,6 @@ class RunOrchestrator:
         self,
         *,
         spec_path: Path,
-        extension_path: Path | None = None,
         target_url: str,
         headers: dict[str, str],
         work_dir: Path,
@@ -65,21 +55,16 @@ class RunOrchestrator:
     ) -> None:
         if not spec_path.is_file():
             raise SpecNotFoundError(f"No se encontró el spec: {spec_path}")
-        if extension_path is not None and not extension_path.is_dir():
-            raise SpecNotFoundError(f"No se encontró el build de la extensión en: {extension_path}")
 
         self.spec_path = spec_path
-        self.extension_path = extension_path
-        """None en el flujo principal desde v0.1.1 (punto 1 del pedido) —
-        se conserva la opción por si se reintroduce en el futuro."""
         self.target_url = target_url
         self.headers = headers
         self.work_dir = work_dir
         self.cdp_port = cdp_port
         self.channel = channel
-        """'chrome' para usar Google Chrome del sistema, None para el
-        Chromium gestionado por Playwright — ver browser/chromium.py,
-        ensure_browser(), para la decisión."""
+        """'chrome' — único navegador soportado desde v0.1.7 (se retiró el
+        Chromium gestionado por Playwright, que solo existía para la
+        extensión CharlyAudit, ya eliminada del proyecto)."""
 
     def launch(self) -> LaunchedRun:
         """Genera el config y lanza el subproceso de Node — nada más. No es
@@ -104,7 +89,6 @@ class RunOrchestrator:
         write_playwright_config(
             config_path,
             spec_path=self.spec_path,
-            extension_path=self.extension_path,
             headers=self.headers,
             cdp_port=self.cdp_port,
             json_report_path=report_json_path,

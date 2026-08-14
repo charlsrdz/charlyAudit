@@ -2,20 +2,18 @@
 browser/config_gen.py — Genera el playwright.config.ts que hace posible todo
 lo demás, sin que el usuario tenga que tocar ni una línea de su .spec.ts.
 
-v0.1.1 — punto 1 del pedido: el flujo principal de charlyWebAudit ya NO
-carga la extensión CharlyAudit — se corre el spec de Playwright "a secas",
-igual que cualquiera lo correría a mano, sin ningún argumento de extensión
-en el navegador. `extension_path` queda como parámetro OPCIONAL (por si
-se reintroduce en el futuro), pero el camino por defecto no lo usa.
+El spec corre "a secas", igual que cualquiera lo correría a mano, sin
+ningún argumento de extensión en el navegador (v0.1.7 — se retiró por
+completo el soporte de la extensión CharlyAudit, ver
+`docs/roadmap-charlyaudit-nativo.md`).
 
 Nota de diseño importante: un spec que hace `import { test } from
 '@playwright/test'` (el caso normal, y el del ejemplo que se adjuntó) usa
 las fixtures POR DEFECTO de Playwright Test — que crean un perfil de
 navegador EFÍMERO por corrida (`browserType.launch()` + `newContext()`).
 
-`channel`: 'chrome' para usar Google Chrome estable del sistema, o `None`
-para el Chromium gestionado por Playwright (ver `browser/chromium.py` —
-desde v0.1.0a2, charlyWebAudit usa exclusivamente Chrome).
+`channel`: siempre 'chrome' — único navegador soportado desde v0.1.7 (ver
+`browser/chromium.py`).
 `--remote-allow-origins=*`: las versiones modernas de Chrome rechazan la
 conexión WebSocket de CDP con 403 Forbidden por defecto — confirmado
 probando contra Chrome real — hace falta permitir el origen explícitamente
@@ -55,7 +53,6 @@ export default defineConfig({{
 def generate_playwright_config(
     *,
     spec_path: Path,
-    extension_path: Path | None = None,
     headers: dict[str, str],
     cdp_port: int = CDP_PORT,
     timeout_ms: int = 120_000,
@@ -66,11 +63,7 @@ def generate_playwright_config(
     dinámico se serializa con json.dumps (nunca interpolación de string
     cruda) — es la forma segura de incrustar valores arbitrarios del usuario
     (URLs, nombres de cabeceras, rutas con espacios) dentro de código TS/JS
-    válido, sin arriesgarse a romper la sintaxis generada.
-
-    `extension_path`: opcional desde v0.1.1 — el flujo principal no la usa
-    (punto 1 del pedido: solo Playwright, sin la extensión). Si se pasa una
-    ruta, se agregan los argumentos para cargarla (uso futuro opcional)."""
+    válido, sin arriesgarse a romper la sintaxis generada."""
     launch_args = [
         f"--remote-debugging-port={cdp_port}",
         # Bug real corregido: Chrome moderno rechaza la conexion WebSocket de
@@ -83,11 +76,6 @@ def generate_playwright_config(
         "--no-first-run",
         "--no-default-browser-check",
     ]
-    if extension_path:
-        launch_args = [
-            f"--disable-extensions-except={extension_path}",
-            f"--load-extension={extension_path}",
-        ] + launch_args
 
     channel_line = f"\n    channel: {json.dumps(channel)}," if channel else ""
     return _TEMPLATE.format(

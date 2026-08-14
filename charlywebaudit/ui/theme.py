@@ -19,9 +19,8 @@ from ..errors import CharlyWebAuditError
 
 console = Console()
 
-# Mismo tono de marca que la extensión (naranja CharlyAudit, #b87619 por
-# defecto de la paleta) — coherencia visual entre la CLI y lo que se ve
-# dentro del navegador durante la corrida.
+# Mismo naranja de marca que usa la GUI (gui/theme.py, BRAND_COLOR en
+# constants.py) — coherencia visual entre la CLI y la GUI.
 BRAND = "#b87619"
 
 QUESTIONARY_STYLE = questionary.Style(

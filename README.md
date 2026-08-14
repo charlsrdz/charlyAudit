@@ -1,47 +1,60 @@
 # charlyWebAudit
 
-CLI + GUI en Python 3.11+ que orquesta [CharlyAudit](../CharlyPlugin) junto
-con un script real de `@playwright/test` (TypeScript, tal cual lo
-escribiría cualquier equipo de QA) para producir un único reporte HTML: el
-resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
-ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
-grabada.
+CLI + GUI en Python 3.11+ que corre un script real de `@playwright/test`
+(TypeScript, tal cual lo escribiría cualquier equipo de QA) y produce un
+único reporte HTML: el resultado de Playwright, el estado del navegador
+durante la corrida, y — si se configura el Asistente IA — un análisis de
+qué funcionó, qué no, y cómo mejorar el script.
 
-**Versión actual: 0.1.6a**
+**Versión actual: 0.1.7**
 
----
+> **Nota sobre el historial de este README**: hasta v0.1.6a,
+> charlyWebAudit orquestó (con distinto grado de éxito, documentado más
+> abajo) una extensión de Chrome llamada CharlyAudit, pensada para grabar
+> la sesión del navegador y analizarla ámbito por ámbito. Ese soporte se
+> retiró por completo en v0.1.7 — nunca llegó a funcionar de forma
+> confiable (ver el porqué exacto en la sección de esa versión, más
+> abajo) — y el proyecto volvió a un diseño simple: solo Playwright, con
+> telemetría del navegador y análisis por IA directo. Las secciones del
+> changelog anteriores a v0.1.7 mencionan la extensión con frecuencia;
+> se conservan tal cual como registro histórico de las decisiones
+> tomadas en su momento, pero **ya no reflejan el estado actual del
+> proyecto** — para eso, ver el resto de este documento. Si el objetivo
+> es llevar esas capacidades (grabación, KPIs, análisis por ámbito) al
+> proyecto de forma nativa en Python, sin depender de una extensión de
+> Chrome, ver [`docs/roadmap-charlyaudit-nativo.md`](docs/roadmap-charlyaudit-nativo.md).
 
 ## Por qué existe
 
-CharlyAudit es una extensión de Chrome — pensada para que una persona la
-use manualmente. charlyWebAudit existe para automatizar ese mismo flujo:
-correr un spec real de Playwright con CharlyAudit grabando la sesión, y
-que el propio Asistente de la extensión analice lo que grabó, sin que
-nadie tenga que hacerlo a mano cada vez.
+Automatizar la corrida de specs reales de Playwright y darle a quien los
+corre algo más útil que un log crudo: un reporte claro de qué pasó, con
+el apoyo de una IA que explica los hallazgos (incluso los que aparecen
+dentro de un test que falló) y sugiere cómo mejorar el script — sin que
+nadie tenga que interpretar la salida de Playwright a mano cada vez.
 
 ## Instalación
 
 ### Prerrequisitos
 
-charlyWebAudit orquesta dos motores externos que **no instala por ti**
-(salvo Chromium, ver más abajo) — conviene confirmarlos antes de instalar
-nada de este proyecto:
+charlyWebAudit corre specs de Node/Playwright, así que necesita ese
+motor externo instalado — no lo instala por ti:
 
 | Requisito | Por qué hace falta | Verificar |
 |---|---|---|
 | **Python 3.11+** | Es el lenguaje del propio proyecto. | `python3 --version` |
 | **Node.js + npm** (LTS recomendado) | Los specs que corre charlyWebAudit son de `@playwright/test`, el framework de pruebas *real* de Node — no la librería `playwright` de Python. Ver "Decisiones de arquitectura" más abajo para el porqué. | `node --version` y `npm --version` |
-| **Chromium** (gestionado por Playwright) | El navegador donde se carga la extensión y corre el spec. | No hace falta instalarlo a mano — charlyWebAudit lo detecta al arrancar y **ofrece instalarlo** si falta (con reintento si la instalación falla). |
-| **Linux únicamente: un entorno gráfico o `xvfb-run`** | La extensión necesita `headless: false` — en un servidor/CI Linux sin sesión gráfica hace falta un display virtual. | charlyWebAudit detecta esto solo y envuelve el comando con `xvfb-run` automáticamente si está disponible; si no, te avisa con la instrucción exacta (`apt install xvfb` en Debian/Ubuntu). |
+| **Google Chrome** (canal estable) | El navegador donde corre el spec. | No se instala automáticamente (decisión de producto explícita) — charlyWebAudit lo detecta al arrancar y, si falta, muestra cómo instalarlo. |
+| **Linux únicamente: un entorno gráfico o `xvfb-run`** | charlyWebAudit usa `headless: false` (más confiable para pruebas con interacción visual) — en un servidor/CI Linux sin sesión gráfica hace falta un display virtual. | charlyWebAudit detecta esto solo y envuelve el comando con `xvfb-run` automáticamente si está disponible; si no, te avisa con la instrucción exacta (`apt install xvfb` en Debian/Ubuntu). |
 
 Si no tienes Node.js instalado: descárgalo de
 [nodejs.org](https://nodejs.org) (versión LTS) — es un instalador estándar
 en Windows/macOS, o el gestor de paquetes de tu distribución en Linux
 (`apt install nodejs npm`, etc.). charlyWebAudit **no** intenta instalar
-Node automáticamente (a diferencia de Chromium): se instala de formas muy
-distintas según el sistema operativo, y automatizarlo sería más frágil que
-útil — si falta, charlyWebAudit se detiene con un mensaje claro de dónde
-conseguirlo.
+Node automáticamente: se instala de formas muy distintas según el sistema
+operativo, y automatizarlo sería más frágil que útil — si falta,
+charlyWebAudit se detiene con un mensaje claro de dónde conseguirlo.
+`@playwright/test` en sí (el paquete npm) sí se ofrece instalar en vivo,
+localmente en la carpeta del spec, si hace falta — ver `dependencies.py`.
 
 ### Cómo instalar
 
@@ -90,20 +103,11 @@ charlywebaudit          # menú de terminal
 charlywebaudit --gui    # interfaz gráfica (si instalaste el extra [gui])
 ```
 
-La primera vez, te va a pedir dos cosas una sola vez cada una (después
-quedan recordadas en tu configuración local — ver `config.py`):
-
-1. **Chromium**, si no lo instalaste ya con `playwright install chromium`
-   — confirma con "sí" cuando te lo ofrezca.
-2. **El Asistente IA** (proveedor, modelo, API key) — se guarda localmente
-   y de ahí en adelante solo se ofrece *actualizar*, nunca se vuelve a
-   pedir desde cero.
-
-La extensión CharlyAudit ya viaja empaquetada dentro de charlyWebAudit
-(`charlywebaudit/vendor/charlyaudit/`) — no hace falta descargarla ni
-configurar su ruta a mano; solo se te pregunta si esa copia interna no
-aparece (por ejemplo, si estás corriendo un checkout de código fuente
-incompleto).
+La primera vez, te va a pedir Google Chrome (si no lo tenés instalado, te
+muestra cómo hacerlo — no se instala automáticamente) y, si querés
+análisis por IA, el Asistente (proveedor, modelo, API key) — se guarda
+localmente y de ahí en adelante solo se ofrece *actualizar*, nunca se
+vuelve a pedir desde cero.
 
 ## Uso
 
@@ -128,28 +132,23 @@ motor con la CLI").
 
 ## El flujo de una corrida
 
-1. Verifica Chromium (lo instala si falta, con reintento) y Node/npm (si
-   falta, bloquea con instrucciones — no se instala automáticamente).
-2. Genera un `playwright.config.ts` que carga CharlyAudit vía
-   `launchOptions.args` y expone un puerto de depuración remota — sin
-   tocar ni una línea del `.spec.ts` del usuario.
+1. Verifica Google Chrome (bloquea con instrucciones si falta — no se
+   instala automáticamente) y Node/npm, y que `@playwright/test` resuelva
+   localmente desde la carpeta del spec (se ofrece instalar en vivo si
+   falta — ver `dependencies.py`).
+2. Genera un `playwright.config.ts` que expone un puerto de depuración
+   remota — sin tocar ni una línea del `.spec.ts` del usuario.
 3. Lanza `npx playwright test` como subproceso de Node — el mismo camino
    que el usuario correría a mano.
-4. Se conecta por CDP en paralelo y arma un mecanismo de sincronización:
-   la pestaña que el spec está a punto de usar queda **congelada** en el
-   instante de su creación (no navega, no ejecuta nada) hasta que
-   charlyWebAudit libera la pausa explícitamente.
-5. Abre el panel lateral de CharlyAudit como una pestaña propia (los
-   popups nativos de extensión no son automatizables por CDP — se navega
-   a su URL como cualquier página), aplica la configuración de captura
-   (variables globales vigiladas), libera la pausa, identifica la pestaña
-   del spec y activa la grabación apuntando explícitamente a ella.
-6. Espera a que el spec termine, detiene la grabación.
-7. Activa cada uno de los 15 ámbitos del Asistente **uno a la vez**, pide
-   un análisis de cada uno, y desactiva ese ámbito antes de pasar al
-   siguiente — aislado, no todos juntos.
-8. Une el resultado de Playwright + las 15 respuestas en un solo reporte
-   HTML y ofrece guardarlo.
+4. Se conecta por CDP en paralelo, de forma puramente pasiva (telemetría
+   — ver `browser/telemetry.py`), para saber si el navegador se cierra de
+   forma inesperada durante la corrida.
+5. Espera a que el spec termine.
+6. Si el Asistente IA está configurado, le pide un análisis directo del
+   resultado (qué funcionó, qué no, y cómo mejorar el script) — llamando
+   a la API del proveedor configurado, sin ninguna extensión de por medio.
+7. Une el resultado de Playwright, la telemetría del navegador, y el
+   análisis por IA en un solo reporte HTML, y ofrece guardarlo.
 
 ## Decisiones de arquitectura (y por qué)
 
@@ -158,62 +157,25 @@ motor con la CLI").
 No una función que reciba una `page` ya abierta — un archivo TypeScript
 completo con `import { test, expect } from '@playwright/test'`, corrido
 por el CLI de Node, exactamente como cualquier equipo de QA ya lo hace.
-Esto es lo que hace falta Node/npm como prerrequisito además de Chromium.
+Esto es lo que hace falta Node/npm como prerrequisito.
 
-### La extensión tiene un ID fijo
-
-`manifest.json` de CharlyAudit incluye una `key` RSA (par de claves en
-`../CharlyPlugin` — la clave privada no se distribuye, solo determina el
-ID). Sin esto, el ID de una extensión cargada sin publicar cambia en cada
-carga, y no habría forma estable de construir la URL del panel lateral
-(`chrome-extension://<id>/...`) de antemano.
-
-### El perfil de Chromium es efímero — no persistente
+### El perfil del navegador es efímero — no persistente
 
 Un spec con el `import` estándar usa las fixtures por defecto de
 Playwright Test, que crean un perfil nuevo en cada corrida. No hay forma
 de forzar un perfil persistente sin que el spec importe un fixture propio
-— y eso violaría la regla de no tocar el script del usuario. Por eso la
-"memoria" de la configuración de la extensión no vive en el perfil del
-navegador: vive en el `config.json` de charlyWebAudit, y se re-aplica
-sobre la extensión al inicio de cada corrida (`runner/seed.py`).
+— y eso violaría la regla de no tocar el script del usuario.
 
-### El mecanismo de sincronización (pausa CDP)
+### La telemetría del navegador es pasiva, nunca orquesta nada
 
-`Target.setAutoAttach` con `waitForDebuggerOnStart: true` congela
-cualquier pestaña nueva en el instante de su creación. Esto es lo que
-garantiza que la grabación esté activa antes de que el spec navegue —
-sin esto, hay una ventana real donde el primer `page.goto()` del spec
-podría ocurrir sin que nadie lo esté grabando todavía.
-
-**Restricción real descubierta en validación**: mientras la pestaña sigue
-congelada, `chrome.tabs.query()` no la ve — Chrome no la registra como
-pestaña "consultable" hasta que empieza a ejecutar algo. Además,
-Playwright Test tiene un mecanismo interno de paciencia limitada: si el
-navegador queda sin responder demasiado tiempo, lo da por colgado y lo
-cierra. Por eso el diseño final libera la pausa **primero**, y de
-inmediato (sin esperas artificiales) identifica la pestaña y activa la
-grabación — la ventana de riesgo se redujo de "indefinida" a
-"milisegundos de ida y vuelta CDP", muy por debajo del tiempo real que
-toma cargar cualquier página (DNS/TCP/TLS), así que en la práctica no se
-pierde contenido real. No es una garantía matemática perfecta como el
-diseño original con el que arrancamos, pero es el punto más cercano a eso
-que el comportamiento real de Playwright Test permite.
-
-Por la misma razón, la configuración se aplica en dos fases: solo lo que
-de verdad afecta qué se captura (variables vigiladas) se aplica **antes**
-de liberar la pausa — rápido, a propósito. El Asistente IA y la paleta de
-colores (que no afectan la grabación, solo el análisis posterior y la
-apariencia) se aplican **después** de confirmar que la grabación está
-activa, sin ninguna presión de tiempo.
-
-### Comunicación MAIN↔ISOLATED del panel lateral por JS inyectado, no CDP de alto nivel
-
-Toda la interacción con el panel lateral (clics, llenado de campos, lectura
-de resultados) se hace vía `Runtime.evaluate` sobre la **misma** conexión
-CDP cruda que arma el mecanismo de pausa — no se abre una segunda conexión
-con Playwright de alto nivel, que competiría por el control de
-`Target.setAutoAttach` sobre el mismo navegador.
+La conexión CDP que usa `browser/telemetry.py` solo observa (sondea
+periódicamente que el navegador siga respondiendo) — nunca envía ningún
+comando que module su comportamiento. Esto es deliberado: versiones
+anteriores del proyecto sí orquestaban el navegador de forma activa
+(pausando la primera navegación para sincronizar con una extensión de
+Chrome, ver el changelog histórico más abajo) — ese mecanismo agregaba
+complejidad real y terminó siendo la causa más probable de al menos un
+bug real en producción. El diseño actual es deliberadamente más simple.
 
 ## Desarrollo
 
@@ -244,36 +206,40 @@ charlywebaudit/
   __main__.py          Punto de entrada CLI; run_audit() es el motor
                         completo de orquestación (compartido con la GUI)
   config.py             Configuración persistente (platformdirs)
-  constants.py           Branding, valores por defecto, ID fijo de la extensión
+  constants.py           Branding y valores por defecto
+  dependencies.py         Valida Python/Node/Chrome/@playwright-test,
+                          instala en vivo lo que es seguro (ver más abajo)
+  ai_playwright.py         Análisis por IA de los resultados de Playwright,
+                            vía la API del proveedor configurado
+  timezone_utils.py         Detección de zona horaria + conversión para el Dashboard
   errors.py               Excepciones propias con mensaje + consejo accionable
   reporter.py              Interfaz Reporter — desacopla el progreso de CÓMO se muestra
   browser/                Todo lo relacionado con lanzar y controlar el navegador
-    launcher.py             Orquesta: genera config, lanza Node, conecta CDP
-    cdp_sync.py               Mecanismo de pausa de sincronización (cliente CDP crudo)
-    extension_page.py          Interactúa con páginas de la extensión (panel lateral)
+    launcher.py             Genera el config, lanza el subproceso de Node
+    cdp_sync.py               Cliente CDP mínimo, usado por la telemetría
+    telemetry.py                Monitoreo pasivo del navegador durante la corrida
     config_gen.py               Genera playwright.config.ts dinámicamente
-    chromium.py                  Detecta/instala Chromium
-    node_check.py                 Detecta Node/npm/@playwright-test
+    chromium.py                  Detecta Google Chrome (nunca lo instala)
+    node_check.py                 Detecta Node/npm
     platform_utils.py              Helpers multiplataforma (Windows/macOS/Linux)
-  runner/                  Lo que pasa DURANTE una corrida
-    seed.py                  Aplica la configuración a la extensión
-    recorder.py                Inicia/detiene la grabación
-    assistant.py                 Pide análisis de los 15 ámbitos, uno a la vez
+  runner/
     test_exec.py                  Parsea el reporte JSON de Playwright
   report/                   Construye y renderiza el reporte final
   ui/                        La CLI (questionary + rich)
-  gui/                        La interfaz gráfica (Tkinter) — ver v0.0.5/v0.0.6/v0.1.0a abajo
+  gui/                        La interfaz gráfica (Tkinter)
     theme.py                    Branding: paleta, fuentes, estilos ttk
-    widgets.py                   Componentes reutilizables (Header/Card/etc — v0.0.6)
-    dialogs.py                    Diálogos seguros entre hilos (v0.0.8)
-    assets/                       Íconos reales de la extensión (branding compartido)
-    views/                         Las ocho pantallas (formularios, ejecución, catálogo,
-                                    dashboard, reporte, ayuda — v0.1.0a agregó catálogo/dashboard)
-  history.py                Historial de corridas + reportes auto-guardados (v0.1.0a)
-  vendor/charlyaudit/       Copia empaquetada de la extensión CharlyAudit
+    widgets.py                   Componentes reutilizables (Header/Card/etc)
+    dialogs.py                    Diálogos seguros entre hilos
+    assets/                       Íconos de la app
+    views/                         Las ocho pantallas (formularios, ejecución,
+                                    catálogo, dashboard, reporte, ayuda)
+  history.py                Historial de corridas + reportes auto-guardados
 build/
   build_installer.py       Script de build del binario (mismo en los 3 SO)
   entrypoint.py               Wrapper que PyInstaller necesita (ver nota abajo)
+docs/
+  roadmap-charlyaudit-nativo.md   Plan de fases para reimplementar de forma
+                                  nativa lo que hacía la extensión CharlyAudit
 ```
 
 ### Correr desde código fuente durante el desarrollo
@@ -332,6 +298,51 @@ abajo).
 automático que los sincronice, así que al subir versión hay que tocar
 ambos. `charlywebaudit --version` es la forma más rápida de confirmar cuál
 quedó activa en un entorno instalado o en un binario ya construido.
+
+## v0.1.7 — Se retira por completo el soporte de la extensión CharlyAudit
+
+A pedido explícito, tras confirmar en v0.1.5 que la grabación nunca
+llegó a funcionar de forma confiable: la pestaña del spec de Playwright
+y el panel lateral de la extensión viven en `browserContextId` distintos
+(confirmado con CDP real, `Target.getTargets`) — una restricción de
+aislamiento de Chrome entre contextos de navegador, no un problema de
+sincronización que se pudiera arreglar con más código. Mantener esa
+integración parcialmente rota agregaba complejidad real (pausa de
+navegación por CDP, Chromium como dependencia aparte del Chrome que ya
+se usa para todo lo demás, todo el código de orquestación de la
+extensión) sin aportar el valor prometido.
+
+Se eliminó por completo: el vendor de la extensión
+(`charlywebaudit/vendor/charlyaudit/`), los módulos que la orquestaban
+(`browser/extension_page.py`, `runner/seed.py`, `runner/recorder.py`,
+`runner/assistant.py`), el mecanismo de pausa/intercepción de red en
+`cdp_sync.py` (`PausedTarget`, `wait_for_new_page` — se conservó
+`CDPClient`/`BrowserSync`, que la telemetría sigue usando para su
+conexión pasiva), el soporte de Chromium como navegador alternativo
+(`browser/chromium.py` vuelve a ser exclusivamente Chrome), el checkbox
+"usar CharlyAudit" de la GUI (Configurar prueba y Catálogo), las
+secciones de KPIs/15 ámbitos del reporte, y tres secciones de
+configuración que habían quedado huérfanas (`BrowserConfig`,
+`PaletteConfig`, `CaptureConfig` — existían solo para sembrar
+configuración en la extensión).
+
+En el camino se encontró y corrigió una inconsistencia real: el
+`__main__.py` reescrito ya no pasaba `assistant_analysis_complete` al
+construir cada `RunRecord`, pero ese campo no tenía valor por defecto —
+habría fallado con un `TypeError` en la primera corrida real. Detectado
+antes de dar el cambio por bueno, no reportado por nadie.
+
+*Validado* de punta a punta con `run_audit()` real (dos veces, con una
+pantalla Xvfb limpia la segunda) tras toda la limpieza — confirmando que
+el flujo simplificado (navegador, Playwright, telemetría, análisis por
+IA) sigue funcionando exactamente igual, y que el objeto de reporte ya
+no tiene ningún atributo relacionado con la extensión.
+
+Junto con esta versión se publicó
+[`docs/roadmap-charlyaudit-nativo.md`](docs/roadmap-charlyaudit-nativo.md),
+un plan de fases para reimplementar de forma nativa en Python (sin
+depender de una extensión de Chrome) las capacidades que CharlyAudit
+ofrecía: grabación de sesión, KPIs, y análisis de contexto.
 
 ## v0.0.2 — Bugs, oportunidades, compatibilidad multiplataforma e instalador binario
 

@@ -33,8 +33,6 @@ from platformdirs import user_config_dir
 from .constants import (
     APP_SLUG,
     DEFAULT_ASSISTANT_CONFIG,
-    DEFAULT_CAPTURE_CONFIG,
-    DEFAULT_PALETTE,
 )
 from .errors import ConfigError
 
@@ -47,13 +45,6 @@ class TestConfig:
     spec_path: str | None = None
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
-    use_extension: bool = False
-    """v0.1.5: si True, la corrida usa la extensión CharlyAudit (grabación +
-    análisis del Asistente IA + KPIs, todo incluido en el reporte final) —
-    requiere el Chromium gestionado por Playwright (la única opción
-    confirmada que carga la extensión de forma confiable; Chrome real no
-    la carga, ver browser/chromium.py). Si False (default), sigue el
-    flujo simple y estable desde v0.1.1: solo Playwright, con Chrome."""
 
 
 @dataclass
@@ -69,7 +60,6 @@ class TestCase:
     spec_path: str
     url: str
     headers: dict[str, str] = field(default_factory=dict)
-    use_extension: bool = False
 
 
 @dataclass
@@ -81,27 +71,9 @@ class AssistantConfig:
 
 
 @dataclass
-class BrowserConfig:
-    extension_path: str | None = None
-
-
-@dataclass
-class PaletteConfig:
-    brand: str = DEFAULT_PALETTE["--c-brand"]
-
-
-@dataclass
-class CaptureConfig:
-    watched_globals: list[str] = field(default_factory=lambda: list(DEFAULT_CAPTURE_CONFIG["watchedGlobals"]))
-
-
-@dataclass
 class AppConfig:
     test: TestConfig = field(default_factory=TestConfig)
     assistant: AssistantConfig = field(default_factory=AssistantConfig)
-    browser: BrowserConfig = field(default_factory=BrowserConfig)
-    palette: PaletteConfig = field(default_factory=PaletteConfig)
-    capture: CaptureConfig = field(default_factory=CaptureConfig)
     test_catalog: list[TestCase] = field(default_factory=list)
     """Punto 5 del pedido v0.1.0a: pruebas guardadas con nombre, para
     correr repetidamente y comparar resultados en el dashboard."""
@@ -120,9 +92,6 @@ class AppConfig:
         for section_name, section_cls in (
             ("test", TestConfig),
             ("assistant", AssistantConfig),
-            ("browser", BrowserConfig),
-            ("palette", PaletteConfig),
-            ("capture", CaptureConfig),
         ):
             raw = data.get(section_name) or {}
             # Filtra claves desconocidas en vez de fallar — una version futura

@@ -2,11 +2,10 @@
 gui/views/assistant_config_view.py — Formulario de configuración del
 Asistente IA: proveedor, modelo, API key.
 
-v0.1.6: reintegrado a la navegación principal — esta misma configuración
-ahora alimenta DOS cosas: el análisis por IA directo de los resultados de
-Playwright (`ai_playwright.py`, siempre disponible, puntos 1 y 2 del
-pedido) y, si la extensión CharlyAudit funciona en este sistema, el
-análisis de los 15 ámbitos vía la extensión (`runner/assistant.py`).
+Esta configuración alimenta el análisis por IA directo de los resultados
+de Playwright (`ai_playwright.py`) — el reporte de cada corrida incluye
+qué funcionó, qué no, y recomendaciones para mejorar el script, siempre
+que haya credenciales configuradas.
 
 v0.0.6: envuelto en Card (consistencia visual con el resto de la GUI) y se
 agregó refresh() — antes de esto, si la configuración cambiaba desde otra

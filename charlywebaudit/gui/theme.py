@@ -1,14 +1,6 @@
 """
 gui/theme.py — Branding de la GUI (punto 2 del pedido v0.0.5, endurecido en
 v0.0.6 tras una auditoría visual real con capturas de pantalla).
-
-Toma como base la paleta real de CharlyAudit — los mismos tokens de color
-que ya usa el panel lateral de la extensión (`--c-brand`, `--c-bg`,
-`--c-surface`, etc., ver sidepanel.css en vendor/charlyaudit/) y el mismo
-naranja de marca (`#b87619`, DEFAULT_PALETTE en constants.py) que ya se
-siembra en la configuración del Asistente — así la CLI, la extensión y
-ahora la GUI comparten una sola identidad visual, no tres inventadas por
-separado.
 """
 
 from __future__ import annotations
@@ -17,12 +9,10 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from ..constants import APP_NAME, DEFAULT_PALETTE
+from ..constants import APP_NAME, BRAND_COLOR
 
-# Paleta completa — el naranja de marca viene de DEFAULT_PALETTE (constants.py,
-# la misma fuente que se siembra en la extensión); el resto son los mismos
-# tokens oscuros que sidepanel.css de CharlyAudit ya usa.
-BRAND = DEFAULT_PALETTE["--c-brand"]  # "#b87619"
+# Paleta completa — colores oscuros consistentes en toda la GUI.
+BRAND = BRAND_COLOR  # "#b87619"
 BRAND_LIGHT = "#cc8a24"
 BRAND_DIM = "#8a5813"
 BG = "#0e1020"
@@ -180,9 +170,9 @@ def window_title(suffix: str | None = None) -> str:
 
 
 def load_icon_images() -> list[tk.PhotoImage]:
-    """Carga los íconos reales de la extensión (varios tamaños) para usar
-    como ícono de la ventana/barra de tareas — antes de v0.0.6 la ventana
-    no tenía ningún ícono propio (mostraba la pluma genérica de Tk)."""
+    """Carga los íconos de la app (varios tamaños) para usar como ícono de
+    la ventana/barra de tareas — antes de v0.0.6 la ventana no tenía
+    ningún ícono propio (mostraba la pluma genérica de Tk)."""
     images = []
     for name in ("icon16.png", "icon48.png", "icon128.png"):
         path = ASSETS_DIR / name
@@ -195,10 +185,10 @@ def load_icon_images() -> list[tk.PhotoImage]:
 
 
 def apply_window_icon(root: tk.Tk) -> None:
-    """Aplica el ícono real de CharlyAudit a la ventana (barra de título,
-    barra de tareas, alt-tab) — se guardan las referencias en el propio
-    root para que el recolector de basura de Python no las libere (un
-    PhotoImage sin una referencia viva en, se borra de la ventana)."""
+    """Aplica el ícono de la app a la ventana (barra de título, barra de
+    tareas, alt-tab) — se guardan las referencias en el propio root para
+    que el recolector de basura de Python no las libere (un PhotoImage
+    sin una referencia viva se borra de la ventana)."""
     images = load_icon_images()
     if images:
         root.iconphoto(True, *images)

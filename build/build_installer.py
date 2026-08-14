@@ -123,7 +123,6 @@ def main() -> None:
 
 
     sep = _data_sep()
-    vendor_src = PACKAGE / "vendor"
     templates_src = PACKAGE / "report" / "templates"
 
     gui_assets_src = PACKAGE / "gui" / "assets"
@@ -135,14 +134,10 @@ def main() -> None:
         "--console",
         "--clean",
         "--noconfirm",
-        # Datos empaquetados: la extension CharlyAudit, la plantilla del
-        # reporte HTML, los iconos de la GUI, y los recursos internos de
-        # tkinterweb (trae su propia hoja de estilos/combobox en .tcl que
-        # PyInstaller no detecta por analisis estatico solo, al no ser
-        # codigo Python). bundled_extension_path() (__main__.py) ya sabe
-        # resolver esta ruta dentro de un binario armado con PyInstaller
-        # (via sys._MEIPASS) o corriendo desde codigo fuente normal.
-        "--add-data", f"{vendor_src}{sep}charlywebaudit/vendor",
+        # Datos empaquetados: la plantilla del reporte HTML, los iconos de
+        # la GUI, y los recursos internos de tkinterweb (trae su propia
+        # hoja de estilos/combobox en .tcl que PyInstaller no detecta por
+        # analisis estatico solo, al no ser codigo Python).
         "--add-data", f"{templates_src}{sep}charlywebaudit/report/templates",
         "--add-data", f"{gui_assets_src}{sep}charlywebaudit/gui/assets",
         "--collect-data", "tkinterweb",

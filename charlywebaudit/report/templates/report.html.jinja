@@ -66,15 +66,6 @@
     background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
     padding: 10px 12px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-word;
   }
-  .scope-card summary {
-    cursor: pointer; font-weight: 600; padding: 4px 0; list-style: none;
-  }
-  .scope-card summary::-webkit-details-marker { display: none; }
-  .scope-card summary::before { content: "▸ "; color: var(--brand); }
-  .scope-card[open] summary::before { content: "▾ "; }
-  .scope-card .body { padding-top: 10px; border-top: 1px solid var(--border); margin-top: 10px; }
-  .scope-card .body :is(p, li) { color: var(--text); }
-  .scope-card .body code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; }
   .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
   .summary-grid .num { font-size: 22px; font-weight: 700; }
   .summary-grid .lbl { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
@@ -112,10 +103,6 @@
   {% if report.ai_analysis_html %}<a href="#ia">Análisis por IA</a>{% endif %}
   {% if report.headers %}<a href="#cabeceras">Cabeceras HTTP</a>{% endif %}
   <a href="#casos">Casos de Playwright</a>
-  {% if report.extension_used %}
-  {% if report.kpis_html %}<a href="#kpis">KPIs de la sesión</a>{% endif %}
-  <a href="#ambitos">Análisis por ámbito</a>
-  {% endif %}
 </nav>
 <main>
 
@@ -124,17 +111,6 @@
     <div class="card" style="border-color: var(--err); background: rgba(255,107,94,0.08);">
       <strong style="color: var(--err);">⚠ El navegador se cerró de forma inesperada durante esta corrida.</strong>
       {{ report.browser_outcome_description }}
-    </div>
-  </section>
-  {% endif %}
-
-  {% if report.extension_used and not report.assistant_analysis_complete %}
-  <section>
-    <div class="card" style="border-color: var(--err); background: rgba(255,107,94,0.08);">
-      <strong style="color: var(--err);">⚠ Análisis del Asistente incompleto.</strong>
-      El navegador se cerró antes de que el Asistente pudiera analizar los 15 ámbitos de esta
-      corrida — los resultados de Playwright abajo son completos y reales, pero la sección
-      "Análisis del Asistente IA" no tiene contenido para esta corrida.
     </div>
   </section>
   {% endif %}
@@ -204,24 +180,6 @@
     </div>
     {% endfor %}
   </section>
-
-  {% if report.extension_used %}
-  {% if report.kpis_html %}
-  <section id="kpis">
-    <h2>KPIs de la sesión (CharlyAudit)</h2>
-    <div class="card">{{ report.kpis_html | safe }}</div>
-  </section>
-  {% endif %}
-  <section id="ambitos">
-    <h2>Análisis del Asistente IA — por ámbito (15/15)</h2>
-    {% for scope in report.assistant_scopes %}
-    <details class="card scope-card" {% if loop.index <= 3 %}open{% endif %}>
-      <summary>{{ scope.label }}</summary>
-      <div class="body">{{ scope.html | safe }}</div>
-    </details>
-    {% endfor %}
-  </section>
-  {% endif %}
 
 </main>
 </div>

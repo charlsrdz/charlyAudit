@@ -64,20 +64,6 @@ class TestConfigView(ttk.Frame):
             anchor="w", pady=(8, 0)
         )
 
-        # --- Extensión CharlyAudit --------------------------------------------
-        ttk.Label(body, text="EXTENSIÓN CHARLYAUDIT", style="Section.TLabel").pack(anchor="w", pady=(16, 4))
-        self.use_extension_var = tk.BooleanVar(value=self.cfg.test.use_extension)
-        ttk.Checkbutton(
-            body, text="Usar la extensión CharlyAudit en esta prueba (grabación, KPIs, 15 ámbitos)",
-            variable=self.use_extension_var,
-        ).pack(anchor="w")
-        self._hint(
-            body,
-            "Necesita el Chromium gestionado por Playwright (se ofrece instalar). Nota: en algunos "
-            "sistemas, la grabación puede no activarse por una restricción real de Chrome — si eso "
-            "pasa, la prueba de Playwright sigue corriendo con normalidad, solo sin esos datos extra.",
-        )
-
         # --- Guardar --------------------------------------------------------
         ttk.Button(body, text="Guardar configuración", style="Brand.TButton", command=self._save).pack(
             anchor="w", pady=(20, 0)
@@ -129,7 +115,6 @@ class TestConfigView(ttk.Frame):
         self.cfg.test.spec_path = self.spec_var.get().strip() or None
         self.cfg.test.url = self.url_var.get().strip() or None
         self.cfg.test.headers = self._collect_headers()
-        self.cfg.test.use_extension = self.use_extension_var.get()
         save_config(self.cfg)
         self.status_label.configure(text="✓ Configuración guardada.")
         self.after(2500, lambda: self.status_label.configure(text=""))
@@ -141,4 +126,3 @@ class TestConfigView(ttk.Frame):
         el resto de las vistas de configuración (v0.0.6)."""
         self.spec_var.set(self.cfg.test.spec_path or "")
         self.url_var.set(self.cfg.test.url or "")
-        self.use_extension_var.set(self.cfg.test.use_extension)

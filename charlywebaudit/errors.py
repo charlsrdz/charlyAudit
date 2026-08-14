@@ -19,11 +19,7 @@ class CharlyWebAuditError(Exception):
 
 
 class ChromiumNotInstalledError(CharlyWebAuditError):
-    """Chromium (el que gestiona Playwright) no está instalado."""
-
-
-class ChromiumInstallFailedError(CharlyWebAuditError):
-    """La instalación de Chromium se intentó y falló."""
+    """Google Chrome (canal estable) no está instalado."""
 
 
 class NodeNotFoundError(CharlyWebAuditError):
@@ -35,10 +31,6 @@ class PlaywrightTestNotAvailableError(CharlyWebAuditError):
     """Node existe, pero no se pudo resolver/instalar @playwright/test."""
 
 
-class ExtensionNotFoundError(CharlyWebAuditError):
-    """No se encontró el build de la extensión CharlyAudit en la ruta configurada."""
-
-
 class BrowserLaunchError(CharlyWebAuditError):
     """El navegador orquestado no llegó a levantar o el puerto CDP no respondió."""
 
@@ -47,17 +39,8 @@ class SpecNotFoundError(CharlyWebAuditError):
     """El archivo .spec.ts/.spec.js configurado no existe o no es legible."""
 
 
-class TargetTabNotFoundError(CharlyWebAuditError):
-    """No se pudo identificar con certeza la pestaña que abrió el spec del
-    usuario dentro del navegador orquestado."""
-
-
-class RecordingError(CharlyWebAuditError):
-    """Fallo al iniciar/detener la grabación desde el panel de la extensión."""
-
-
 class AssistantError(CharlyWebAuditError):
-    """Fallo al pedir un análisis a un ámbito del Asistente IA."""
+    """Fallo al pedir un análisis por IA de los resultados de Playwright."""
 
 
 class ConfigError(CharlyWebAuditError):
