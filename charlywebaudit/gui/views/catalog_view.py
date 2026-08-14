@@ -140,17 +140,56 @@ class CatalogView(ttk.Frame):
         tk.Label(body, text="URL", bg=SURFACE, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
         ttk.Entry(body, textvariable=url_var, width=50).pack(anchor="w", pady=(2, 12))
 
+        # --- Cabeceras HTTP (mismas opciones que "Configurar prueba") ---------
+        tk.Label(body, text="CABECERAS HTTP PERSONALIZADAS", bg=SURFACE, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
+        headers_container = tk.Frame(body, bg=SURFACE)
+        headers_container.pack(fill="x", pady=(4, 4))
+        header_rows: list[tuple] = []
+
+        def _add_header_row(name: str = "", value: str = "") -> None:
+            row = tk.Frame(headers_container, bg=SURFACE)
+            row.pack(fill="x", pady=2)
+            name_var = tk.StringVar(value=name)
+            value_var = tk.StringVar(value=value)
+            ttk.Entry(row, textvariable=name_var, width=22).pack(side="left")
+            ttk.Label(row, text=":", style="Muted.TLabel").pack(side="left", padx=4)
+            ttk.Entry(row, textvariable=value_var, width=32).pack(side="left")
+            remove_btn = ttk.Button(row, text="✕", style="Ghost.TButton", width=3)
+            remove_btn.pack(side="left", padx=(8, 0))
+            entry = (name_var, value_var, row)
+            header_rows.append(entry)
+            remove_btn.configure(command=lambda: (entry[2].destroy(), header_rows.remove(entry)))
+
+        for hname, hvalue in (existing.headers if existing else {}).items():
+            _add_header_row(hname, hvalue)
+        ttk.Button(body, text="+ Agregar cabecera", style="Ghost.TButton", command=lambda: _add_header_row()).pack(
+            anchor="w", pady=(0, 12)
+        )
+
+        # --- Extensión CharlyAudit (misma opción que "Configurar prueba") -----
+        use_extension_var = tk.BooleanVar(value=existing.use_extension if existing else False)
+        ttk.Checkbutton(
+            body, text="Usar la extensión CharlyAudit en esta prueba (grabación, KPIs, 15 ámbitos)",
+            variable=use_extension_var,
+        ).pack(anchor="w", pady=(0, 12))
+
         def _save() -> None:
             if not name_var.get().strip() or not spec_var.get().strip() or not url_var.get().strip():
                 messagebox.showwarning("Faltan datos", "Nombre, script y URL son obligatorios.")
                 return
+            headers = {name_var_h.get().strip(): value_var_h.get() for name_var_h, value_var_h, _ in header_rows if name_var_h.get().strip()}
             if existing:
                 existing.name = name_var.get().strip()
                 existing.spec_path = spec_var.get().strip()
                 existing.url = url_var.get().strip()
+                existing.headers = headers
+                existing.use_extension = use_extension_var.get()
             else:
                 self.cfg.test_catalog.append(
-                    TestCase(id=uuid.uuid4().hex[:12], name=name_var.get().strip(), spec_path=spec_var.get().strip(), url=url_var.get().strip())
+                    TestCase(
+                        id=uuid.uuid4().hex[:12], name=name_var.get().strip(), spec_path=spec_var.get().strip(),
+                        url=url_var.get().strip(), headers=headers, use_extension=use_extension_var.get(),
+                    )
                 )
             save_config(self.cfg)
             self._form_container.pack_forget()

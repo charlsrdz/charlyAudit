@@ -111,10 +111,16 @@ class HelpView(ttk.Frame):
         self._link(links_card.body, "Documentación (README del proyecto)", "readme")
         self._link(links_card.body, "nodejs.org — instalar Node.js", "https://nodejs.org")
 
+        contact_card = Card(right, title="CONTACTO")
+        contact_card.pack(fill="x", pady=(12, 0))
+        self._link(contact_card.body, "zona-tech.com", "https://zona-tech.com")
+        self._link(contact_card.body, "hola@zona-tech.com", "mailto:hola@zona-tech.com")
+        self._link(contact_card.body, "WhatsApp: +52 22 13 63 61 92", "https://wa.me/message/6K7O6JAJ6W6HC1")
+
     def _link(self, parent: tk.Widget, text: str, target: str) -> None:
         label = ttk.Label(parent, text=text, style="Link.TLabel", cursor="hand2")
         label.pack(anchor="w", pady=(0, 6))
-        if target.startswith("http"):
+        if target.startswith("http") or target.startswith("mailto:"):
             label.bind("<Button-1>", lambda e: webbrowser.open(target))
         # target == "readme": el README vive junto al codigo fuente, no como
         # una URL — se deja como texto informativo, sin acción de clic (no

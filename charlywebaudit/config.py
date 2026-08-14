@@ -105,6 +105,11 @@ class AppConfig:
     test_catalog: list[TestCase] = field(default_factory=list)
     """Punto 5 del pedido v0.1.0a: pruebas guardadas con nombre, para
     correr repetidamente y comparar resultados en el dashboard."""
+    timezone: str = ""
+    """Punto 1 del pedido (mejora de Dashboard): zona horaria en la que se
+    muestran las fechas del historial de corridas. Vacío = detectar
+    automáticamente la del sistema (ver `timezone_utils.detect_local_timezone`)
+    — el usuario puede elegir una distinta desde el Dashboard."""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, ensure_ascii=False)
@@ -128,6 +133,7 @@ class AppConfig:
             TestCase(**{k: v for k, v in tc.items() if k in TestCase.__dataclass_fields__})
             for tc in data.get("test_catalog", [])
         ]
+        cfg.timezone = data.get("timezone", "")
         return cfg
 
 

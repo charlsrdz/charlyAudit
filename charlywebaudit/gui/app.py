@@ -74,7 +74,7 @@ class App:
             self.notebook, self.cfg, self.bridge, on_run_test=self._run_from_catalog, on_run_all=self._run_all_from_catalog
         )
         self.views["run"] = RunView(self.notebook, self.cfg, self.bridge, on_report_ready=self._on_report_ready)
-        self.views["dashboard"] = DashboardView(self.notebook)
+        self.views["dashboard"] = DashboardView(self.notebook, self.cfg)
         self.views["report"] = ReportView(self.notebook)
         self.views["help"] = HelpView(self.notebook)
 

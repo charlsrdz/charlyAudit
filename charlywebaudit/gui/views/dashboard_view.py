@@ -24,7 +24,9 @@ from collections import defaultdict
 from pathlib import Path
 from tkinter import ttk
 
+from ...config import AppConfig, save_config
 from ...history import RunRecord, load_history
+from ...timezone_utils import COMMON_TIMEZONES, detect_local_timezone, format_local
 from ..theme import BORDER, BRAND, DANGER, MUTED, SUCCESS, SURFACE, SURFACE_2, TEXT, WARNING
 from ..widgets import Card, EmptyState, Header, ScrollableFrame
 
@@ -36,12 +38,19 @@ _BROWSER_OUTCOME_LABELS = {
 
 
 class DashboardView(ttk.Frame):
-    def __init__(self, parent: tk.Widget) -> None:
+    def __init__(self, parent: tk.Widget, cfg: AppConfig) -> None:
         super().__init__(parent, padding=20)
+        self.cfg = cfg
+        self._detected_tz = detect_local_timezone()
         self._records: list[RunRecord] = []
         self._by_test: dict[str, list[RunRecord]] = {}
         self._selected_test: str | None = None
         self._build()
+
+    def _tz_label(self) -> str:
+        """Etiqueta legible para el combo — la zona guardada en cfg, o la
+        detectada automáticamente si no hay ninguna explícita todavía."""
+        return self.cfg.timezone or self._detected_tz
 
     def _build(self) -> None:
         def _refresh_button(parent):
@@ -53,6 +62,19 @@ class DashboardView(ttk.Frame):
             "Panorama general de todas tus pruebas, y comparativa detallada por prueba a lo largo del tiempo.",
             actions=[_refresh_button],
         ).pack(fill="x", pady=(0, 12))
+
+        tz_row = ttk.Frame(self)
+        tz_row.pack(fill="x", pady=(0, 12))
+        ttk.Label(tz_row, text="Zona horaria:", style="Muted.TLabel").pack(side="left", padx=(0, 8))
+        self.tz_var = tk.StringVar(value=self._tz_label())
+        tz_values = [self._detected_tz] + [z for z in COMMON_TIMEZONES if z != self._detected_tz]
+        self.tz_combo = ttk.Combobox(tz_row, textvariable=self.tz_var, values=tz_values, width=32)
+        self.tz_combo.pack(side="left")
+        self.tz_combo.bind("<<ComboboxSelected>>", lambda e: self._on_tz_changed())
+        self.tz_combo.bind("<Return>", lambda e: self._on_tz_changed())
+        ttk.Label(
+            tz_row, text=f"(detectada automáticamente: {self._detected_tz})", style="Muted.TLabel"
+        ).pack(side="left", padx=(10, 0))
 
         self._scrollable = ScrollableFrame(self)
         self._scrollable.pack(fill="both", expand=True)
@@ -71,6 +93,22 @@ class DashboardView(ttk.Frame):
         self._content = ttk.Frame(self._scrollable.body)
         self._content.pack(fill="both", expand=True)
 
+        self.refresh()
+
+    def _on_tz_changed(self) -> None:
+        """Guarda la zona elegida en la config persistida — valida contra
+        el universo real de zonas conocidas antes de aceptarla (si el
+        usuario escribió algo inválido a mano, no se guarda silenciosamente
+        una zona que después haría fallar la conversión)."""
+        from zoneinfo import available_timezones
+
+        candidate = self.tz_var.get().strip()
+        is_offset_format = candidate.startswith("UTC+") or candidate.startswith("UTC-")
+        if candidate and candidate not in available_timezones() and not is_offset_format:
+            self.tz_var.set(self._tz_label())  # invalida — revierte al valor anterior
+            return
+        self.cfg.timezone = "" if candidate == self._detected_tz else candidate
+        save_config(self.cfg)
         self.refresh()
 
     def refresh(self) -> None:
@@ -168,7 +206,7 @@ class DashboardView(ttk.Frame):
             detail=f"{worst_fail_count} fallo(s) de {len(self._by_test[worst_name])} corrida(s) ({worst_rate:.0f}% éxito)",
             color=DANGER if worst_rate < 100 else SUCCESS, pady_top=10,
         )
-        recent_date = most_recent.started_at.split("T")[0] if "T" in most_recent.started_at else most_recent.started_at
+        recent_date = format_local(most_recent.started_at, self._tz_label(), with_seconds=False)
         self._highlight_tile(
             highlights, row=1, col=1, title="🕓 ACTIVIDAD MÁS RECIENTE", name=most_recent.test_name,
             detail=f"{recent_date} · {'✓ pasó' if most_recent.all_passed else '✕ falló'}",
@@ -309,7 +347,7 @@ class DashboardView(ttk.Frame):
             row_bg = SURFACE if i % 2 == 0 else SURFACE_2
             row = tk.Frame(parent, bg=row_bg)
             row.pack(fill="x")
-            date_display = r.started_at.split("T")[0] + " " + r.started_at.split("T")[1][:8] if "T" in r.started_at else r.started_at
+            date_display = format_local(r.started_at, self._tz_label())
             tk.Label(row, text=date_display, bg=row_bg, fg=TEXT, font=("Segoe UI", 9), width=18, anchor="w").pack(side="left", padx=4, pady=4)
             result_text = f"✓ {r.passed} pasaron" if r.all_passed else f"✕ {r.failed} fallaron"
             tk.Label(row, text=result_text, bg=row_bg, fg=(SUCCESS if r.all_passed else DANGER), font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=4, pady=4)

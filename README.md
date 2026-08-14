@@ -7,7 +7,7 @@ resultado de Playwright + un análisis de IA ámbito por ámbito (los 15
 ámbitos de contexto del Asistente de CharlyAudit) sobre la misma sesión
 grabada.
 
-**Versión actual: 0.1.6**
+**Versión actual: 0.1.6a**
 
 ---
 
@@ -1634,6 +1634,54 @@ el caso más simple (sin ninguna sección opcional colgando vacía). También
 validado de punta a punta con `run_audit()` real, confirmando que
 `test_name`, `headers` y `ai_analysis_html` lleguen correctamente al
 reporte final.
+
+## v0.1.6a — Zona horaria en el Dashboard, paridad del Catálogo, contacto
+
+### Punto 1 — zona horaria en el Dashboard
+
+El historial de corridas mostraba las fechas en UTC (la zona en la que
+`history.now_iso()` guarda cada `RunRecord`), distinta de la hora local
+de la máquina del usuario. Nuevo módulo, `timezone_utils.py`:
+
+- `detect_local_timezone()`: intenta un nombre IANA real primero
+  (`/etc/timezone`, o resolviendo el symlink de `/etc/localtime` — la
+  forma estándar en Linux/macOS); si no puede, cae a un offset fijo
+  calculado de la hora local actual (`UTC±HH:MM`) — la *hora* que
+  muestra siempre es correcta, aunque a veces le falte un nombre IANA
+  propiamente dicho (por ejemplo, en Windows).
+- `format_local()`: convierte cualquier timestamp guardado a la zona que
+  corresponda mostrar, sin lanzar nunca (un timestamp mal formado
+  devuelve el string original, no rompe la tabla).
+
+El Dashboard tiene un selector nuevo arriba de todo — con la zona
+detectada automáticamente como valor por defecto (mostrada aparte, para
+que quede claro cuál se detectó), y una lista de zonas comunes para
+elegir otra (también acepta escribir cualquier nombre IANA a mano,
+validado antes de aceptarlo). La elección se guarda en
+`AppConfig.timezone` (vacío = automático) y persiste entre sesiones.
+*Validado* con un registro real con hora UTC conocida — confirmado que
+cambiar a `America/Mexico_City` corrige exactamente 6 horas (22:08 UTC →
+16:08), en toda la interfaz (resumen general y tabla por prueba).
+
+### Punto 2 — paridad del formulario del Catálogo
+
+El formulario de "Nueva prueba"/"Editar prueba" del Catálogo solo tenía
+nombre, script y URL — le faltaban las cabeceras HTTP personalizadas y
+la opción de usar la extensión CharlyAudit, ambas ya disponibles en
+"Configurar prueba". Se agregaron ambas, mismo patrón de UI que la
+pestaña original. *Validado* con un flujo de guardado real completo
+(nombre, una cabecera personalizada, extensión activada) — confirmado
+que las tres cosas quedan persistidas correctamente en el `TestCase`
+guardado.
+
+### Punto 3 — información de contacto en Ayuda
+
+Nueva tarjeta "Contacto" (sitio web, correo, WhatsApp). En el camino se
+encontró y corrigió un bug real: el enlace de correo (`mailto:`) no
+quedaba clicable — `_link()` solo reconocía URLs que empiezan con
+`http`, así que un `mailto:` (aunque mostrado con cursor de mano) no
+tenía ninguna acción de clic asociada. Corregido para reconocer también
+`mailto:`.
 
 ## Qué está validado con evidencia real (no solo revisado)
 
